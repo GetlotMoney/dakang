@@ -1,0 +1,30 @@
+// https://github.com/element-plus/element-plus/blob/dev/packages/theme-chalk/src/common/var.scss
+// 自定义Element 亮色主题
+
+@forward 'element-plus/theme-chalk/src/common/var.scss' with (
+  // 语义色对齐六维达康品牌：成功=B 健康绿 #16C784；警告/危险沿用可辨识的琥珀/红。
+  $colors: (
+      'white': #ffffff,
+      'black': #000000,
+      'success': (
+        'base': #16c784
+      ),
+      'warning': (
+        'base': #ffae1f
+      ),
+      'danger': (
+        'base': #ff4d4f
+      ),
+      'error': (
+        'base': #fa896b
+      )
+    ),
+  $button: (
+    'hover-bg-color': var(--el-color-primary-light-9),
+    'hover-border-color': var(--el-color-primary),
+    'border-color': var(--el-color-primary),
+    'text-color': var(--el-color-primary)
+  ),
+  $messagebox: ('border-radius': '12px'),
+  $popover: ('padding': '14px', 'border-radius': '10px')
+);

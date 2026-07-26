@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jbk.serve.mapper.delivery.WsDeliveryAppealMapper">
+
+    <!--
+      管理端申诉查询（E2E-03 包C）：申诉为主表，LEFT JOIN 派生展示列。
+      手机号取原值别名 *Raw，由 Service 统一 PhoneMask 脱敏（Vo @JsonIgnore 兜底）。
+      处理人关联 api_employee（HANDLE_BY 为后台员工ID，裁决时由会话写入）。
+      APPEAL_REASON 原因码原样透出，中文名由 Service 统一映射，不在 SQL 里翻译。
+    -->
+    <sql id="Admin_Appeal_Columns">
+        a.ID             AS appealId,
+        a.TASK_ID        AS taskId,
+        t.TASK_NO        AS taskNo,
+        a.ORDER_ID       AS orderId,
+        o.ORDER_NO       AS orderNo,
+        a.USER_ID        AS userId,
+        u.USER_NAME      AS userName,
+        u.USER_PHONE     AS userPhoneRaw,
+        a.APPEAL_REASON  AS appealReason,
+        a.APPEAL_DESC    AS appealDesc,
+        a.RECEIVED_COUNT AS receivedCount,
+        a.APPEAL_STATUS  AS appealStatus,
+        a.HANDLE_BY      AS handleBy,
+        e.EMPLOYEE_NAME  AS handleByName,
+        a.HANDLE_TIME    AS handleTime,
+        a.HANDLE_RESULT  AS handleResult,
+        a.CREATE_TIME    AS createTime
+    </sql>
+
+    <sql id="Admin_Appeal_Joins">
+        FROM ws_delivery_appeal a
+        LEFT JOIN ws_delivery_task t ON t.ID = a.TASK_ID
+        LEFT JOIN ws_order o ON o.ID = a.ORDER_ID
+        LEFT JOIN ws_user u ON u.ID = a.USER_ID
+        LEFT JOIN api_employee e ON e.ID = a.HANDLE_BY
+    </sql>
+
+    <!-- 待处理(1)排前供运营优先裁决，组内按申诉时间倒序 -->
+    <select id="pageAdminAppeals" resultType="com.jbk.tool.data.delivery.vo.AdminDeliveryAppealItemVo">
+        SELECT
+        <include refid="Admin_Appeal_Columns"/>
+        <include refid="Admin_Appeal_Joins"/>
+        WHERE a.DATA_STATUS = 0
+        <if test="bo.appealStatus != null">
+            AND a.APPEAL_STATUS = #{bo.appealStatus}
+        </if>
+        <if test="bo.orderNo != null and bo.orderNo != ''">
+            AND o.ORDER_NO LIKE CONCAT('%', #{bo.orderNo}, '%')
+        </if>
+        ORDER BY (a.APPEAL_STATUS = 1) DESC, a.CREATE_TIME DESC, a.ID DESC
+    </select>
+
+    <select id="selectAdminAppealById" resultType="com.jbk.tool.data.delivery.vo.AdminDeliveryAppealItemVo">
+        SELECT
+        <include refid="Admin_Appeal_Columns"/>
+        <include refid="Admin_Appeal_Joins"/>
+        WHERE a.DATA_STATUS = 0 AND a.ID = #{id}
+    </select>
+</mapper>

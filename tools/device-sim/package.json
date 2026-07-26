@@ -1,0 +1,13 @@
+{
+  "name": "dakang-device-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "六维达康售水机设备模拟器：按 docs/mqtt-topics.md 协议 v0.1 收下行指令、回 ack/result，发心跳/遥测/状态，支撑无真机联调（VER-10 前置）",
+  "type": "module",
+  "scripts": {
+    "start": "node sim.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.1"
+  }
+}

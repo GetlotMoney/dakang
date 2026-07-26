@@ -1,0 +1,70 @@
+# 六维达康 · 水卡生命周期验收环境（与主环境物理隔离的独立容器组）
+#
+# 只描述与主环境 deploy/docker-compose.yml 的差异：独立容器名 / 宿主端口 / 口令 / 数据卷。
+# schema 与种子完全复用 ../mysql/init（首次启动自动执行 01/02/03），不存在第三份 DDL；
+# 迁移与验收种子由 acc-env.sh 在容器就绪后按文件名顺序灌入。
+#
+# 为什么不用「主 compose + override 文件」：主 compose 固定了 container_name（dakang-mysql 等）、
+# 宿主端口（3308/6380/1883）与数据卷，任何 -f 叠加都会定位并重建**受保护的主容器**；
+# 授权边界要求绝不触碰主库（3308）数据，验收环境必须是全新的容器组，故独立成文件。
+#
+# 为什么带独立 EMQX 而非复用主 EMQX 做主题隔离：后端以通配 up/+/+ 订阅全部设备上行
+# （MqttConnectionManager → DeviceTopics.UP_ALL），主 dakang-server 也订阅同一通配主题；
+# 若验收设备接主 Broker，主服务会消费验收报文并把「未建档设备上行」审计事件写进**主库**
+# ws_domain_event——主题命名隔离挡不住通配订阅（见 docs/mqtt-topics.md 上行主题设计），
+# 所以只能独立 Broker（1884），验收后端与 tools/device-sim 都连它。
+#
+# 用法（统一经 ../acceptance/acc-env.sh，勿直接对主 compose 操作）：
+#   docker compose -f deploy/acceptance/docker-compose.acc.yml up -d
+#   docker compose -f deploy/acceptance/docker-compose.acc.yml down -v   # 每轮重建
+name: dakang-acc
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: dakang-acc-mysql
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    environment:
+      # 验收口令必须与主库不同，误连主库时认证应直接失败。
+      MYSQL_ROOT_PASSWORD: "${DAKANG_ACC_DB_PASSWORD:?set DAKANG_ACC_DB_PASSWORD in .env}"
+      TZ: Asia/Shanghai
+    volumes:
+      - ../mysql/init:/docker-entrypoint-initdb.d:ro
+      - dakang-acc-mysql-data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3309:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    container_name: dakang-acc-redis
+    command: ["redis-server", "--requirepass", "${DAKANG_ACC_REDIS_PASSWORD:?set DAKANG_ACC_REDIS_PASSWORD in .env}"]
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:6381:6379"
+
+  emqx:
+    image: emqx/emqx:5.8
+    container_name: dakang-acc-emqx
+    environment:
+      TZ: Asia/Shanghai
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: "${DAKANG_ACC_EMQX_DASHBOARD_PASSWORD:?set DAKANG_ACC_EMQX_DASHBOARD_PASSWORD in .env}"
+    ports:
+      - "127.0.0.1:1884:1883"
+      - "127.0.0.1:18084:18083"
+    healthcheck:
+      test: ["CMD", "emqx", "ctl", "status"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+volumes:
+  dakang-acc-mysql-data:

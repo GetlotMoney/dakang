@@ -1,0 +1,37 @@
+:root,
+page {
+  /* 六维达康品牌 Design Tokens（B 活力水滴 为主 + A 净蓝科技 点缀），与 PC 同色值。
+   * 页面统一引用这些变量，避免散落硬编码；改此处即全端主题切换、可一键回退。 */
+  --wot-color-theme: #2e7cf6; /* Wot 组件主色 = B 活力蓝 */
+  --app-color-primary: #2e7cf6; /* B 活力蓝 主色 */
+  --app-color-green: #16c784; /* B 健康绿 辅主色 */
+  --app-color-water: #0ea5b7; /* A 净蓝科技 强调/点缀 */
+  --app-color-success: #16c784;
+  --app-color-warning: #ff9f0a;
+  --app-color-danger: #ff3b30;
+  --app-bg-page: #f5f7fa;
+  --app-text-primary: #1f2329;
+  --app-text-secondary: #646a73;
+
+  color: var(--app-text-primary);
+  background: var(--app-bg-page);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+}
+
+.page-shell {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 0 16px 84px;
+  background: var(--app-bg-page);
+}
+
+.page-section {
+  margin-top: 12px;
+}
+
+.muted-text {
+  color: var(--app-text-secondary);
+  font-size: 13px;
+}

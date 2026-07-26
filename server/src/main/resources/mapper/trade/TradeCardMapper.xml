@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jbk.serve.mapper.trade.TradeCardMapper">
+
+    <!--
+      资金铁律1：原子扣减 = 单条 UPDATE ... WHERE 余量>=X + 校验影响行数。
+      WHERE 同时兜住：卡存在且未逻辑删除、状态正常(CARD_STATUS=1)、归属卡主(USER_ID=expectedOwnerUserId，
+      铁律6)、未到期(EXPIRE_TIME 空=永久)、余量充足。任一不满足影响行数=0，由 Service 层 SELECT 定位精确原因并回滚。
+      并发下 InnoDB 行锁 + 余量>=X 条件保证不超扣（多线程串行化，只有余量足的请求成功）。
+      CARD-MEMBER：USER_ID 条件绝不能删——改为 expectedOwnerUserId 参数，由调用方在锁内
+      读出卡主后显式传入；成员取水时 actorUserId(UPDATE_BY) 与卡主不同，扣减仍作用卡主的卡。
+    -->
+
+    <!--
+      CARD-SCOPE 下单事务锁卡：FOR UPDATE 且不过滤 DATA_STATUS——逻辑删除卡也必须被锁到、
+      再由 Java 侧显式拒绝；若这里过滤，删除卡在锁语义上「不存在」，校验将建立在未锁定的读之上。
+    -->
+    <select id="selectByIdForUpdate" resultType="com.jbk.tool.data.user.po.WsCard">
+        SELECT *
+        FROM ws_card
+        WHERE ID = #{cardId}
+        FOR UPDATE
+    </select>
+
+    <!-- 余额支付扣减(分) payWay=2 -->
+    <update id="deductBalance">
+        UPDATE ws_card
+        SET BALANCE_AMOUNT = BALANCE_AMOUNT - #{amountFen},
+            UPDATE_BY = #{actorUserId},
+            UPDATE_TIME = #{now}
+        WHERE ID = #{cardId}
+          AND DATA_STATUS = 0
+          AND CARD_STATUS = 1
+          AND USER_ID = #{expectedOwnerUserId}
+          AND (EXPIRE_TIME IS NULL OR EXPIRE_TIME = '' OR EXPIRE_TIME &gt; #{now})
+          AND BALANCE_AMOUNT &gt;= #{amountFen}
+    </update>
+
+    <!-- 水量支付扣减(毫升) payWay=3 -->
+    <update id="deductMl">
+        UPDATE ws_card
+        SET BALANCE_ML = BALANCE_ML - #{planMl},
+            UPDATE_BY = #{actorUserId},
+            UPDATE_TIME = #{now}
+        WHERE ID = #{cardId}
+          AND DATA_STATUS = 0
+          AND CARD_STATUS = 1
+          AND USER_ID = #{expectedOwnerUserId}
+          AND (EXPIRE_TIME IS NULL OR EXPIRE_TIME = '' OR EXPIRE_TIME &gt; #{now})
+          AND BALANCE_ML &gt;= #{planMl}
+    </update>
+
+    <!--
+      补偿入账（退差/退款）：加回余额/水量，原子 UPDATE（铁律1）。加钱无需余量校验，
+      但仍以「卡存在且未逻辑删除且归属同一卡主」为条件——退差必须回到同一张卡主的卡，
+      卡归属漂移时影响 0 行并由结算层回滚，而不是打进别人的卡。
+      防重由结算层「订单终态校验 + ORDER_ID+FLOW_TYPE=4 流水去重」保证。
+    -->
+    <update id="compensateBalance">
+        UPDATE ws_card
+        SET BALANCE_AMOUNT = BALANCE_AMOUNT + #{amountFen},
+            UPDATE_BY = #{opUserId},
+            UPDATE_TIME = #{now}
+        WHERE ID = #{cardId}
+          AND DATA_STATUS = 0
+          AND USER_ID = #{expectedOwnerUserId}
+    </update>
+
+    <update id="compensateMl">
+        UPDATE ws_card
+        SET BALANCE_ML = BALANCE_ML + #{ml},
+            UPDATE_BY = #{opUserId},
+            UPDATE_TIME = #{now}
+        WHERE ID = #{cardId}
+          AND DATA_STATUS = 0
+          AND USER_ID = #{expectedOwnerUserId}
+    </update>
+
+</mapper>

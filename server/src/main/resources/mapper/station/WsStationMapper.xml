@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jbk.serve.mapper.station.WsStationMapper">
+
+    <!-- 按水站统计设备数（逻辑删除设备不计入） -->
+    <select id="countDeviceByStation" resultType="java.util.HashMap">
+        SELECT STATION_ID AS stationId, COUNT(*) AS deviceCount
+        FROM ws_device
+        WHERE DATA_STATUS = 0
+          AND STATION_ID IN
+        <foreach collection="stationIdList" item="stationId" open="(" separator="," close=")">
+            #{stationId}
+        </foreach>
+        GROUP BY STATION_ID
+    </select>
+
+</mapper>

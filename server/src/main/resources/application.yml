@@ -1,0 +1,169 @@
+server:
+  port: 13330
+  servlet:
+    context-path: /dakangApi
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+  tomcat:
+    threads:
+      max: 300
+      min-spare: 100
+    accept-count: 150
+    max-connections: 10000
+  address: 0.0.0.0
+spring:
+  application:
+    name: dakang-server
+  banner:
+    location: classpath:banner.txt
+  profiles:
+    active: dev
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+  http:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+      force-response: true
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 500MB
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      # 配置初始化大小、最小、最大 (通常来说，只需要修改initialSize、minIdle、maxActive)
+      initial-size: 10
+      min-idle: 10
+      max-active: 20
+      # 配置获取连接等待超时的时间
+      max-wait: 60000
+      # 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒
+      time-between-eviction-runs-millis: 60000
+      # 配置一个连接在池中最小生存的时间，单位是毫秒
+      min-evictable-idle-time-millis: 300000
+      validation-query: select 'x'
+      test-while-idle: true
+      test-on-borrow: false
+      test-on-return: false
+      # 打开PSCache，并且指定每个连接上PSCache的大小
+      pool-prepared-statements: true
+      max-pool-prepared-statement-per-connection-size: 20
+      # 配置监控统计拦截的filters，去掉后监控界面sql无法统计，'wall'用于防火墙
+      filters: stat,wall,slf4j
+      # 通过connectProperties属性来打开mergeSql功能；慢SQL记录
+      connection-properties: druid.stat.mergeSql=true;druid.stat.slowSqlMillis=5000
+      #useGlobalDataSourceStat: true # 合并多个DruidDataSource的监控数据
+      use-global-data-source-stat: true
+  redis:
+    lettuce:
+      pool:
+        max-wait: -1
+        max-active: 200 # 最大连接数
+        max-idle: 50 # 最大空闲连接数
+        min-idle: 20 # 初始化连接数
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    call-setters-on-nulls: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl #开启sql日志
+  global-config:
+    db-config:
+      logic-delete-field: status # 全局逻辑删除的实体字段名(since 3.3.0,配置后可以忽略不配置步骤2)
+      logic-delete-value: 1 # 逻辑已删除值(默认为 1)
+      logic-not-delete-value: 0 # 逻辑未删除值(默认为 0)
+    enable-sql-runner: true
+sa-token:
+  # token 名称（同时也是 cookie 名称）——项目专属命名，避免与同机其他基座项目（auto-ai-token）Cookie 串号
+  token-name: dakang-token
+  # token 有效期（单位：秒） 默认30天，-1 代表永久有效
+  timeout: 21600
+  # token 最低活跃频率（单位：秒），如果 token 超过此时间没有访问系统就会被冻结，默认-1 代表不限制，永不冻结
+  active-timeout: -1
+  # 是否允许同一账号多地同时登录 （为 true 时允许一起登录, 为 false 时新登录挤掉旧登录）
+  is-concurrent: true
+  # 在多人登录同一账号时，是否共用一个 token （为 true 时所有登录共用一个 token, 为 false 时每次登录新建一个 token）
+  is-share: false
+  # token 风格（默认可取值：uuid、simple-uuid、random-32、random-64、random-128、tik）
+  token-style: uuid
+  # 是否输出操作日志
+  is-log: true
+  # jwt秘钥——项目专属随机值（沿用基座公共值会导致跨项目 token 可互伪造）
+  jwt-secret-key: "${DAKANG_JWT_SECRET:}"
+
+management:
+  endpoint:
+    health:
+      show-details: always
+  endpoints:
+    web:
+      exposure:
+        # N-04 收敛：仅暴露健康与信息端点；env/beans/mappings 等敏感端点不再对外（2026-07-19）
+        include: health,info
+    enabled-by-default: true
+
+mybatis-plus-join:
+  #是否打印 mybatis plus join banner 默认true
+  banner: true
+  #全局启用副表逻辑删除(默认true) 关闭后关联查询不会加副表逻辑删除
+  sub-table-logic: true
+  #拦截器MappedStatement缓存(默认true)
+  ms-cache: true
+  #表别名(默认 t)
+  table-alias: t
+  #副表逻辑删除条件的位置，支持where、on
+  #默认ON （1.4.7.2及之前版本默认为where）
+  logic-del-type: on
+
+system:
+  node:
+    id: 1
+logging:
+  config: classpath:logback/logback-dev.xml
+  charset:
+    file: UTF-8
+    console: UTF-8
+springdoc:
+  swagger-ui:
+    # 开启 swagger-ui 文档展示
+    enabled: true
+    # UI访问路径
+    path: /swagger-ui.html
+    # 标签排序方式
+    tags-sorter: alpha
+    # 操作排序方式
+    operations-sorter: alpha
+    # 保持认证状态
+    persistAuthorization: true
+    # 禁用示例接口
+    disable-swagger-default-url: true
+  api-docs:
+    # 开启 OpenAPI 展示
+    enabled: true
+    # OpenAPI JSON路径
+    path: /v3/api-docs
+  default-consumes-media-type: application/json
+  default-produces-media-type: application/json
+  cache:
+    # 关闭文档缓存
+    disabled: false
+  # 显示actuator端点
+  show-actuator: false
+  # 推荐保持默认，显示结构化参数
+  # default-flat-param-object: true
+  # 允许在文档中展示 Spring MVC 的 ModelAndView 返回类型
+  model-and-view-allowed: true
+  # 推荐关闭以确保文档精确性
+  override-with-generic-response: false
+  packages-to-scan: com.jbk.serve.controller
+
+# Knife4j 配置
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+    swagger-model-name: 实体类列表

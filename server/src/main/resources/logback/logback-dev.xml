@@ -1,0 +1,20 @@
+<configuration scan="true" scanPeriod="60 seconds" debug="false">
+
+    <include resource="org/springframework/boot/logging/logback/defaults.xml" />
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml" />
+
+    <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %contextName [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <root level="warn">
+        <appender-ref ref="console" />
+    </root>
+
+    <logger name="com.jbk" level="debug"/>
+    <logger name="springfox.documentation.swagger2" level="off"/>
+    <logger name="io.swagger.models.parameters" level="off"/>
+    <logger name="springfox.documentation.swagger.readers.operation.OperationImplicitParameterReader" level="off"/>
+    <logger name="springfox.documentation.spring.web.readers.operation" level="off"/>
+</configuration>

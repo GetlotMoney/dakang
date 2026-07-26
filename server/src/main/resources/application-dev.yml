@@ -1,0 +1,61 @@
+spring:
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      # 本地 Docker MySQL（deploy/docker-compose.yml 宿主端口 3308），独立库 dakang
+      url: jdbc:mysql://localhost:3308/dakang?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=UTC&nullCatalogMeansCurrent=true
+      username: "${DAKANG_DB_USERNAME:root}"
+      password: "${DAKANG_DB_PASSWORD:}"
+  redis:
+    # 本地 Docker Redis（deploy/docker-compose.yml 宿主端口 6380）
+    host: localhost
+    port: 6380
+    password: "${DAKANG_REDIS_PASSWORD:}"
+    database: 0
+    timeout: 5000ms
+  ratelimiter:
+    redis-address: redis://localhost:6380
+    redis-password: "${DAKANG_REDIS_PASSWORD:}"
+    redis-database: 0
+    enabled: true
+    exceptionHandler:
+      enable: true
+
+# MQTT 设备接入（EMQX，deploy/docker-compose.yml 宿主端口 1883；管理台 18083）
+# 设备接入已启用（2026-07-12 设备中控模块联调）；broker 不在线时仅记错误日志不阻断启动
+mqtt:
+  enabled: true
+  broker-url: tcp://localhost:1883
+  client-id: dakang-server-dev
+  username: "${DAKANG_MQTT_USERNAME:}"
+  password: "${DAKANG_MQTT_PASSWORD:}"
+
+ali:
+  oss:
+    # TODO 待配置：使用六维达康项目自己的 OSS Bucket 与 AK/SK，禁止复用其他项目凭据
+    url: ""
+    endpoint: ""
+    bucketName: ""
+    region: ""
+    ossAccessKeyId: ""
+    ossAccessKeySecret: ""
+
+springdoc:
+  swagger-ui:
+    enabled: true
+  api-docs:
+    enabled: true
+
+wechat:
+  xcx:
+    # TODO 待配置：六维达康小程序主体的 AppID/AppSecret（用户端/机主端/配送端统一入口）
+    appid: ""
+    appsecret: ""
+
+mini:
+  pay-sim:
+    # Pay-Sim 模拟支付：仅 dev/演示环境为 true。为 true 时 PaySimSourceAdapter 与 /mini/pay-sim/**
+    # 才会注册，且支付单被永久打上 PAY_SOURCE=2，模拟收款不可能混进真实微信对账口径。
+    # prod 配置里必须保持 false 或缺省（缺省即 false）。
+    enabled: "${MINI_PAYSIM_ENABLED:false}"

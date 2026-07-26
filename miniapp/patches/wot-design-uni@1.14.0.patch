@@ -1,0 +1,45 @@
+diff --git a/components/wd-button/wd-button.vue b/components/wd-button/wd-button.vue
+index 3f4991f..74ed650 100644
+--- a/components/wd-button/wd-button.vue
++++ b/components/wd-button/wd-button.vue
+@@ -17,7 +17,7 @@
+     ]"
+     :hover-start-time="hoverStartTime"
+     :hover-stay-time="hoverStayTime"
+-    :open-type="openTypeValue"
++    :open-type="openTypeValue as any"
+     :send-message-title="sendMessageTitle"
+     :send-message-path="sendMessagePath"
+     :send-message-img="sendMessageImg"
+diff --git a/components/wd-slider/wd-slider.vue b/components/wd-slider/wd-slider.vue
+index 3d86731..6325c30 100644
+--- a/components/wd-slider/wd-slider.vue
++++ b/components/wd-slider/wd-slider.vue
+@@ -11,7 +11,7 @@
+             <view
+               class="wd-slider__button-wrapper wd-slider__button-wrapper--left"
+               :style="sliderButtonStyle"
+-              @touchstart="(event) => onSliderTouchStart(event, 0)"
++              @touchstart="onSliderTouchStart($event, 0)"
+               @touchmove="onSliderTouchMove"
+               @touchend="onSliderTouchEnd"
+               @touchcancel="onSliderTouchEnd"
+@@ -23,7 +23,7 @@
+             <view
+               class="wd-slider__button-wrapper wd-slider__button-wrapper--right"
+               :style="sliderButtonStyle"
+-              @touchstart="(event) => onSliderTouchStart(event, 1)"
++              @touchstart="onSliderTouchStart($event, 1)"
+               @touchmove="onSliderTouchMove"
+               @touchend="onSliderTouchEnd"
+               @touchcancel="onSliderTouchEnd"
+@@ -35,8 +35,8 @@
+           <view
+             v-else
+             class="wd-slider__button-wrapper"
+             :style="sliderButtonStyle"
+-            @touchstart="(event) => onSliderTouchStart(event, 0)"
++            @touchstart="onSliderTouchStart($event, 0)"
+             @touchmove="onSliderTouchMove"
+             @touchend="onSliderTouchEnd"
+             @touchcancel="onSliderTouchEnd"

@@ -1,0 +1,49 @@
+# --- 构建产物 ---
+server/target/
+client/dist/
+miniapp/dist/
+deploy/dist/
+deploy/logs/
+# 任意层级的依赖目录（含 tools/*/node_modules）
+node_modules/
+
+# --- IDE / 系统 ---
+.idea/
+.vscode/
+.DS_Store
+*.iml
+# Cursor 规则、MCP 会话和本机插件路径均不得进入共享源码。
+.cursor/
+.codex/
+
+# --- 日志与临时 ---
+*.log
+logs/
+tmp/
+# 配送受控媒体等运行时文件不得混入源码或交付包。
+/data/
+
+# --- 测试与中间产物（临时快照和截图不进入源码） ---
+.playwright-mcp/
+miniapp/e2e/*.png
+# 仓库根目录一律不放散落截图（验收证据应落 docs/acceptance/）
+/*.png
+/*.jpg
+/*.jpeg
+
+# 水卡生命周期验收环境运行时产物（pid/日志），证据统一存放在 docs/acceptance/
+deploy/acceptance/.run/
+
+# --- 敏感（生产凭据经 CI 注入，不入库） ---
+**/application-secret*.yml
+deploy/backups/
+
+# --- 本机私密配置 ---
+/.env
+!/.env.example
+**/.env.local
+**/.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx

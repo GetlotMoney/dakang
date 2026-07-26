@@ -1,0 +1,906 @@
+<script setup lang="ts">
+import type { DeliveryTask } from '@/api/delivery'
+import type { CardDetail } from '@/api/card'
+import type { DeliveryAppeal, OrderDetail, OrderTraceNode } from '@/api/order'
+import type { RechargePayStatus } from '@/api/recharge'
+import { onLoad } from '@dcloudio/uni-app'
+import { computed, ref } from 'vue'
+import { useMessage, useToast } from 'wot-design-uni'
+import { ContractError } from '@/api/common'
+import { cardApi } from '@/api/card'
+import { appealDeadlineOf, canCreateDeliveryAppeal } from '@/api/delivery-normalize'
+import { orderApi } from '@/api/order'
+import { findLocalRechargeOrderForRoute, rechargeApi } from '@/api/recharge'
+import { currentMode } from '@/api/runtime'
+import AppNavbar from '@/components/app-navbar.vue'
+import AppPrototypeNotice from '@/components/prototype-notice.vue'
+import {
+  APPEAL_STATUS_LABELS,
+  APPEAL_STATUS_TONES,
+  COMMAND_STATUS_LABELS,
+  formatBizTime,
+  formatBizTimeShort,
+  formatFen,
+  formatMl,
+  ORDER_STATUS_LABELS,
+  ORDER_STATUS_TONES,
+  ORDER_TYPE_LABELS,
+  PAY_WAY_LABELS,
+  TASK_STATUS_LABELS,
+  TASK_STATUS_TONES,
+} from '@/utils/format'
+import { backOr, goTo } from '@/utils/navigation'
+import { continuePayGate, nowBusinessTime, payAndSettle } from '@/utils/recharge-pay'
+import {
+  isRechargeSettled,
+  rechargeNotice,
+  rechargePaySourceLabel,
+  rechargeProcessingStatusLabel,
+} from '@/utils/recharge-presentation'
+
+definePage({
+  style: {
+    navigationStyle: 'custom',
+    navigationBarTitleText: '订单详情',
+  },
+})
+
+const toast = useToast()
+const message = useMessage()
+const isOrderReal = currentMode('order') === 'real'
+
+/** 申诉原因中文口径（utils/format 暂无该映射，页面内先行冻结）。 */
+const APPEAL_REASON_LABELS: Record<DeliveryAppeal['reason'], string> = {
+  QUANTITY: '数量不符',
+  QUALITY: '水质问题',
+  DAMAGE: '容器破损',
+  PLACEMENT: '摆放不当',
+  OTHER: '其他',
+}
+
+const EVIDENCE_MODE_LABELS: Record<string, string> = {
+  'prototype': '原型记录',
+  'external-snapshot': '快照记录',
+  'real': '受控媒体',
+}
+
+type FocusBlock = '' | 'command' | 'delivery' | 'appeal'
+
+const pageState = ref<'loading' | 'ready' | 'error'>('loading')
+const errorMessage = ref('')
+const errorImage = ref<'content' | 'network'>('network')
+
+const detail = ref<OrderDetail | null>(null)
+const isRechargeReal = currentMode('recharge') === 'real'
+const isCardReal = currentMode('card') === 'real'
+const issuedCard = ref<CardDetail | null>(null)
+const issuedCardError = ref('')
+
+const isPurchaseOrder = computed(
+  () => detail.value?.order.recharge?.purchaseMode === 'FIRST_CARD',
+)
+
+const rechargeSettled = computed(() => {
+  const order = detail.value?.order
+  return !!order && isRechargeSettled(order.orderStatus, order.recharge)
+})
+
+const isCompletedPurchase = computed(
+  () => isPurchaseOrder.value && detail.value?.order.orderStatus === 4 && rechargeSettled.value,
+)
+
+const paymentMethodText = computed(() => {
+  const order = detail.value?.order
+  if (!order) {
+    return '—'
+  }
+  if (order.orderType !== 2) {
+    return PAY_WAY_LABELS[order.payWay]
+  }
+  return rechargePaySourceLabel(order.recharge?.paySource, order.payWay, isRechargeReal)
+})
+
+/**
+ * 充值信息展示行。
+ *
+ * **页面不再解析 PACKAGE_SNAP**（契约 v2 §9.2 禁止下发原始快照）：接真时消费后端已校验的
+ * 结构化区块，Mock/历史单由 api 适配层归一化成同一形状。快照的合法性判定只在一处实现，
+ * 页面拿到的要么是完整可信的数据，要么是明确的 snapshotValid=false。
+ *
+ * 返回 null 表示数据异常，由模板提示联系客服——绝不用残缺值拼出一个看起来正常的订单。
+ */
+const rechargeRows = computed<{ label: string, value: string }[] | null>(() => {
+  const block = detail.value?.order.recharge
+  if (!block || !block.snapshotValid) {
+    return null
+  }
+  const rows: { label: string, value: string }[] = [
+    { label: '套餐名称', value: block.packageName ?? '—' },
+    { label: '支付金额', value: block.payAmountFen == null ? '—' : formatFen(block.payAmountFen) },
+    { label: '支付来源', value: rechargePaySourceLabel(block.paySource, detail.value!.order.payWay, isRechargeReal) },
+  ]
+  if ((block.waterMl ?? 0) > 0) {
+    rows.push({ label: '到账水量', value: formatMl(block.waterMl!) })
+  }
+  if ((block.bonusAmountFen ?? 0) > 0) {
+    rows.push({ label: '赠送余额', value: formatFen(block.bonusAmountFen!) })
+  }
+  rows.push({
+    label: '套餐有效期',
+    value: block.expireDays == null ? '永久有效' : `${block.expireDays} 天`,
+  })
+  const processingStatus = rechargeProcessingStatusLabel(block.processingStatus)
+  if (processingStatus) {
+    rows.push({ label: '事实处理状态', value: processingStatus })
+  }
+  // 只有完成态且双维流水与快照权益完全一致，才展示到账结果。
+  if (rechargeSettled.value) {
+    if ((block.flowMlChange ?? 0) > 0) {
+      rows.push({ label: '入账水量', value: `+${formatMl(block.flowMlChange!)}` })
+    }
+    if ((block.flowAmountChange ?? 0) > 0) {
+      rows.push({ label: '入账余额', value: `+${formatFen(block.flowAmountChange!)}` })
+    }
+  }
+  if (block.cardBalanceFen != null) {
+    rows.push({ label: '水卡当前余额', value: formatFen(block.cardBalanceFen) })
+  }
+  if (block.cardBalanceMl != null) {
+    rows.push({ label: '水卡当前水量', value: formatMl(block.cardBalanceMl) })
+  }
+  if (block.cardExpireTime) {
+    rows.push({ label: '水卡当前有效期', value: formatBizTime(block.cardExpireTime) })
+  }
+  else if (rechargeSettled.value && block.expireDays == null) {
+    rows.push({ label: '水卡当前有效期', value: '永久有效' })
+  }
+  return rows
+})
+
+/** 新卡结果只组合服务端订单证据与 /mini/card/detail，不解析任何范围 JSON。 */
+const issuedCardRows = computed<{ label: string, value: string }[] | null>(() => {
+  const block = detail.value?.order.recharge
+  const card = issuedCard.value
+  if (!isCompletedPurchase.value || !block?.snapshotValid || !card) {
+    return null
+  }
+  const benefits: string[] = []
+  if ((block.flowMlChange ?? 0) > 0) {
+    benefits.push(`水量 +${formatMl(block.flowMlChange!)}`)
+  }
+  if ((block.flowAmountChange ?? 0) > 0) {
+    benefits.push(`余额 +${formatFen(block.flowAmountChange!)}`)
+  }
+  return [
+    { label: '新卡号', value: card.cardNo },
+    { label: '卡片类型', value: '虚拟卡' },
+    { label: '开卡套餐', value: block.packageName ?? '—' },
+    { label: '到账权益', value: benefits.join(' · ') || '—' },
+    { label: '卡片有效期', value: card.expireTime ? formatBizTime(card.expireTime) : '永久有效' },
+    { label: '可用范围', value: card.scopeDescription },
+  ]
+})
+
+/**
+ * 继续支付：服务端 pay-status 的最新快照。
+ *
+ * 页面不从订单详情自行推导「还能不能付」——`payStatusCode` 是服务端按契约 §9.1
+ * 精确矩阵得出的结论，前端只消费它。拿不到（Mock 域、非充值单、请求失败）就是 null，
+ * 按钮一律不显示，绝不"猜一个大概能付"。
+ */
+const payStatus = ref<RechargePayStatus | null>(null)
+const paying = ref(false)
+const continuePay = computed(() => continuePayGate(payStatus.value, nowBusinessTime()))
+
+const rechargeNoticeState = computed(() => {
+  const order = detail.value?.order
+  return order?.orderType === 2
+    ? rechargeNotice(order.orderStatus, isRechargeReal, rechargeSettled.value)
+    : null
+})
+const isMockRecharge = ref(false)
+const task = ref<DeliveryTask | null>(null)
+const appeal = ref<DeliveryAppeal | null>(null)
+const appealError = ref('')
+const focusBlock = ref<FocusBlock>('')
+
+const mockBoundaryText = computed(() => {
+  const meta = detail.value?.order.mockMeta
+  if (!meta) {
+    return ''
+  }
+  return meta.evidenceMode === 'prototype'
+    ? '原型订单：未发生真实结算'
+    : '固定快照：与 PC Demo 共用键'
+})
+
+const detailNoticeText = computed(() => {
+  if (isMockRecharge.value) {
+    return '充值订单来自本地 Mock/固定快照：不代表本次发生真实支付、到账、赠送或退款。'
+  }
+  if (detail.value?.order.orderType === 1) {
+    return isOrderReal
+      ? '扫码取水订单详情来自真实 order 接口；扣款、设备指令和实际水量以本页证据字段为准。'
+      : '扫码取水订单详情为 Mock/固定快照：页面流转可演示，不代表本次发生真实扣款、指令下发或出水。'
+  }
+  return isOrderReal
+    ? '订单详情来自真实 order 接口；具体结算与履约状态以订单证据字段为准。'
+    : '订单详情为 Mock/固定快照；具体结算与履约状态不构成真实业务结果。'
+})
+
+const flowCountText = computed(() => {
+  const data = detail.value
+  if (!data) {
+    return ''
+  }
+  return data.flowCount > 0 ? `钱包流水 ${data.flowCount} 笔` : '未发生扣减'
+})
+
+/** 配送任务状态时间轴：任务生成→接单→离站→送达→签收（时间取任务证据字段）。 */
+const deliveryTimeline = computed(() => {
+  const currentTask = task.value
+  if (!currentTask) {
+    return []
+  }
+  return [
+    { key: 'created', label: '任务生成', time: detail.value?.order.createTime },
+    { key: 'accept', label: '配送员接单', time: currentTask.acceptTime },
+    { key: 'depart', label: '取水离站', time: currentTask.departTime },
+    { key: 'arrive', label: '送达待确认', time: currentTask.arriveTime },
+    { key: 'sign', label: '三照签收', time: currentTask.signTime },
+  ]
+})
+
+const deliveryActive = computed(() => {
+  // active 取最后一个已发生节点的下标：未发生节点保持待办态，不高亮为"进行中"（与 D03 同口径）。
+  let last = -1
+  deliveryTimeline.value.forEach((node, index) => {
+    if (node.time) {
+      last = index
+    }
+  })
+  return last
+})
+
+/**
+ * 申诉窗口展示：优先服务端签收事务落定的 appealDeadline（real 权威值），
+ * Mock 数据缺省按签收+24h 派生；实际时限由服务端在提交时二次校验。
+ */
+const appealDeadlineText = computed(() => {
+  const currentTask = task.value
+  if (!currentTask || !canCreateDeliveryAppeal(currentTask)) {
+    return ''
+  }
+  const deadline = appealDeadlineOf(currentTask)
+  return deadline ? formatBizTime(deadline) : ''
+})
+
+const showAppealBlock = computed(() =>
+  !!detail.value?.appealId || task.value?.taskStatus === 7 || !!appealError.value,
+)
+
+/** trace 色调 → wd-steps 状态映射（steps 仅支持 finished/process/error）。 */
+function stepStatus(node: OrderTraceNode): 'finished' | 'error' | undefined {
+  if (node.tone === 'danger' || node.tone === 'warning') {
+    return 'error'
+  }
+  if (node.tone === 'success') {
+    return 'finished'
+  }
+  return undefined
+}
+
+function blockClass(block: Exclude<FocusBlock, ''>) {
+  return focusBlock.value === block ? 'block-card focus-card' : 'block-card'
+}
+
+onLoad((query?: Record<string, string | undefined>) => {
+  const orderNo = query?.orderNo
+  const focus = query?.focus
+  const source = query?.source
+  if (focus === 'command' || focus === 'delivery' || focus === 'appeal') {
+    focusBlock.value = focus
+  }
+  if (!orderNo) {
+    pageState.value = 'error'
+    errorImage.value = 'content'
+    errorMessage.value = '缺少订单号参数，请从订单列表进入'
+    return
+  }
+  void load(orderNo, source)
+})
+
+async function load(orderNo: string, source?: string) {
+  pageState.value = 'loading'
+  issuedCard.value = null
+  issuedCardError.value = ''
+  try {
+    let loaded: OrderDetail
+    if (source === 'local-mock') {
+      const local = findLocalRechargeOrderForRoute(orderNo, source)
+      if (!local) {
+        throw new ContractError('ORDER_NOT_FOUND', '本地充值订单不存在、无权访问或已被重置')
+      }
+      loaded = local
+      isMockRecharge.value = true
+    }
+    else {
+      loaded = await orderApi.getOrderDetail(orderNo)
+      isMockRecharge.value = false
+    }
+    detail.value = loaded
+    if (loaded.order.orderType === 2 && !isMockRecharge.value && isRechargeReal) {
+      await refreshPayStatus(loaded.order.orderNo)
+      if (loaded.order.orderStatus === 4 && loaded.order.recharge?.purchaseMode === 'FIRST_CARD') {
+        await loadIssuedCard(loaded)
+      }
+    }
+    if (loaded.order.orderType === 3) {
+      task.value = await orderApi.getMyDeliveryTask(orderNo)
+    }
+    if (loaded.appealId) {
+      try {
+        appeal.value = await orderApi.getMyDeliveryAppeal(loaded.appealId)
+      }
+      catch (error) {
+        appealError.value = error instanceof ContractError ? error.message : '申诉记录加载失败'
+      }
+    }
+    pageState.value = 'ready'
+  }
+  catch (error) {
+    pageState.value = 'error'
+    errorImage.value = error instanceof ContractError && error.code === 'ORDER_NOT_FOUND'
+      ? 'content'
+      : 'network'
+    errorMessage.value = error instanceof ContractError ? error.message : '订单详情加载失败，请重试'
+  }
+}
+
+async function loadIssuedCard(loaded: OrderDetail) {
+  const block = loaded.order.recharge
+  try {
+    if (!isCardReal) {
+      throw new ContractError('PURCHASE_CARD_SOURCE_INVALID', '新卡详情未接真实数据源')
+    }
+    if (!block?.snapshotValid || !block.cardId || !block.cardNo
+      || loaded.order.cardId !== block.cardId) {
+      throw new ContractError('PURCHASE_CARD_EVIDENCE_INVALID', '订单缺少完整的新卡发放证据')
+    }
+    if (!rechargeSettled.value) {
+      throw new ContractError('PURCHASE_SETTLEMENT_EVIDENCE_INVALID', '订单缺少完整的购卡入账证据')
+    }
+    const card = await cardApi.getCardDetail(block.cardId)
+    if (card.cardId !== block.cardId || card.cardNo !== block.cardNo || card.cardType !== 1
+      || !card.scopeDescription || card.scopeDescription === '未配置（默认拒绝）') {
+      throw new ContractError('PURCHASE_CARD_EVIDENCE_MISMATCH', '新卡结果与订单发放证据不一致')
+    }
+    issuedCard.value = card
+  }
+  catch (error) {
+    issuedCardError.value = error instanceof ContractError
+      ? error.message
+      : '新卡信息加载失败，请稍后重试或联系客服'
+  }
+}
+
+/**
+ * 拉取 pay-status。失败时把结果置回 null（即不显示继续支付按钮）——
+ * 读不到服务端结论时宁可少给一个入口，也不能凭订单详情猜出一个可能已失效的支付按钮。
+ */
+async function refreshPayStatus(orderNo: string) {
+  try {
+    payStatus.value = await rechargeApi.getPayStatus(orderNo)
+  }
+  catch {
+    payStatus.value = null
+  }
+}
+
+/**
+ * 继续支付：复用充值页同一条「确认 → 模拟支付 → 轮询到终态」实现。
+ *
+ * 完成后重新拉订单详情与 pay-status，页面上的到账结论只来自服务端返回的状态码，
+ * 不以点击成功为准。
+ */
+async function handleContinuePay() {
+  const order = detail.value?.order
+  if (paying.value || !order || !continuePay.value.visible) {
+    return
+  }
+  paying.value = true
+  try {
+    const settled = await payAndSettle(order.orderNo, order.orderAmountFen, {
+      confirm: msg => message.confirm({ title: '确认支付', msg }).then(() => true).catch(() => false),
+      notify: (kind, msg) => (kind === 'success' ? toast.success(msg) : toast.show(msg)),
+      completedMessage: isPurchaseOrder.value ? '新卡已开通，购卡权益已到账' : '充值已到账',
+    })
+    if (settled !== null) {
+      await load(order.orderNo)
+    }
+  }
+  catch (error) {
+    toast.error(error instanceof ContractError ? error.message : '支付发起失败，请重试')
+  }
+  finally {
+    paying.value = false
+  }
+}
+
+function copyOrderNo() {
+  const orderNo = detail.value?.order.orderNo
+  if (!orderNo) {
+    return
+  }
+  uni.setClipboardData({
+    data: orderNo,
+    success: () => toast.show('订单号已复制'),
+  })
+}
+
+function goAppeal() {
+  if (detail.value && task.value) {
+    goTo('U09', { orderNo: detail.value.order.orderNo, taskNo: task.value.taskNo })
+  }
+}
+</script>
+
+<template>
+  <view class="page-shell">
+    <AppNavbar title="订单详情" back-to="U02" />
+    <wd-toast />
+    <wd-message-box />
+    <AppPrototypeNotice
+      :text="detailNoticeText"
+    />
+
+    <view v-if="pageState === 'loading'" class="page-section loading-box">
+      <wd-loading />
+      <view class="muted-text">
+        正在加载订单详情…
+      </view>
+    </view>
+
+    <view v-else-if="pageState === 'error'" class="page-section">
+      <wd-status-tip :image="errorImage" :tip="errorMessage">
+        <template #bottom>
+          <view class="status-actions">
+            <wd-button plain @click="backOr('U02')">
+              返回订单列表
+            </wd-button>
+          </view>
+        </template>
+      </wd-status-tip>
+    </view>
+
+    <template v-else-if="detail">
+      <view class="page-section">
+        <wd-card custom-class="block-card">
+          <template #title>
+            <view class="card-title-row">
+              <view>订单信息</view>
+              <view class="tag-row">
+                <wd-tag plain>
+                  {{ ORDER_TYPE_LABELS[detail.order.orderType] }}
+                </wd-tag>
+                <wd-tag :type="ORDER_STATUS_TONES[detail.order.orderStatus]" plain>
+                  {{ ORDER_STATUS_LABELS[detail.order.orderStatus] }}
+                </wd-tag>
+              </view>
+            </view>
+          </template>
+          <wd-cell-group>
+            <wd-cell title="订单号" :label="detail.order.orderNo" clickable @click="copyOrderNo">
+              <view class="copy-action">
+                复制
+              </view>
+            </wd-cell>
+            <wd-cell title="金额" :value="formatFen(detail.order.orderAmountFen)" />
+            <wd-cell title="支付方式" :value="paymentMethodText" />
+            <wd-cell
+              v-if="detail.order.stationName || detail.order.deviceNo"
+              title="站点 / 设备"
+              :value="`${detail.order.stationName ?? '—'}${detail.order.deviceNo ? ` · ${detail.order.deviceNo}` : ''}`"
+            />
+            <wd-cell title="创建时间" :value="formatBizTime(detail.order.createTime)" />
+            <wd-cell title="完成时间" :value="formatBizTime(detail.order.finishTime)" />
+          </wd-cell-group>
+          <view v-if="mockBoundaryText" class="muted-text boundary-note">
+            {{ mockBoundaryText }}
+          </view>
+          <view class="e2e-order-evidence" aria-hidden="true">
+            ORDER_STATUS={{ detail.order.orderStatus }};ACTUAL_ML={{ detail.order.actualMl ?? 'null' }}
+          </view>
+        </wd-card>
+      </view>
+
+      <view v-if="detail.trace.length" class="page-section">
+        <wd-card custom-class="block-card" title="订单轨迹">
+          <wd-steps :active="detail.trace.length - 1" vertical>
+            <wd-step
+              v-for="(node, index) in detail.trace"
+              :key="`${node.node}-${index}`"
+              :title="node.label"
+              :status="stepStatus(node)"
+            >
+              <template #description>
+                <view class="step-desc">
+                  <view>{{ formatBizTime(node.time) }}</view>
+                  <view v-if="node.detail" class="muted-text">
+                    {{ node.detail }}
+                  </view>
+                </view>
+              </template>
+            </wd-step>
+          </wd-steps>
+        </wd-card>
+      </view>
+
+      <view v-if="detail.order.orderType === 1" class="page-section">
+        <wd-card :custom-class="blockClass('command')">
+          <template #title>
+            <view class="card-title-row">
+              <view>取水命令</view>
+              <wd-tag v-if="focusBlock === 'command'" type="primary" plain>
+                当前关注
+              </wd-tag>
+            </view>
+          </template>
+          <wd-cell-group>
+            <wd-cell title="命令号" :value="detail.commandNo ?? '—'" />
+            <wd-cell
+              title="命令状态"
+              :value="detail.commandStatus !== undefined ? (COMMAND_STATUS_LABELS[detail.commandStatus] ?? `状态码 ${detail.commandStatus}`) : '—'"
+            />
+            <wd-cell
+              title="计划水量"
+              :value="detail.order.planMl !== undefined ? formatMl(detail.order.planMl) : '—'"
+            />
+            <wd-cell
+              title="实际水量"
+              :value="detail.order.actualMl !== undefined ? formatMl(detail.order.actualMl) : '待设备回传'"
+            />
+            <wd-cell title="流水记录" :value="flowCountText" />
+          </wd-cell-group>
+        </wd-card>
+      </view>
+
+      <view v-if="detail.order.orderType === 2" class="page-section">
+        <wd-card title="充值信息" custom-class="block-card">
+          <wd-cell-group>
+            <template v-if="rechargeRows === null">
+              <wd-cell title="充值信息" label="本单数据异常，无法核对权益，请联系客服" />
+            </template>
+            <template v-else>
+              <wd-cell
+                v-for="row in rechargeRows"
+                :key="row.label"
+                :title="row.label"
+                :value="row.value"
+              />
+            </template>
+          </wd-cell-group>
+          <view v-if="rechargeNoticeState" class="notice-wrap">
+            <wd-notice-bar
+              :type="rechargeNoticeState.tone"
+              prefix="warn-bold"
+              wrapable
+              :scrollable="false"
+              :text="rechargeNoticeState.text"
+            />
+          </view>
+          <view v-if="continuePay.visible" class="continue-pay">
+            <wd-button block :loading="paying" @click="handleContinuePay">
+              继续支付
+            </wd-button>
+            <view class="muted-text">
+              到账与否只以服务端返回的状态为准，不以点击成功为准；超过付款截止时间后本单不可再支付。
+            </view>
+          </view>
+          <view v-else-if="continuePay.reason" class="muted-text boundary-note">
+            {{ continuePay.reason }}
+          </view>
+        </wd-card>
+      </view>
+
+      <view v-if="isCompletedPurchase" class="page-section">
+        <wd-card title="新卡信息" custom-class="block-card">
+          <wd-status-tip
+            v-if="issuedCardError"
+            image="content"
+            :tip="issuedCardError"
+          />
+          <wd-cell-group v-else-if="issuedCardRows">
+            <wd-cell
+              v-for="row in issuedCardRows"
+              :key="row.label"
+              :title="row.label"
+              :value="row.value"
+            />
+          </wd-cell-group>
+          <view v-else class="muted-text">
+            正在核对新卡发放结果…
+          </view>
+        </wd-card>
+      </view>
+
+      <view v-if="detail.order.orderType === 3" class="page-section">
+        <wd-card :custom-class="blockClass('delivery')">
+          <template #title>
+            <view class="card-title-row">
+              <view>配送任务</view>
+              <view class="tag-row">
+                <wd-tag v-if="focusBlock === 'delivery'" type="primary" plain>
+                  当前关注
+                </wd-tag>
+                <wd-tag v-if="task" :type="TASK_STATUS_TONES[task.taskStatus]" plain>
+                  {{ TASK_STATUS_LABELS[task.taskStatus] }}
+                </wd-tag>
+              </view>
+            </view>
+          </template>
+          <template v-if="task">
+            <wd-steps :active="deliveryActive" vertical>
+              <wd-step
+                v-for="node in deliveryTimeline"
+                :key="node.key"
+                :title="node.label"
+                :description="node.time ? formatBizTime(node.time) : '未到达该节点'"
+              />
+            </wd-steps>
+            <wd-cell-group>
+              <wd-cell title="任务号" :value="task.taskNo" />
+              <wd-cell title="水种" :value="task.waterTypeName" />
+              <wd-cell title="容器 × 数量" :value="`${task.containerSpec} × ${task.plannedDeliveryCount}`" />
+              <wd-cell
+                title="实际配送"
+                :value="task.actualDeliveryCount !== undefined ? `${task.actualDeliveryCount} 件` : '待签收确认'"
+              />
+              <wd-cell title="预计回收" :value="`${task.plannedReturnCount} 件`" />
+              <wd-cell
+                title="实际回收"
+                :value="task.actualReturnCount !== undefined ? `${task.actualReturnCount} 件` : '待签收确认'"
+              />
+              <wd-cell title="收货地址" :label="task.receiveAddress" />
+              <wd-cell title="联系电话" :value="task.maskedPhone" />
+            </wd-cell-group>
+            <view class="price-rows">
+              <view class="price-row">
+                <view>水费</view>
+                <view>{{ formatFen(task.priceSnapshot.waterAmountFen) }}</view>
+              </view>
+              <view class="price-row">
+                <view>配送费</view>
+                <view>{{ formatFen(task.priceSnapshot.deliveryFeeFen) }}</view>
+              </view>
+              <view class="price-row price-total">
+                <view>合计</view>
+                <view>{{ formatFen(task.priceSnapshot.totalAmountFen) }}</view>
+              </view>
+            </view>
+            <view class="trace-title">
+              签收三照
+            </view>
+            <view v-if="task.signPhotos.length" class="photo-grid">
+              <view v-for="photo in task.signPhotos" :key="photo.type" class="photo-card">
+                <wd-icon name="picture" size="28px" color="#b9bec7" />
+                <view class="photo-label">
+                  {{ photo.label }}
+                </view>
+                <view class="muted-text">
+                  {{ formatBizTimeShort(photo.time) }}
+                </view>
+                <wd-tag plain>
+                  {{ EVIDENCE_MODE_LABELS[photo.evidenceMode] ?? photo.evidenceMode }}
+                </wd-tag>
+              </view>
+            </view>
+            <view v-else class="muted-text">
+              尚未签收，暂无三照记录。
+            </view>
+            <view v-if="canCreateDeliveryAppeal(task)" class="appeal-entry">
+              <view class="muted-text">
+                对签收结果有异议？可在 {{ appealDeadlineText }} 前发起申诉（以提交时校验为准）。
+              </view>
+              <wd-button block plain type="error" @click="goAppeal">
+                发起申诉
+              </wd-button>
+            </view>
+          </template>
+          <view v-else class="muted-text">
+            未查询到关联配送任务记录。
+          </view>
+        </wd-card>
+      </view>
+
+      <view v-if="showAppealBlock" class="page-section">
+        <wd-card :custom-class="blockClass('appeal')">
+          <template #title>
+            <view class="card-title-row">
+              <view>申诉记录</view>
+              <view class="tag-row">
+                <wd-tag v-if="focusBlock === 'appeal'" type="primary" plain>
+                  当前关注
+                </wd-tag>
+                <wd-tag v-if="appeal" :type="APPEAL_STATUS_TONES[appeal.appealStatus]" plain>
+                  {{ APPEAL_STATUS_LABELS[appeal.appealStatus] }}
+                </wd-tag>
+              </view>
+            </view>
+          </template>
+          <template v-if="appeal">
+            <wd-cell-group>
+              <wd-cell title="申诉编号" :value="appeal.appealId" />
+              <wd-cell title="原因" :value="APPEAL_REASON_LABELS[appeal.reason]" />
+              <wd-cell title="说明" :label="appeal.description" />
+              <wd-cell title="实收数量" :value="`${appeal.receivedCount} 件`" />
+              <wd-cell title="用户凭证" :value="`${appeal.evidenceRefs.length} 件（快照记录）`" />
+              <wd-cell title="登记时间" :value="formatBizTime(appeal.createTime)" />
+              <wd-cell v-if="appeal.decisionSummary" title="裁决结果" :label="appeal.decisionSummary" />
+            </wd-cell-group>
+            <view class="trace-title">
+              配送员举证
+            </view>
+            <view v-if="appeal.courierEvidences?.length" class="evidence-list">
+              <view v-for="(item, index) in appeal.courierEvidences" :key="index" class="evidence-item">
+                <view>{{ item.description }}</view>
+                <view class="muted-text">
+                  {{ formatBizTime(item.time) }} · 凭证 {{ item.evidenceRefs.length }} 件
+                </view>
+              </view>
+            </view>
+            <view v-else class="muted-text">
+              配送员暂未追加举证。
+            </view>
+            <view class="muted-text boundary-note">
+              裁决由 PC 运营端完成，小程序只消费结果，不伪造补送、退款或补偿。
+            </view>
+          </template>
+          <view v-else class="muted-text">
+            {{ appealError || '任务处于申诉中，申诉记录详情暂不可读。' }}
+          </view>
+        </wd-card>
+      </view>
+    </template>
+  </view>
+</template>
+
+<style scoped lang="scss">
+.loading-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 64px 0;
+}
+
+.e2e-order-evidence {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.status-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 20px;
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
+.tag-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.focus-card {
+  border: 1px solid rgba(93, 135, 255, 0.45);
+}
+
+.copy-action {
+  color: var(--wot-color-theme, var(--app-color-primary));
+  font-size: 13px;
+}
+
+.boundary-note {
+  margin-top: 8px;
+  line-height: 1.6;
+}
+
+.trace-title {
+  margin: 12px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.step-desc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.continue-pay {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  line-height: 1.6;
+}
+
+.notice-wrap {
+  margin-top: 12px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.price-rows {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(93, 135, 255, 0.06);
+}
+
+.price-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 0;
+  font-size: 14px;
+}
+
+.price-total {
+  font-weight: 600;
+}
+
+.photo-grid {
+  display: flex;
+  gap: 10px;
+}
+
+.photo-card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 4px;
+  border: 1px dashed #d5d9e0;
+  border-radius: 8px;
+}
+
+.photo-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.appeal-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-item {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(100, 106, 115, 0.06);
+  font-size: 13px;
+}
+</style>

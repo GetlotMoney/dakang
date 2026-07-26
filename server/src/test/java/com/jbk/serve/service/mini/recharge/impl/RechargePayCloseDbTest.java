@@ -1,0 +1,714 @@
+package com.jbk.serve.service.mini.recharge.impl;
+
+import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.jbk.serve.mapper.trade.RechargeCreditMapper;
+import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
+import com.jbk.serve.service.mini.impl.MiniPaySimServiceImpl;
+import com.jbk.serve.service.mini.impl.MiniPayStatusServiceImpl;
+import com.jbk.serve.service.mini.recharge.IRechargePayCloseTx;
+import com.jbk.serve.service.mini.recharge.IRechargePayFactService;
+import com.jbk.serve.service.mini.recharge.RechargePayExpire;
+import com.jbk.serve.service.mini.recharge.RechargeQueryEventKey;
+import com.jbk.serve.service.mini.card.WaterCardScope;
+import com.jbk.serve.service.mini.recharge.RechargeSnapshot;
+import com.jbk.tool.data.mini.bo.MiniPaySimBo;
+import com.jbk.tool.data.mini.bo.MiniPayStatusBo;
+import com.jbk.tool.data.mini.vo.MiniPayStatusVo;
+import com.jbk.tool.data.product.po.WsPackage;
+import com.jbk.tool.data.user.po.WsCard;
+import com.jbk.tool.exception.JbkException;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mybatis.spring.SqlSessionTemplate;
+import org.mybatis.spring.mapper.MapperFactoryBean;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.testcontainers.containers.MySQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
+
+import javax.sql.DataSource;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+/**
+ * 契约驱动的<b>超时关单</b>集成测试（L2 契约 v2 §6.2 第 5/6 条、§7.1、§9.1；真实 MySQL + 真实 Spring 事务）。
+ *
+ * <p>这里要钉死的核心事实是：<b>本地到点不关单</b>。关单只能由支付方权威查单结果（CLOSED）驱动，
+ * 且推进路径与将来接入的真实微信查单完全一致——都经过同一个 {@code IRechargePayFactService}。</p>
+ *
+ * <p>用真库而不是 Mock，是因为三条性质只有真事务才证明得了：两条 CAS 与事实收敛在同一事务里
+ * 要么全成要么全滚；唯一键让重复查单稳定命中同一条事实；关单路径确实一个字节的资金数据都没碰。</p>
+ *
+ * <p>无 Docker 环境自动跳过。</p>
+ */
+@Testcontainers(disabledWithoutDocker = true)
+@ExtendWith(SpringExtension.class)
+@ContextConfiguration(classes = RechargePayCloseDbTest.Ctx.class)
+class RechargePayCloseDbTest {
+
+    @Container
+    static final MySQLContainer<?> MYSQL = new MySQLContainer<>(DockerImageName.parse("mysql:8.0"))
+            .withDatabaseName("dakang_close_it")
+            .withUsername("root")
+            .withPassword("ittest")
+            .withCommand("--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci");
+
+    private static final long CARD_ID = 100L;
+    private static final long USER_ID = 9L;
+    private static final long ORDER_ID = 777L;
+    private static final long PAYMENT_ID = 888L;
+    private static final String ORDER_NO = "RC0000000000000000000000000001";
+    private static final long PAY_AMOUNT = 10000L;
+    private static final long WATER_ML = 500000L;
+    private static final int EXPIRE_DAYS = 365;
+    private static final String SCOPE = "{\"scopeType\":\"all\"}";
+    private static final String CARD_EXPIRE = "20270710120000";
+
+    private static final int PAY_SIM = 2;
+    private static final int FACT_CHANNEL_QUERY = 2;
+
+    private static final String CREATE_TIME = "20260722194200";
+    /** 由 §2.2 冻结算法算出的不可变付款截止时间：创建时刻 + 30min。 */
+    private static final String PAY_EXPIRE = "20260722201200";
+    /** 处理时刻：已过付款截止时间（支付方因此回答 CLOSED）。 */
+    private static final String AFTER_EXPIRE = "20260722201500";
+    /** 处理时刻：仍在窗口内（支付方回答 NOTPAY）。 */
+    private static final String BEFORE_EXPIRE = "20260722195000";
+
+    private static final long CARD_ML_BEFORE = 470120L;
+    private static final long CARD_AMOUNT_BEFORE = 5500L;
+
+    @Configuration
+    @EnableTransactionManagement
+    static class Ctx {
+        @Bean
+        DataSource dataSource() {
+            HikariDataSource ds = new HikariDataSource();
+            ds.setJdbcUrl(MYSQL.getJdbcUrl());
+            ds.setUsername(MYSQL.getUsername());
+            ds.setPassword(MYSQL.getPassword());
+            ds.setMaximumPoolSize(8);
+            return ds;
+        }
+
+        @Bean
+        PlatformTransactionManager transactionManager(DataSource ds) {
+            return new DataSourceTransactionManager(ds);
+        }
+
+        @Bean
+        SqlSessionTemplate sqlSessionTemplate(DataSource ds) throws Exception {
+            MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
+            factory.setDataSource(ds);
+            com.baomidou.mybatisplus.core.MybatisConfiguration cfg =
+                    new com.baomidou.mybatisplus.core.MybatisConfiguration();
+            cfg.setMapUnderscoreToCamelCase(true);
+            factory.setConfiguration(cfg);
+            return new SqlSessionTemplate(factory.getObject());
+        }
+
+        @Bean
+        MapperFactoryBean<RechargeCreditMapper> creditMapper(SqlSessionTemplate template) {
+            MapperFactoryBean<RechargeCreditMapper> bean = new MapperFactoryBean<>(RechargeCreditMapper.class);
+            bean.setSqlSessionTemplate(template);
+            return bean;
+        }
+
+        @Bean
+        MapperFactoryBean<RechargeIdentityMapper> identityMapper(SqlSessionTemplate template) {
+            MapperFactoryBean<RechargeIdentityMapper> bean = new MapperFactoryBean<>(RechargeIdentityMapper.class);
+            bean.setSqlSessionTemplate(template);
+            return bean;
+        }
+
+        @Bean
+        RechargeLockedState lockedState(RechargeCreditMapper mapper) {
+            return new RechargeLockedState(mapper);
+        }
+
+        @Bean
+        RechargeLedgerVerifier ledgerVerifier() {
+            return new RechargeLedgerVerifier();
+        }
+
+        @Bean
+        RechargeCreditTxImpl creditTx(RechargeCreditMapper mapper, RechargeLockedState locked,
+                                      RechargeLedgerVerifier ledger) {
+            return new RechargeCreditTxImpl(mapper, locked, ledger);
+        }
+
+        @Bean
+        RechargeCreditFailureTxImpl failureTx(RechargeCreditMapper mapper, RechargeLockedState locked,
+                                              RechargeLedgerVerifier ledger) {
+            return new RechargeCreditFailureTxImpl(mapper, locked, ledger);
+        }
+
+        @Bean
+        RechargePayConfirmTxImpl confirmTx(RechargeCreditMapper mapper, RechargeIdentityMapper identity) {
+            return new RechargePayConfirmTxImpl(mapper, identity);
+        }
+
+        @Bean
+        RechargePayCloseTxImpl closeTx(RechargeCreditMapper mapper) {
+            return new RechargePayCloseTxImpl(mapper);
+        }
+
+        @Bean
+        RechargeIssueTxImpl issueTx(RechargeCreditMapper mapper, RechargeLedgerVerifier ledger) {
+            return new RechargeIssueTxImpl(mapper, ledger);
+        }
+
+        /** 按接口注入 confirm/close/credit/issue：@Transactional 走 JDK 接口代理，注入实现类会失败。 */
+        @Bean
+        RechargePayFactServiceImpl factService(RechargeCreditMapper credit, RechargeIdentityMapper identity,
+                                               com.jbk.serve.service.mini.recharge.IRechargePayConfirmTx confirm,
+                                               IRechargePayCloseTx close,
+                                               com.jbk.serve.service.mini.recharge.IRechargeCreditTx creditTx,
+                                               com.jbk.serve.service.mini.recharge.IRechargeCreditFailureTx failure,
+                                               com.jbk.serve.service.mini.recharge.IRechargeIssueTx issue) {
+            return new RechargePayFactServiceImpl(credit, identity, confirm, close, creditTx, failure, issue);
+        }
+
+        @Bean
+        MiniPayStatusServiceImpl payStatusService(RechargeIdentityMapper identity) {
+            return new MiniPayStatusServiceImpl(identity);
+        }
+
+        @Bean
+        PaySimSourceAdapter paySimSourceAdapter() {
+            return new PaySimSourceAdapter();
+        }
+
+        @Bean
+        MiniPaySimServiceImpl paySimService(RechargeIdentityMapper identity, RechargeCreditMapper credit,
+                                            IRechargePayFactService facts, PaySimSourceAdapter adapter) {
+            return new MiniPaySimServiceImpl(identity, credit, facts, adapter);
+        }
+
+        @Bean
+        JdbcTemplate jdbcTemplate(DataSource ds) {
+            return new JdbcTemplate(ds);
+        }
+    }
+
+    @Autowired
+    private IRechargePayFactService factService;
+    @Autowired
+    private RechargeCreditMapper creditMapper;
+    @Autowired
+    private MiniPayStatusServiceImpl payStatusService;
+    @Autowired
+    private MiniPaySimServiceImpl paySimService;
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    private String snapshotJson;
+
+    @BeforeEach
+    void reset() {
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_card (
+                  ID BIGINT PRIMARY KEY, CARD_NO VARCHAR(50), USER_ID BIGINT,
+                  BALANCE_AMOUNT BIGINT NOT NULL DEFAULT 0, BALANCE_ML BIGINT NOT NULL DEFAULT 0,
+                  PACKAGE_ID BIGINT NULL, PACKAGE_SNAP MEDIUMTEXT NULL, SCOPE_JSON VARCHAR(2000) NULL,
+                  EXPIRE_TIME VARCHAR(20) NULL, CARD_STATUS TINYINT, DATA_STATUS TINYINT DEFAULT 0,
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_order (
+                  ID BIGINT PRIMARY KEY, ORDER_NO VARCHAR(64), ORDER_TYPE TINYINT, USER_ID BIGINT,
+                  CARD_ID BIGINT, PACKAGE_ID BIGINT, PACKAGE_SNAP MEDIUMTEXT, ORDER_AMOUNT BIGINT,
+                  PAY_WAY TINYINT, ORDER_STATUS TINYINT,
+                  FINISH_TIME VARCHAR(20) NULL, CANCEL_REASON VARCHAR(200) NULL,
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_payment (
+                  ID BIGINT PRIMARY KEY, ORDER_ID BIGINT, ORDER_NO VARCHAR(64), TRANSACTION_ID VARCHAR(64),
+                  PAY_AMOUNT BIGINT, PAY_STATUS TINYINT, PAY_SOURCE TINYINT, CURRENCY VARCHAR(16),
+                  PAY_EXPIRE_TIME VARCHAR(20), PAY_SUCCESS_TIME VARCHAR(20), PREPAY_ID VARCHAR(64),
+                  CALLBACK_TIME VARCHAR(20), DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT,
+                  CREATE_TIME VARCHAR(20), UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        // uk_payment_event_source_channel_key 是"重复查单不会堆事实"的那道闸，必须真实存在
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_payment_event (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT, ORDER_NO VARCHAR(64), ORDER_ID BIGINT, PAYMENT_ID BIGINT,
+                  PAY_SOURCE TINYINT, FACT_CHANNEL TINYINT, PROVIDER_EVENT_KEY VARCHAR(100),
+                  TRADE_STATE VARCHAR(32), TRANSACTION_ID VARCHAR(64), PAY_AMOUNT BIGINT, CURRENCY VARCHAR(16),
+                  PAY_SUCCESS_TIME VARCHAR(20), PROCESSING_STATUS TINYINT, RETRY_COUNT INT DEFAULT 0,
+                  NEXT_RETRY_TIME VARCHAR(20), CLAIM_TIME VARCHAR(20), LEASE_UNTIL VARCHAR(20),
+                  RECOVERY_APPROVAL_GROUP_KEY VARCHAR(64), RECOVERY_APPROVED_BY BIGINT,
+                  RECOVERY_APPROVED_TIME VARCHAR(20), RECOVERY_APPROVAL_REASON VARCHAR(500),
+                  RAW_BODY MEDIUMTEXT, RAW_BODY_SHA256 CHAR(64), VERIFY_METHOD TINYINT,
+                  RECEIVED_TIME VARCHAR(20), LAST_ERROR VARCHAR(500), PROCESSED_TIME VARCHAR(20),
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20),
+                  UNIQUE KEY uk_payment_event_source_channel_key (PAY_SOURCE, FACT_CHANNEL, PROVIDER_EVENT_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_wallet_flow (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20),
+                  CARD_ID BIGINT, USER_ID BIGINT, FLOW_TYPE TINYINT,
+                  AMOUNT_CHANGE BIGINT NOT NULL DEFAULT 0, ML_CHANGE BIGINT NOT NULL DEFAULT 0,
+                  AMOUNT_AFTER BIGINT NOT NULL, ML_AFTER BIGINT NOT NULL,
+                  ORDER_ID BIGINT, FLOW_REMARK VARCHAR(255), BIZ_IDEMPOTENCY_KEY VARCHAR(64) NULL,
+                  UNIQUE KEY uk_wallet_flow_biz_key (BIZ_IDEMPOTENCY_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("TRUNCATE TABLE ws_wallet_flow");
+        jdbc.execute("TRUNCATE TABLE ws_payment_event");
+        jdbc.execute("DELETE FROM ws_payment");
+        jdbc.execute("DELETE FROM ws_card");
+        jdbc.execute("DELETE FROM ws_order");
+
+        jdbc.update("INSERT INTO ws_card(ID,CARD_NO,USER_ID,BALANCE_AMOUNT,BALANCE_ML,SCOPE_JSON,"
+                        + "EXPIRE_TIME,CARD_STATUS,DATA_STATUS) VALUES(?,?,?,?,?,?,?,1,0)",
+                CARD_ID, "VC001", USER_ID, CARD_AMOUNT_BEFORE, CARD_ML_BEFORE, SCOPE, CARD_EXPIRE);
+        snapshotJson = buildSnapshot();
+        jdbc.update("INSERT INTO ws_order(ID,ORDER_NO,ORDER_TYPE,USER_ID,CARD_ID,PACKAGE_ID,PACKAGE_SNAP,"
+                        + "ORDER_AMOUNT,PAY_WAY,ORDER_STATUS,DATA_STATUS,CREATE_TIME) VALUES(?,?,2,?,?,3,?,?,1,1,0,?)",
+                ORDER_ID, ORDER_NO, USER_ID, CARD_ID, snapshotJson, PAY_AMOUNT, CREATE_TIME);
+        jdbc.update("INSERT INTO ws_payment(ID,ORDER_ID,ORDER_NO,PAY_AMOUNT,PAY_STATUS,PAY_SOURCE,"
+                        + "CURRENCY,PAY_EXPIRE_TIME,DATA_STATUS,CREATE_TIME) VALUES(?,?,?,?,1,?,'CNY',?,0,?)",
+                PAYMENT_ID, ORDER_ID, ORDER_NO, PAY_AMOUNT, PAY_SIM, PAY_EXPIRE, CREATE_TIME);
+    }
+
+    /** 冻结算法必须与生产一致：截止时间对不上，事实处理器会按契约整体拒绝。 */
+    private String buildSnapshot() {
+        WsPackage p = new WsPackage();
+        p.setId(3L);
+        p.setPackageName("100元500升卡");
+        p.setPayAmount(PAY_AMOUNT);
+        p.setWaterMl(WATER_ML);
+        p.setBonusAmount(0L);
+        p.setUnitPriceSnap("20.00");
+        p.setExpireDays(EXPIRE_DAYS);
+        WsCard c = new WsCard();
+        c.setId(CARD_ID);
+        c.setExpireTime(CARD_EXPIRE);
+        c.setScopeJson(SCOPE);
+        String json = RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
+                p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, CREATE_TIME);
+        RechargeSnapshot.Parsed parsed = RechargeSnapshot.parse(json);
+        assertEquals(PAY_EXPIRE, RechargePayExpire.compute(parsed.capturedTime(), parsed.expireTimeAtCreate()),
+                "测试基线的付款截止时间必须由冻结算法算出，不能手填");
+        return json;
+    }
+
+    // ================= 1：支付方 CLOSED → payment 1/order 1 → payment 4/order 5 =================
+
+    @Test
+    void providerClosedDrivesPaymentAndOrderToClosedState() {
+        long eventId = insertQueryFact("CLOSED", AFTER_EXPIRE);
+
+        IRechargePayFactService.Outcome outcome = factService.process(eventId);
+
+        assertEquals("CLOSED", outcome.code());
+        assertEquals(4, payStatus(), "payment 必须由 1 推进到 4");
+        assertEquals(5, orderStatus(), "order 必须由 1 推进到 5");
+        assertEquals(3, eventStatus(eventId), "关闭事实必须收敛为已处理");
+        assertNoMoneyTouched();
+    }
+
+    /**
+     * 零副作用：关单绝不能碰卡余额、水量、有效期或任何资金流水。
+     * 这条断言没了，一次"关单"就可能顺手改动用户资产而不被发现。
+     */
+    private void assertNoMoneyTouched() {
+        assertEquals(CARD_ML_BEFORE, cardMl(), "关单不得改动卡水量");
+        assertEquals(CARD_AMOUNT_BEFORE, cardAmount(), "关单不得改动卡余额");
+        assertEquals(CARD_EXPIRE, cardExpire(), "关单不得改动卡有效期");
+        assertEquals(1, cardStatus(), "关单不得改动卡状态");
+        assertEquals(0, flowCount(), "关单不得产生任何资金流水");
+    }
+
+    // ================= 2：重复 CLOSED 幂等 =================
+
+    /** 同一事实重复查单命中同一条事件：第二次只回 ALREADY，不重复推进也不报错。 */
+    @Test
+    void repeatedQueryOfSameClosedFactIsIdempotent() {
+        long eventId = insertQueryFact("CLOSED", AFTER_EXPIRE);
+        factService.process(eventId);
+
+        IRechargePayFactService.Outcome again = factService.process(eventId);
+
+        assertEquals("ALREADY", again.code());
+        assertEquals(4, payStatus());
+        assertEquals(5, orderStatus());
+        assertNoMoneyTouched();
+    }
+
+    /** 另一条独立到达的 CLOSED 事实（例如换渠道重查）：只能在精确 payment 4/order 5 下幂等收敛。 */
+    @Test
+    void secondClosedFactConvergesIdempotentlyOnExactClosedState() {
+        factService.process(insertQueryFact("CLOSED", AFTER_EXPIRE));
+        long second = insertRawEvent("CLOSED", 1, "notify-closed-1", null, null, null, null);
+
+        IRechargePayFactService.Outcome outcome = factService.process(second);
+
+        assertEquals("ALREADY", outcome.code());
+        assertEquals(3, eventStatus(second));
+        assertEquals(4, payStatus());
+        assertEquals(5, orderStatus());
+        assertNoMoneyTouched();
+    }
+
+    // ================= 3：内部已 SUCCESS 时 CLOSED 转人工对账 =================
+
+    /**
+     * 已经收到款的订单收到 CLOSED：绝不能回退成"已关闭"，否则一笔真实收款会凭空消失。
+     */
+    @Test
+    void closedConflictingWithInternalSuccessGoesToReconciliation() {
+        advanceToPaid();
+        long eventId = insertRawEvent("CLOSED", FACT_CHANNEL_QUERY,
+                RechargeQueryEventKey.derive(PAY_SIM, ORDER_NO, "CLOSED", null, null, null, null),
+                null, null, null, null);
+
+        IRechargePayFactService.Outcome outcome = factService.process(eventId);
+
+        assertEquals("RECONCILIATION", outcome.code());
+        assertEquals(2, payStatus(), "冲突时 payment 必须保持 2，不得被关单覆盖");
+        assertEquals(2, orderStatus(), "冲突时 order 必须保持 2");
+        assertEquals(5, eventStatus(eventId), "冲突事实必须进入人工对账");
+        assertNoMoneyTouched();
+    }
+
+    // ================= 4：NOTPAY 保持 1 且置 PROCESSED =================
+
+    @Test
+    void notpayKeepsPendingAndMarksFactProcessed() {
+        long eventId = insertQueryFact("NOTPAY", BEFORE_EXPIRE);
+
+        IRechargePayFactService.Outcome outcome = factService.process(eventId);
+
+        assertEquals("NOTPAY", outcome.code());
+        assertEquals(1, payStatus(), "支付方返回未支付时 payment 必须保持 1");
+        assertEquals(1, orderStatus(), "支付方返回未支付时 order 必须保持 1");
+        assertEquals(3, eventStatus(eventId));
+        assertNoMoneyTouched();
+    }
+
+    // ================= 5：NOTPAY 但内部已推进 → 人工对账 =================
+
+    @Test
+    void notpayAgainstAdvancedInternalStateGoesToReconciliation() {
+        advanceToPaid();
+        long eventId = insertQueryFact("NOTPAY", BEFORE_EXPIRE);
+
+        IRechargePayFactService.Outcome outcome = factService.process(eventId);
+
+        assertEquals("RECONCILIATION", outcome.code());
+        assertEquals(2, payStatus(), "不得因一条 NOTPAY 把已支付回退");
+        assertEquals(2, orderStatus());
+        assertEquals(5, eventStatus(eventId));
+        assertNoMoneyTouched();
+    }
+
+    // ================= 6：关单后 pay-status =================
+
+    @Test
+    void payStatusAfterCloseIsClosedAndNotRetryable() {
+        factService.process(insertQueryFact("NOTPAY", BEFORE_EXPIRE));
+        factService.process(insertQueryFact("CLOSED", AFTER_EXPIRE));
+
+        MiniPayStatusBo bo = new MiniPayStatusBo();
+        bo.setOrderNo(ORDER_NO);
+        MiniPayStatusVo vo = payStatusService.query(bo, USER_ID);
+
+        assertEquals("CLOSED", vo.getPayStatusCode(), "payment 4/order 5 必须解释为已关闭");
+        assertFalse(vo.getRetryable(), "已关闭是终态，客户端不得继续轮询");
+        assertEquals(4, vo.getPayStatus());
+        assertEquals(5, vo.getOrderStatus());
+        assertEquals(PAY_EXPIRE, vo.getPayExpireTime());
+    }
+
+    /** §9.1：payment 4/order 5 下可以保留更早的 PROCESSED NOTPAY，但未收敛的查询事实必须暴露。 */
+    @Test
+    void payStatusRejectsUnconvergedQueryFactUnderClosedState() {
+        factService.process(insertQueryFact("CLOSED", AFTER_EXPIRE));
+        insertRawEvent("NOTPAY", 1, "notify-notpay-1", null, null, null, null);
+
+        MiniPayStatusBo bo = new MiniPayStatusBo();
+        bo.setOrderNo(ORDER_NO);
+        assertEquals("MISMATCH", payStatusService.query(bo, USER_ID).getPayStatusCode());
+    }
+
+    // ================= 7：查单事实永不进入权益 Worker =================
+
+    /**
+     * 契约 §6.3「NOTPAY/CLOSED 永不进入权益 Worker」。守卫是 claimEvent 的
+     * {@code TRADE_STATE='SUCCESS'}：它一旦被放宽成 IN(...)，一条 CLOSED 事实就能被
+     * 权益 Worker 认领并走到入账分支。
+     */
+    @Test
+    void creditWorkerCannotClaimQueryFacts() {
+        long closed = insertQueryFact("CLOSED", AFTER_EXPIRE);
+        long notpay = insertQueryFact("NOTPAY", BEFORE_EXPIRE);
+
+        assertEquals(0, creditMapper.claimEvent(closed, AFTER_EXPIRE, "20260722202000"));
+        assertEquals(0, creditMapper.claimEvent(notpay, AFTER_EXPIRE, "20260722202000"));
+        assertEquals(1, eventStatus(closed), "未被认领的事实必须保持待处理");
+        assertEquals(1, eventStatus(notpay));
+    }
+
+    // ================= 8：共键错位与自相矛盾的查单事实 =================
+
+    @Test
+    void queryFactWithForeignPaymentIdIsRejectedWithoutTouchingOrder() {
+        long eventId = insertRawEvent("CLOSED", FACT_CHANNEL_QUERY, "Q:foreign", null, null, null, null);
+        jdbc.update("UPDATE ws_payment_event SET PAYMENT_ID = 12345 WHERE ID = ?", eventId);
+
+        assertEquals("RECONCILIATION", factService.process(eventId).code());
+        assertEquals(1, payStatus());
+        assertEquals(1, orderStatus());
+        assertEquals(5, eventStatus(eventId));
+    }
+
+    /** 非成功事实携带交易号/成功时间即自相矛盾，必须拒绝——否则一条"关闭"事实能偷带成功语义。 */
+    @Test
+    void nonSuccessFactCarryingSuccessFieldsIsRejected() {
+        long eventId = insertRawEvent("CLOSED", FACT_CHANNEL_QUERY, "Q:contradiction",
+                "SIMTX-X", "20260722194314", null, null);
+
+        assertEquals("RECONCILIATION", factService.process(eventId).code());
+        assertEquals(1, payStatus());
+        assertEquals(1, orderStatus());
+    }
+
+    /** 支付方返回了金额但与内部不符：不得关单。 */
+    @Test
+    void queryFactWithWrongAmountIsRejected() {
+        long eventId = insertRawEvent("CLOSED", FACT_CHANNEL_QUERY, "Q:wrong-amount",
+                null, null, PAY_AMOUNT + 1, null);
+
+        assertEquals("RECONCILIATION", factService.process(eventId).code());
+        assertEquals(1, payStatus());
+        assertEquals(1, orderStatus());
+    }
+
+    /** 未登记的支付方状态只留证转人工，绝不静默跳过。 */
+    @Test
+    void unknownTradeStateIsParkedForReconciliation() {
+        long eventId = insertRawEvent("REVOKED", FACT_CHANNEL_QUERY, "Q:revoked", null, null, null, null);
+
+        assertEquals("RECONCILIATION", factService.process(eventId).code());
+        assertEquals(5, eventStatus(eventId));
+        assertEquals(1, payStatus());
+        assertEquals(1, orderStatus());
+    }
+
+    /** NOTPAY 与 CLOSED 必须是两条不同的事实键，先落的 NOTPAY 不得把 CLOSED 挡在唯一键外。 */
+    @Test
+    void notpayAndClosedOccupyDifferentEventKeys() {
+        long notpay = insertQueryFact("NOTPAY", BEFORE_EXPIRE);
+        long closed = insertQueryFact("CLOSED", AFTER_EXPIRE);
+        assertNotEquals(notpay, closed);
+        assertEquals(2, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ws_payment_event WHERE FACT_CHANNEL = 2", Integer.class));
+    }
+
+    // ================= 9：Pay-Sim 扮演支付方，端到端走同一条路径 =================
+
+    /**
+     * 付款截止时间已过 → 模拟支付方回答 CLOSED → 统一处理器按 CAS 关单。
+     *
+     * <p>注意这里断言的是<b>路径</b>而不只是结果：事实必须落成 {@code FACT_CHANNEL=2}、
+     * 事件键必须等于按契约规范串独立算出的值、四个外部字段必须全空。
+     * 若 Pay-Sim 为自己开一条小灶（比如直接改订单状态），这些断言全部失效。</p>
+     */
+    @Test
+    void paySimQueryAfterExpiryClosesOrderThroughTheSharedFactPath() {
+        reseedTiming(-40);
+
+        paySimService.query(orderBo(), USER_ID);
+
+        assertEquals(4, payStatus());
+        assertEquals(5, orderStatus());
+        assertNoMoneyTouched();
+        assertEquals(RechargeQueryEventKey.derive(PAY_SIM, ORDER_NO, "CLOSED", null, null, null, null),
+                jdbc.queryForObject("SELECT PROVIDER_EVENT_KEY FROM ws_payment_event", String.class));
+        assertEquals(2, jdbc.queryForObject("SELECT FACT_CHANNEL FROM ws_payment_event", Integer.class),
+                "查单事实必须落在 QUERY 通道，将来真实微信查单用的是同一个通道号");
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM ws_payment_event WHERE "
+                        + "TRANSACTION_ID IS NULL AND PAY_AMOUNT IS NULL AND CURRENCY IS NULL "
+                        + "AND PAY_SUCCESS_TIME IS NULL", Integer.class),
+                "非成功事实不得用内部订单金额补造外部字段");
+    }
+
+    /** 仍在付款窗口内 → 支付方回答 NOTPAY → 订单保持待支付。这里正是"本地不自行关单"的分界线。 */
+    @Test
+    void paySimQueryBeforeExpiryKeepsOrderPending() {
+        reseedTiming(-5);
+
+        paySimService.query(orderBo(), USER_ID);
+
+        assertEquals(1, payStatus());
+        assertEquals(1, orderStatus());
+        assertNoMoneyTouched();
+    }
+
+    /** 重复查单必须稳定命中同一条事实，不为每次轮询堆一条新记录。 */
+    @Test
+    void repeatedPaySimQueryReusesTheSameFact() {
+        reseedTiming(-40);
+        paySimService.query(orderBo(), USER_ID);
+        paySimService.query(orderBo(), USER_ID);
+
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM ws_payment_event", Integer.class));
+        assertEquals(4, payStatus());
+        assertEquals(5, orderStatus());
+    }
+
+    /** 已存在成功事实时，模拟支付方不得回答"未支付/已关闭"——那是与已知事实矛盾的伪证。 */
+    @Test
+    void paySimQueryRefusesToContradictAnExistingSuccessFact() {
+        reseedTiming(-40);
+        insertRawEvent("SUCCESS", 3, "SIM-" + ORDER_NO, "SIMTX-1", "20260722194314", PAY_AMOUNT, null);
+
+        assertThrows(JbkException.class, () -> paySimService.query(orderBo(), USER_ID));
+        assertEquals(1, payStatus(), "拒绝查单时不得改动支付单");
+        assertEquals(1, orderStatus());
+    }
+
+    /**
+     * 契约 §5.3：同一事实键下的正文摘要被改动过，说明这条"事实"已不是当初落库的那条，
+     * 必须拒绝复用并转人工核查，而不是照旧拿它去推进状态。
+     */
+    @Test
+    void tamperedRawBodyDigestUnderSameKeyIsRefused() {
+        reseedTiming(-5);
+        paySimService.query(orderBo(), USER_ID);
+        jdbc.update("UPDATE ws_payment_event SET RAW_BODY_SHA256 = ?", "f".repeat(64));
+
+        assertThrows(JbkException.class, () -> paySimService.query(orderBo(), USER_ID));
+        assertEquals(1, payStatus());
+        assertEquals(1, orderStatus());
+    }
+
+    /** 非本人订单：与 pay-status 同一口径拒绝，绝不成为订单号探测信道。 */
+    @Test
+    void paySimQueryRejectsForeignOrder() {
+        reseedTiming(-40);
+        assertThrows(JbkException.class, () -> paySimService.query(orderBo(), USER_ID + 1));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM ws_payment_event", Integer.class));
+    }
+
+    private MiniPaySimBo orderBo() {
+        MiniPaySimBo bo = new MiniPaySimBo();
+        bo.setOrderNo(ORDER_NO);
+        return bo;
+    }
+
+    /**
+     * 把订单/支付单的时间轴挪到相对<b>真实当前时刻</b>的位置。
+     *
+     * <p>Pay-Sim 查单读的是系统时钟，所以基线时间不能写死；而 PAY_EXPIRE_TIME 又必须由
+     * §2.2 冻结算法从快照算出，因此快照要跟着一起重建，不能只改支付单的字段。</p>
+     *
+     * @param createMinutesAgo 订单创建时刻相对现在的分钟偏移（负数表示过去）
+     */
+    private void reseedTiming(int createMinutesAgo) {
+        String createTime = java.time.LocalDateTime.now().plusMinutes(createMinutesAgo)
+                .format(RechargePayExpire.FMT);
+        WsPackage p = new WsPackage();
+        p.setId(3L);
+        p.setPackageName("100元500升卡");
+        p.setPayAmount(PAY_AMOUNT);
+        p.setWaterMl(WATER_ML);
+        p.setBonusAmount(0L);
+        p.setUnitPriceSnap("20.00");
+        p.setExpireDays(EXPIRE_DAYS);
+        WsCard c = new WsCard();
+        c.setId(CARD_ID);
+        c.setExpireTime(CARD_EXPIRE);
+        c.setScopeJson(SCOPE);
+        String json = RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
+                p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, createTime);
+        RechargeSnapshot.Parsed parsed = RechargeSnapshot.parse(json);
+        String expire = RechargePayExpire.compute(parsed.capturedTime(), parsed.expireTimeAtCreate());
+        jdbc.update("UPDATE ws_order SET PACKAGE_SNAP=?, CREATE_TIME=? WHERE ID=?", json, createTime, ORDER_ID);
+        jdbc.update("UPDATE ws_payment SET PAY_EXPIRE_TIME=? WHERE ID=?", expire, PAYMENT_ID);
+    }
+
+    // ------------------------------------------------------------------
+
+    /** 落一条与 Pay-Sim 查单完全同构的查询事实（键由内容派生，外部字段全空）。 */
+    private long insertQueryFact(String tradeState, String receivedTime) {
+        String key = RechargeQueryEventKey.derive(PAY_SIM, ORDER_NO, tradeState, null, null, null, null);
+        return insertRawEvent(tradeState, FACT_CHANNEL_QUERY, key, null, null, null, receivedTime);
+    }
+
+    private long insertRawEvent(String tradeState, int factChannel, String providerKey,
+                                String transactionId, String paySuccessTime, Long payAmount,
+                                String receivedTime) {
+        String now = receivedTime == null ? BEFORE_EXPIRE : receivedTime;
+        jdbc.update("INSERT INTO ws_payment_event(ORDER_NO,ORDER_ID,PAYMENT_ID,PAY_SOURCE,FACT_CHANNEL,"
+                        + "PROVIDER_EVENT_KEY,TRADE_STATE,TRANSACTION_ID,PAY_AMOUNT,CURRENCY,PAY_SUCCESS_TIME,"
+                        + "PROCESSING_STATUS,RAW_BODY_SHA256,VERIFY_METHOD,RECEIVED_TIME,DATA_STATUS,"
+                        + "CREATE_BY,CREATE_TIME,UPDATE_BY,UPDATE_TIME) "
+                        + "VALUES(?,?,?,?,?,?,?,?,?,NULL,?,1,?,3,?,0,?,?,?,?)",
+                ORDER_NO, ORDER_ID, PAYMENT_ID, PAY_SIM, factChannel, providerKey, tradeState,
+                transactionId, payAmount, paySuccessTime, "0".repeat(64), now,
+                USER_ID, now, USER_ID, now);
+        return jdbc.queryForObject("SELECT ID FROM ws_payment_event WHERE PROVIDER_EVENT_KEY = ? "
+                + "AND FACT_CHANNEL = ?", Long.class, providerKey, factChannel);
+    }
+
+    /** 把订单推进到「已收到权威付款事实、权益待入账」，用于制造与 CLOSED/NOTPAY 的冲突。 */
+    private void advanceToPaid() {
+        jdbc.update("UPDATE ws_payment SET PAY_STATUS=2, TRANSACTION_ID='SIMTX-1', PAY_SUCCESS_TIME=? "
+                + "WHERE ID=?", "20260722194314", PAYMENT_ID);
+        jdbc.update("UPDATE ws_order SET ORDER_STATUS=2 WHERE ID=?", ORDER_ID);
+    }
+
+    private int payStatus() {
+        return jdbc.queryForObject("SELECT PAY_STATUS FROM ws_payment WHERE ID=?", Integer.class, PAYMENT_ID);
+    }
+
+    private int orderStatus() {
+        return jdbc.queryForObject("SELECT ORDER_STATUS FROM ws_order WHERE ID=?", Integer.class, ORDER_ID);
+    }
+
+    private int eventStatus(long id) {
+        return jdbc.queryForObject("SELECT PROCESSING_STATUS FROM ws_payment_event WHERE ID=?",
+                Integer.class, id);
+    }
+
+    private long cardMl() {
+        return jdbc.queryForObject("SELECT BALANCE_ML FROM ws_card WHERE ID=?", Long.class, CARD_ID);
+    }
+
+    private long cardAmount() {
+        return jdbc.queryForObject("SELECT BALANCE_AMOUNT FROM ws_card WHERE ID=?", Long.class, CARD_ID);
+    }
+
+    private String cardExpire() {
+        return jdbc.queryForObject("SELECT EXPIRE_TIME FROM ws_card WHERE ID=?", String.class, CARD_ID);
+    }
+
+    private int cardStatus() {
+        return jdbc.queryForObject("SELECT CARD_STATUS FROM ws_card WHERE ID=?", Integer.class, CARD_ID);
+    }
+
+    private int flowCount() {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow", Integer.class);
+    }
+}

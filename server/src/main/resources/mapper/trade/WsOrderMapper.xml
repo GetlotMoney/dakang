@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jbk.serve.mapper.trade.WsOrderMapper">
+
+    <!--
+      管理端订单查询：以 ws_order 为主表，LEFT JOIN 派生展示字段。
+      列显式别名为小驼峰，映射 AdminOrderItemVo，不依赖 mapUnderscoreToCamelCase。
+      仅取 DATA_STATUS=0 的有效订单；关联表逻辑删除对展示字段非关键，不额外过滤。
+    -->
+    <sql id="Admin_Order_Columns">
+        o.ID            AS id,
+        o.ORDER_NO      AS orderNo,
+        o.ORDER_TYPE    AS orderType,
+        o.USER_ID       AS userId,
+        u.USER_NAME     AS userName,
+        u.USER_PHONE    AS userPhone,
+        o.STATION_ID    AS stationId,
+        s.STATION_NAME  AS stationName,
+        o.DEVICE_ID     AS deviceId,
+        d.DEVICE_NO     AS deviceNo,
+        o.OUTLET_ID     AS outletId,
+        ot.OUTLET_NO    AS outletNo,
+        ot.DEVICE_ID    AS outletDeviceId,
+        o.CARD_ID       AS cardId,
+        c.CARD_NO       AS cardNo,
+        <!--
+          使用人/持卡人身份聚合（UI-TRACE 追溯读侧）。启用 CARD-MEMBER 后，o.USER_ID 是实际使用人（可能为成员），
+          持卡人另取 c.USER_ID → uw（ws_user 第二别名）。持卡人手机号取原值别名 *Raw，
+          由 Service 层统一脱敏后下发，Vo 上 @JsonIgnore 兜底防止原值出接口。
+          卡余额/水量为只读快照列，仅供追溯展示，不参与任何扣减（铁律1）。
+        -->
+        c.USER_ID        AS cardOwnerUserId,
+        uw.USER_NAME     AS cardOwnerName,
+        uw.USER_PHONE    AS cardOwnerPhoneRaw,
+        c.BALANCE_AMOUNT AS cardBalanceFen,
+        c.BALANCE_ML     AS cardBalanceMl,
+        o.PACKAGE_ID    AS packageId,
+        o.PACKAGE_SNAP  AS packageSnap,
+        o.PLAN_ML       AS planMl,
+        o.ACTUAL_ML     AS actualMl,
+        o.ORDER_AMOUNT  AS orderAmount,
+        o.PAY_WAY       AS payWay,
+        o.ORDER_STATUS  AS orderStatus,
+        o.CMD_ID        AS cmdId,
+        o.FINISH_TIME   AS finishTime,
+        o.CANCEL_REASON AS cancelReason,
+        o.CREATE_TIME   AS createTime,
+        <!--
+          支付单派生列（L2-T）。PAY_SOURCE 是这里最要紧的一列：
+          没有它，运营在后台分不出一笔充值是真实微信收款还是 Pay-Sim 模拟收款，
+          对账时会把演示数据当成真钱。取数不做任何加工，原值透出。
+        -->
+        p.PAY_STATUS       AS payStatus,
+        p.PAY_SOURCE       AS paySource,
+        p.TRANSACTION_ID   AS transactionId,
+        p.PAY_EXPIRE_TIME  AS payExpireTime,
+        p.PAY_SUCCESS_TIME AS paySuccessTime,
+        p.DATA_STATUS      AS paymentDataStatus
+    </sql>
+
+    <sql id="Admin_Order_Joins">
+        FROM ws_order o
+        LEFT JOIN ws_user u ON u.ID = o.USER_ID
+        LEFT JOIN ws_station s ON s.ID = o.STATION_ID
+        LEFT JOIN ws_device d ON d.ID = o.DEVICE_ID
+        LEFT JOIN ws_device_outlet ot ON ot.ID = o.OUTLET_ID
+        LEFT JOIN ws_card c ON c.ID = o.CARD_ID
+        <!--
+          持卡人（ws_user 第二别名 uw，区分使用人别名 u）。c.USER_ID → 主键 ID 的 LEFT JOIN，
+          主键唯一保证不放大行数；卡缺失/被删时 uw 各列为 NULL，展示侧置空即可，不 fail 500。
+        -->
+        LEFT JOIN ws_user uw ON uw.ID = c.USER_ID
+        <!--
+          唯一键 uk_payment_order_id 保证一单至多一条支付单，故 LEFT JOIN 不会放大行数。
+          刻意**不加** p.DATA_STATUS = 0：被逻辑删除的支付单属于必须让运营看见的异常，
+          过滤掉只会让一笔有问题的订单在后台看起来像"从没支付过"。是否被删由 paymentDataStatus 透出。
+        -->
+        LEFT JOIN ws_payment p ON p.ORDER_ID = o.ID
+    </sql>
+
+    <select id="pageAdminOrders" resultType="com.jbk.tool.data.trade.vo.AdminOrderItemVo">
+        SELECT
+        <include refid="Admin_Order_Columns"/>
+        <include refid="Admin_Order_Joins"/>
+        WHERE o.DATA_STATUS = 0
+        <if test="bo.orderNo != null and bo.orderNo != ''">
+            AND o.ORDER_NO LIKE CONCAT('%', #{bo.orderNo}, '%')
+        </if>
+        <if test="bo.orderType != null">
+            AND o.ORDER_TYPE = #{bo.orderType}
+        </if>
+        <if test="bo.orderStatus != null">
+            AND o.ORDER_STATUS = #{bo.orderStatus}
+        </if>
+        <if test="bo.userKeyword != null and bo.userKeyword != ''">
+            AND (u.USER_NAME LIKE CONCAT('%', #{bo.userKeyword}, '%')
+                 OR u.USER_PHONE LIKE CONCAT('%', #{bo.userKeyword}, '%'))
+        </if>
+        ORDER BY o.ID DESC
+    </select>
+
+    <select id="selectAdminOrderById" resultType="com.jbk.tool.data.trade.vo.AdminOrderItemVo">
+        SELECT
+        <include refid="Admin_Order_Columns"/>
+        <include refid="Admin_Order_Joins"/>
+        WHERE o.DATA_STATUS = 0 AND o.ID = #{id}
+    </select>
+
+    <!--
+      CARD-MEMBER 成员日限额统计源：同卡+同成员+取水类型+当天窗口，命中 idx_order_card_user_type_time。
+      刻意不过滤 DATA_STATUS：逻辑删除的取水订单仍真实出过水，过滤会让删单成为绕过日限额的后门。
+      只取占用口径需要的列；状态→水量映射由 MemberDayLimitMath 统一负责。
+    -->
+    <select id="selectMemberDayWaterOrders" resultType="com.jbk.tool.data.trade.po.WsOrder">
+        SELECT ID AS id,
+               ORDER_STATUS AS orderStatus,
+               PLAN_ML AS planMl,
+               ACTUAL_ML AS actualMl
+        FROM ws_order
+        WHERE CARD_ID = #{cardId}
+          AND USER_ID = #{actorUserId}
+          AND ORDER_TYPE = 1
+          AND CREATE_TIME &gt;= #{dayStart}
+          AND CREATE_TIME &lt; #{dayEnd}
+    </select>
+
+    <!--
+      取水事务日限额闸专用锁定读：REPEATABLE READ 的普通 SELECT 用的是「等成员关系行锁之前」
+      建立的快照，看不见前序事务刚提交的订单——并发会集体读到旧占用、突破限额。
+      FOR UPDATE 强制读最新已提交版本；同成员并发已被成员关系行锁串行化，不引入新的死锁面。
+    -->
+    <select id="selectMemberDayWaterOrdersForUpdate" resultType="com.jbk.tool.data.trade.po.WsOrder">
+        SELECT ID AS id,
+               ORDER_STATUS AS orderStatus,
+               PLAN_ML AS planMl,
+               ACTUAL_ML AS actualMl
+        FROM ws_order
+        WHERE CARD_ID = #{cardId}
+          AND USER_ID = #{actorUserId}
+          AND ORDER_TYPE = 1
+          AND CREATE_TIME &gt;= #{dayStart}
+          AND CREATE_TIME &lt; #{dayEnd}
+        FOR UPDATE
+    </select>
+
+</mapper>

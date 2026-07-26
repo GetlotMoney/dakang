@@ -1,0 +1,13 @@
+packages:
+  - .
+
+overrides:
+  vue-router: 4.5.1
+
+patchedDependencies:
+  wot-design-uni@1.14.0: patches/wot-design-uni@1.14.0.patch
+
+onlyBuiltDependencies:
+  - core-js
+  - esbuild
+  - vue-demi

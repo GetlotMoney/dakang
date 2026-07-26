@@ -1,0 +1,70 @@
+{
+  "name": "dakang-miniapp",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.10.0",
+  "description": "六维达康微信小程序 Demo",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "unibest": {
+    "platforms": [
+      "h5",
+      "mp-weixin"
+    ],
+    "uiLibrary": "wot-ui",
+    "loginStrategy": false,
+    "i18n": false,
+    "cliVersion": "4.0.16",
+    "unibestVersion": "4.4.1"
+  },
+  "scripts": {
+    "prepare:config": "node scripts/create-base-files.mjs",
+    "postinstall": "pnpm prepare:config",
+    "predev:h5": "pnpm prepare:config",
+    "dev:h5": "uni",
+    "predev:mp-weixin": "pnpm prepare:config",
+    "dev:mp-weixin": "uni -p mp-weixin",
+    "prebuild:h5": "pnpm prepare:config",
+    "build:h5": "uni build",
+    "prebuild:mp-weixin": "pnpm prepare:config",
+    "build:mp-weixin": "uni build -p mp-weixin",
+    "type-check": "vue-tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:e2e-gate": "node --test e2e/*.test.js"
+  },
+  "dependencies": {
+    "@dcloudio/uni-app": "3.0.0-4070620250821001",
+    "@dcloudio/uni-components": "3.0.0-4070620250821001",
+    "@dcloudio/uni-h5": "3.0.0-4070620250821001",
+    "@dcloudio/uni-mp-weixin": "3.0.0-4070620250821001",
+    "pinia": "2.0.36",
+    "vue": "3.4.21",
+    "wot-design-uni": "1.14.0"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "^3.4.8",
+    "@dcloudio/uni-cli-shared": "3.0.0-4070620250821001",
+    "@dcloudio/vite-plugin-uni": "3.0.0-4070620250821001",
+    "@types/node": "^20.17.9",
+    "@uni-helper/eslint-config": "0.5.0",
+    "@uni-helper/plugin-uni": "0.1.0",
+    "@uni-helper/uni-types": "1.0.0-alpha.6",
+    "@uni-helper/vite-plugin-uni-layouts": "0.1.11",
+    "@uni-helper/vite-plugin-uni-manifest": "0.2.12",
+    "@uni-helper/vite-plugin-uni-pages": "0.3.23",
+    "@uni-ku/root": "1.4.1",
+    "eslint": "^9.31.0",
+    "eslint-plugin-format": "^1.0.1",
+    "miniprogram-api-typings": "^4.1.0",
+    "sass": "1.77.8",
+    "typescript": "~5.8.0",
+    "vite": "5.2.8",
+    "vitest": "3.2.4",
+    "vue-tsc": "3.0.6"
+  }
+}

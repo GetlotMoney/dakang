@@ -1,0 +1,63 @@
+spring:
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      # 容器内网地址（deploy/docker-compose.yml 服务名 mysql），部署时由 compose command 参数覆盖亦可
+      url: jdbc:mysql://mysql:3306/dakang?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=UTC&nullCatalogMeansCurrent=true
+      username: "${DAKANG_DB_USERNAME:root}"
+      password: "${DAKANG_DB_PASSWORD:}"
+  redis:
+    host: redis
+    port: 6379
+    password: "${DAKANG_REDIS_PASSWORD:}"
+    database: 1
+    timeout: 5000ms
+  ratelimiter:
+    redis-address: redis://redis:6379
+    redis-password: "${DAKANG_REDIS_PASSWORD:}"
+    redis-database: 1
+    enabled: true
+    exceptionHandler:
+      enable: true
+
+# MQTT 设备接入（容器内网 EMQX 服务名 emqx）
+# 设备接入模块开发时置 enabled: true
+mqtt:
+  enabled: true
+  broker-url: tcp://emqx:1883
+  client-id: dakang-server-prod
+  username: "${DAKANG_MQTT_USERNAME:}"
+  password: "${DAKANG_MQTT_PASSWORD:}"
+
+ali:
+  oss:
+    # TODO 待配置：生产 OSS 凭据（六维达康项目专属）
+    url: ''
+    endpoint: ''
+    bucketName: ''
+    region: ''
+    ossAccessKeyId: ''
+    ossAccessKeySecret: ''
+
+# N-04 收敛：prod profile 关闭接口文档（swagger-ui/api-docs/knife4j 均不可访问，2026-07-19）。
+# 8081 演示容器如需保留 doc.html，应以默认(dev) profile 运行；生产环境保持关闭。
+springdoc:
+  swagger-ui:
+    enabled: false
+  api-docs:
+    enabled: false
+knife4j:
+  enable: false
+
+wechat:
+  xcx:
+    # TODO 待配置：六维达康小程序主体的 AppID/AppSecret
+    appid: ''
+    appsecret: ''
+
+mini:
+  pay-sim:
+    # 生产默认关闭且**写显式**：Pay-Sim 一旦误开，模拟收款会被当成真实微信收款记账。
+    # 演示环境用 docker-compose 的 MINI_PAYSIM_ENABLED 环境变量单独覆盖，不改本文件。
+    enabled: false

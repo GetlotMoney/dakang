@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "skills": {
+    "element-plus-vue3": {
+      "source": "teachingai/full-stack-skills",
+      "sourceType": "github",
+      "computedHash": "134c5e69fc64bba22d73416f3091fe7767ad1cac170772e7d6c82b12b24178e4"
+    },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "516bd2154eb843a8240e43d5b285229129853114ad7075a5e141e1c08e408c84"
+    },
+    "tailwindcss": {
+      "source": "hairyf/skills",
+      "sourceType": "github",
+      "computedHash": "78937e1d72496af3e902292eb66b8ad2cdd2d34b90b5428257aae9056678d465"
+    },
+    "vue": {
+      "source": "antfu/skills",
+      "sourceType": "github",
+      "computedHash": "f72b54618560c53d65740515ded5bb833750c4574dbe961fd21f022bd2b31a74"
+    }
+  }
+}

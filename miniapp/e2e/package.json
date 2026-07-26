@@ -1,0 +1,18 @@
+{
+  "name": "dakang-miniapp-e2e",
+  "type": "commonjs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "微信开发者工具自动化 D4 走查（miniprogram-automator）；独立于主工程依赖，避免污染小程序构建。",
+  "scripts": {
+    "d4": "D4_MODE=full node run-d4.js",
+    "d4:behavior": "D4_MODE=behavior node run-d4.js",
+    "e1b:test": "node --test e1b-core.test.js",
+    "card-lifecycle": "CARD_ACC_MODE=full node run-card-lifecycle.js",
+    "test": "node --test *.test.js"
+  },
+  "dependencies": {
+    "miniprogram-automator": "^0.12.1",
+    "mysql2": "^3.11.0"
+  }
+}

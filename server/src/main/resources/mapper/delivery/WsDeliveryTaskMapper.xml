@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jbk.serve.mapper.delivery.WsDeliveryTaskMapper">
+
+    <!--
+      可接任务池：过滤语义与接单事务的校验完全同源（fail-closed）。
+      订单侧 EXISTS 复刻 Mock 契约 requireFulfillableDeliveryOrder：
+      订单存在、未删除、ORDER_TYPE=3、USER_ID 共键一致、ORDER_STATUS=2（已支付待履约）。
+      孤儿任务/未支付/终态/共键错位任务一律不出现在池中——
+      这条 EXISTS 没了，配送员就能看到（并试图接走）不可履约的任务。
+    -->
+    <select id="selectAvailableTasks" resultType="com.jbk.tool.data.delivery.po.WsDeliveryTask">
+        SELECT t.*
+        FROM ws_delivery_task t
+        WHERE t.DATA_STATUS = 0
+          AND t.TASK_STATUS = 1
+          AND t.COURIER_ID IS NULL
+          AND t.USER_ID != #{courierUserId}
+          AND t.STATION_ID IN
+          <foreach collection="stationIds" item="sid" open="(" separator="," close=")">
+              #{sid}
+          </foreach>
+          AND (t.SCHEDULED_TIME IS NULL OR t.SCHEDULED_TIME &lt;= #{now})
+          AND EXISTS (
+              SELECT 1 FROM ws_order o
+              WHERE o.ID = t.ORDER_ID
+                AND o.DATA_STATUS = 0
+                AND o.ORDER_TYPE = 3
+                AND o.USER_ID = t.USER_ID
+                AND o.ORDER_STATUS = 2
+          )
+        ORDER BY t.CREATE_TIME DESC, t.ID DESC
+    </select>
+
+    <!--
+      管理端配送任务查询（E2E-03 包C）：任务为主表，LEFT JOIN 派生展示列。
+      列显式别名为小驼峰映射 AdminDeliveryTaskItemVo；手机号取原值别名 *Raw，
+      由 Service 统一 PhoneMask 脱敏（Vo 上 @JsonIgnore 兜底），明文不出接口。
+      仅取 DATA_STATUS=0 的有效任务；订单侧不过滤删除态——被删订单属于必须让运营
+      看见的异常，由详情/追溯的共键核验呈现 mismatch，列表不静默吞掉该任务。
+    -->
+    <sql id="Admin_Task_Columns">
+        t.ID              AS taskId,
+        t.TASK_NO         AS taskNo,
+        t.ORDER_ID        AS orderId,
+        o.ORDER_NO        AS orderNo,
+        o.ORDER_STATUS    AS orderStatus,
+        t.USER_ID         AS userId,
+        u.USER_NAME       AS userName,
+        u.USER_PHONE      AS userPhoneRaw,
+        t.RECEIVE_PHONE   AS receivePhoneRaw,
+        t.COURIER_ID      AS courierId,
+        cr.COURIER_NAME   AS courierName,
+        cr.COURIER_PHONE  AS courierPhoneRaw,
+        t.STATION_ID      AS stationId,
+        s.STATION_NAME    AS stationName,
+        t.WATER_TYPE_ID   AS waterTypeId,
+        t.WATER_TYPE      AS waterTypeName,
+        t.CONTAINER_SPEC  AS containerSpec,
+        t.DELIVERY_COUNT  AS deliveryCount,
+        t.ACTUAL_DELIVERY_COUNT AS actualDeliveryCount,
+        t.PLAN_RETURN_COUNT     AS planReturnCount,
+        t.ACTUAL_RETURN_COUNT   AS actualReturnCount,
+        t.WATER_AMOUNT    AS waterAmountFen,
+        t.DELIVERY_FEE    AS deliveryFeeFen,
+        t.RECEIVE_ADDRESS AS receiveAddress,
+        t.TASK_STATUS     AS taskStatus,
+        t.SCHEDULED_TIME  AS scheduledTime,
+        t.ACCEPT_TIME     AS acceptTime,
+        t.DEPART_TIME     AS departTime,
+        t.ARRIVE_TIME     AS arriveTime,
+        t.SIGN_TIME       AS signTime,
+        t.APPEAL_DEADLINE AS appealDeadline,
+        t.LOCATION_STATUS AS locationStatus,
+        t.CREATE_TIME     AS createTime
+    </sql>
+
+    <sql id="Admin_Task_Joins">
+        FROM ws_delivery_task t
+        LEFT JOIN ws_order o ON o.ID = t.ORDER_ID
+        LEFT JOIN ws_user u ON u.ID = t.USER_ID
+        LEFT JOIN ws_courier cr ON cr.ID = t.COURIER_ID
+        LEFT JOIN ws_station s ON s.ID = t.STATION_ID
+    </sql>
+
+    <select id="pageAdminTasks" resultType="com.jbk.tool.data.delivery.vo.AdminDeliveryTaskItemVo">
+        SELECT
+        <include refid="Admin_Task_Columns"/>
+        <include refid="Admin_Task_Joins"/>
+        WHERE t.DATA_STATUS = 0
+        <if test="bo.taskStatus != null">
+            AND t.TASK_STATUS = #{bo.taskStatus}
+        </if>
+        <if test="bo.keyword != null and bo.keyword != ''">
+            AND (o.ORDER_NO LIKE CONCAT('%', #{bo.keyword}, '%')
+                 OR t.TASK_NO LIKE CONCAT('%', #{bo.keyword}, '%')
+                 OR u.USER_NAME LIKE CONCAT('%', #{bo.keyword}, '%')
+                 OR u.USER_PHONE LIKE CONCAT('%', #{bo.keyword}, '%'))
+        </if>
+        ORDER BY t.CREATE_TIME DESC, t.ID DESC
+    </select>
+
+    <select id="selectAdminTaskById" resultType="com.jbk.tool.data.delivery.vo.AdminDeliveryTaskItemVo">
+        SELECT
+        <include refid="Admin_Task_Columns"/>
+        <include refid="Admin_Task_Joins"/>
+        WHERE t.DATA_STATUS = 0 AND t.ID = #{id}
+    </select>
+</mapper>
