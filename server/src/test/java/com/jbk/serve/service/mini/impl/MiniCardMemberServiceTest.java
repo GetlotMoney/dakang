@@ -369,6 +369,21 @@ class MiniCardMemberServiceTest {
         assertEquals(6_000L, member.getRemainingDailyLimitMl());
     }
 
+    // 赠卡能力位（D-213）：带有效期的本人卡=活动赠卡，不得出现充值入口；其余能力位不变
+    @Test
+    void usableListDisablesRechargeForGiftCard() {
+        WsCard gift = ownCard();
+        gift.setExpireTime("20301231235959");
+        when(wsCardService.list(any(Wrapper.class))).thenReturn(List.of(gift));
+        when(memberMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+
+        List<MiniUsableCardVo> list = service.listUsableCards(OWNER);
+
+        assertEquals(1, list.size());
+        assertFalse(list.get(0).getCanRecharge(), "赠卡不得可充值（付费余额不得被到期日绑架）");
+        assertTrue(list.get(0).getCanManageMembers(), "赠卡仍可管成员（只收充值入口）");
+    }
+
     // 无效授权（未生效/已失效/已解除）不出现在列表；成员卡缺失同样跳过
     @Test
     void usableListExcludesInactiveGrants() {

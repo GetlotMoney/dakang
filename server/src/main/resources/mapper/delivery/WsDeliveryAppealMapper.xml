@@ -28,19 +28,65 @@
         a.CREATE_TIME    AS createTime
     </sql>
 
-    <sql id="Admin_Appeal_Joins">
-        FROM ws_delivery_appeal a
+    <!-- 展示列派生 JOIN（挂在别名 a 的申诉行上），供「申诉为主表」与「案件聚合」两种 FROM 复用 -->
+    <sql id="Admin_Appeal_Derived_Joins">
         LEFT JOIN ws_delivery_task t ON t.ID = a.TASK_ID
         LEFT JOIN ws_order o ON o.ID = a.ORDER_ID
         LEFT JOIN ws_user u ON u.ID = a.USER_ID
         LEFT JOIN api_employee e ON e.ID = a.HANDLE_BY
     </sql>
 
-    <!-- 待处理(1)排前供运营优先裁决，组内按申诉时间倒序 -->
+    <sql id="Admin_Appeal_Joins">
+        FROM ws_delivery_appeal a
+        <include refid="Admin_Appeal_Derived_Joins"/>
+    </sql>
+
+    <!--
+      D-215 案件维度聚合分页：一行 = 一个 TASK_ID（案件），不是一条申诉。
+      同一订单被驳回后 24h 内可再次申诉，按申诉分页会出现多行同订单记录，且运营点开
+      本次申诉看不到上一轮驳回理由；聚合后「当前状态 + 累计次数 + 往来时间线」一次到位。
+
+      代表申诉（聚合行展示值的来源）= 活跃申诉；无活跃则取最近一条。
+      唯一键 uk_appeal_active_task（ACTIVE_TASK_KEY = IF(APPEAL_STATUS=1, TASK_ID, NULL)）
+      保证一个任务同时至多一条待处理申诉，因此同任务申诉必然串行，代表行「当前状态」无歧义。
+
+      取值全部走窗口函数而非 GROUP BY：ONLY_FULL_GROUP_BY 下裸列不可选，且
+      ROW_NUMBER 的排序键（活跃优先 → CREATE_TIME DESC → ID DESC）是确定性的，
+      不依赖 MySQL 对分组内非聚合列的任意选取。
+
+      筛选语义（D-215 拍板）：appealStatus 作用于<b>当前状态</b>，即代表申诉的状态。
+      「历史上出现过该状态」不参与命中——曾驳回但现有待处理的案件，筛 1 命中、筛 3 不命中。
+      理由：同一案件在多个状态筛选下重复出现，比漏出历史态更难判读。
+      orderNo 仍为模糊匹配；任务↔订单为 1:1（uk_dtask_order），案件内订单号唯一。
+
+      分页 total 由 MyBatis-Plus 对本条 SQL 自动派生 count，统计的是聚合后的连接行数
+      （代表申诉与案件一一对应），即案件数而非申诉条数。
+    -->
     <select id="pageAdminAppeals" resultType="com.jbk.tool.data.delivery.vo.AdminDeliveryAppealItemVo">
         SELECT
-        <include refid="Admin_Appeal_Columns"/>
-        <include refid="Admin_Appeal_Joins"/>
+        <include refid="Admin_Appeal_Columns"/>,
+        g.appealCount     AS appealCount,
+        g.activeAppealId  AS activeAppealId,
+        g.firstAppealTime AS firstAppealTime,
+        g.lastAppealTime  AS lastAppealTime
+        FROM (
+            SELECT s.ID AS repAppealId, s.TASK_ID AS taskId, s.appealCount, s.activeAppealId,
+                   s.firstAppealTime, s.lastAppealTime
+            FROM (
+                SELECT x.ID, x.TASK_ID,
+                       COUNT(*) OVER (PARTITION BY x.TASK_ID) AS appealCount,
+                       MAX(IF(x.APPEAL_STATUS = 1, x.ID, NULL)) OVER (PARTITION BY x.TASK_ID) AS activeAppealId,
+                       MIN(x.CREATE_TIME) OVER (PARTITION BY x.TASK_ID) AS firstAppealTime,
+                       MAX(x.CREATE_TIME) OVER (PARTITION BY x.TASK_ID) AS lastAppealTime,
+                       ROW_NUMBER() OVER (PARTITION BY x.TASK_ID
+                           ORDER BY (x.APPEAL_STATUS = 1) DESC, x.CREATE_TIME DESC, x.ID DESC) AS repRank
+                FROM ws_delivery_appeal x
+                WHERE x.DATA_STATUS = 0
+            ) s
+            WHERE s.repRank = 1
+        ) g
+        JOIN ws_delivery_appeal a ON a.ID = g.repAppealId
+        <include refid="Admin_Appeal_Derived_Joins"/>
         WHERE a.DATA_STATUS = 0
         <if test="bo.appealStatus != null">
             AND a.APPEAL_STATUS = #{bo.appealStatus}
@@ -48,7 +94,7 @@
         <if test="bo.orderNo != null and bo.orderNo != ''">
             AND o.ORDER_NO LIKE CONCAT('%', #{bo.orderNo}, '%')
         </if>
-        ORDER BY (a.APPEAL_STATUS = 1) DESC, a.CREATE_TIME DESC, a.ID DESC
+        ORDER BY (g.activeAppealId IS NOT NULL) DESC, g.lastAppealTime DESC, g.taskId DESC
     </select>
 
     <select id="selectAdminAppealById" resultType="com.jbk.tool.data.delivery.vo.AdminDeliveryAppealItemVo">
@@ -56,5 +102,18 @@
         <include refid="Admin_Appeal_Columns"/>
         <include refid="Admin_Appeal_Joins"/>
         WHERE a.DATA_STATUS = 0 AND a.ID = #{id}
+    </select>
+
+    <!--
+      D-215 申诉往来时间线：同任务全部申诉正序（含当前被查那条），供运营在裁决前
+      看到上一轮的驳回理由与裁决人。正序是时间线渲染口径，倒序会让「先驳回后再申诉」
+      的因果颠倒。聚合统计列（appealCount 等）在本查询不下发，历史条目只是单条申诉。
+    -->
+    <select id="selectAdminAppealsByTaskId" resultType="com.jbk.tool.data.delivery.vo.AdminDeliveryAppealItemVo">
+        SELECT
+        <include refid="Admin_Appeal_Columns"/>
+        <include refid="Admin_Appeal_Joins"/>
+        WHERE a.DATA_STATUS = 0 AND a.TASK_ID = #{taskId}
+        ORDER BY a.CREATE_TIME ASC, a.ID ASC
     </select>
 </mapper>

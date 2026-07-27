@@ -1,5 +1,6 @@
 package com.jbk.serve.service.mini.impl;
 
+import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.jbk.serve.mapper.product.WsPackageMapper;
 import com.jbk.serve.service.mini.IMiniPackageService;
@@ -52,6 +53,11 @@ public class MiniPackageServiceImpl implements IMiniPackageService {
 
     /** 范围原文不下发；只向页面暴露服务端严格规范化后的可购结论。 */
     private static boolean isPurchasable(WsPackage po) {
+        if (StrUtil.isBlank(po.getScopeJson())) {
+            // 套餐空范围=「不加约束」（与创单侧 requireCompatibleScope 同口径）。
+            // 误用卡的「空=未配置=拒绝」口径，会把纯余额充值包永远灰在页面上。
+            return true;
+        }
         try {
             WaterCardScope.normalize(po.getScopeJson(), "套餐");
             return true;

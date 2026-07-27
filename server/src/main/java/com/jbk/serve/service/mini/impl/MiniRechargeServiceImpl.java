@@ -108,6 +108,11 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
                                                String requestId, String orderNo) {
         // ② 确无既有订单才读卡与套餐
         WsCard card = loadUsableCard(cardId, userId);
+        // 付费卡一律永久（D-213）；带有效期的卡只能来自活动赠卡。赠卡若可充值，充入的
+        // 付费余额会被赠卡到期日绑架——客户的钱变成会过期的钱，读到卡的第一时间即拒绝。
+        if (StrUtil.isNotBlank(card.getExpireTime())) {
+            throw new JbkException("活动赠卡不支持充值，权益使用完可购买正式水卡");
+        }
         WsPackage pkg = loadOnSalePackage(packageId);
         RechargeLimits.validatePackage(pkg);
 
@@ -407,7 +412,10 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         return pkgScope;
     }
 
-    /** 第一版只允许相同有效期类型：有限卡仅买有限套餐，永久卡仅买永久套餐。 */
+    /**
+     * 赠卡闸之后到这里的只可能是永久卡（D-213）：本检查拦的是「永久卡买有限套餐」——
+     * 有限套餐是活动赠卡模板，不是充值包；放行等于给永久卡引入到期日或送出未兑现天数。
+     */
     private void requireSameExpiryKind(WsCard card, WsPackage pkg) {
         boolean cardFinite = StrUtil.isNotBlank(card.getExpireTime());
         boolean pkgFinite = pkg.getExpireDays() != null;

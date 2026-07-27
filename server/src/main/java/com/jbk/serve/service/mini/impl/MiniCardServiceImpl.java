@@ -289,7 +289,7 @@ public class MiniCardServiceImpl implements IMiniCardService {
         }
     }
 
-    /** 摘要 + 角色能力位：能力位由角色固定生成（OWNER 可充值可管成员；MEMBER 仅取水）。 */
+    /** 摘要 + 能力位：角色 × 卡形态共同决定（OWNER 且永久卡可充值可管成员；MEMBER 仅取水）。 */
     private MiniUsableCardVo toUsableCard(WsCard card, String role, Long remainingDailyLimitMl) {
         MiniUsableCardVo vo = new MiniUsableCardVo();
         vo.setCardId(card.getId());
@@ -301,7 +301,8 @@ public class MiniCardServiceImpl implements IMiniCardService {
         vo.setExpireTime(card.getExpireTime());
         boolean owner = MiniUsableCardVo.ROLE_OWNER.equals(role);
         vo.setAccessRole(role);
-        vo.setCanRecharge(owner);
+        // 带有效期的卡=活动赠卡（D-213），不得出现充值入口——赠卡可充值会让付费余额被到期日绑架
+        vo.setCanRecharge(owner && StrUtil.isBlank(card.getExpireTime()));
         vo.setCanManageMembers(owner);
         vo.setRemainingDailyLimitMl(owner ? null : remainingDailyLimitMl);
         return vo;

@@ -94,7 +94,8 @@ class MiniPackageServiceTest {
         assertTrue(vo.getPurchasable());
     }
 
-    // 4) 可购结论三态：合法非空范围=true，空范围/非法范围=false
+    // 4) 可购结论三态：合法非空范围=true；空范围=不加约束、可购（与创单侧 requireCompatibleScope
+    //    同口径——按卡的「空=未配置=拒绝」误判会把纯余额充值包永远灰在页面上）；非法范围=false
     @Test
     void purchasableReflectsStrictScopeNormalization() {
         WsPackage valid = pkg(1L, "合法范围", 1000L, 10000L);
@@ -107,7 +108,7 @@ class MiniPackageServiceTest {
         List<MiniPackageVo> result = service.listOnSale();
 
         assertTrue(result.get(0).getPurchasable());
-        assertFalse(result.get(1).getPurchasable());
+        assertTrue(result.get(1).getPurchasable(), "空范围=不限范围，必须可购（首购路径另有「套餐未配置可用范围」守卫）");
         assertFalse(result.get(2).getPurchasable());
     }
 

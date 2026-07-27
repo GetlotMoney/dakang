@@ -421,19 +421,35 @@ class MiniRechargeCreateTest {
         assertThrows(JbkException.class, () -> service.create(okBo(), ME));
     }
 
-    // 14) 有限/永久交叉一律拒绝
+    // 14) 有效期交叉：永久卡不得买有限套餐（有限套餐是赠卡模板，不是充值包）；
+    //     有限卡（活动赠卡）则在读到卡的第一时间被赠卡闸拒绝
     @Test
     void expiryKindCrossRejected() {
         // 永久卡买有限套餐
         dbPackage = pkg(365);
-        assertThrows(JbkException.class, () -> service.create(okBo(), ME));
-        // 有限卡买永久套餐
+        JbkException kind = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
+        assertTrue(kind.getMessage().contains("有限期与永久类型不匹配"), "实际=" + kind.getMessage());
+        // 有限卡买永久套餐：赠卡闸先于类型比较
         dbCard = card("20270101000000");
         dbPackage = pkg(null);
-        assertThrows(JbkException.class, () -> service.create(okBo(), ME));
+        JbkException gift = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
+        assertTrue(gift.getMessage().contains("活动赠卡不支持充值"), "实际=" + gift.getMessage());
     }
 
-    // 15) 有限卡剩余不足 1 分钟：拒绝创建，不收无法完成的款
+    // 14b) 赠卡闸（D-213）：带有效期的卡=活动赠卡，同款有限套餐续充也一律拒绝且零写入——
+    //      赠卡若可充值，充入的付费余额会被赠卡到期日绑架，客户的钱变成会过期的钱
+    @Test
+    void giftCardRechargeRejectedRegardlessOfPackageKind() {
+        dbCard = card("20301231235959");
+        dbPackage = pkg(365);
+        JbkException ex = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
+        assertTrue(ex.getMessage().contains("活动赠卡不支持充值"), "实际=" + ex.getMessage());
+        verify(createTx, never()).create(any(), anyString(), org.mockito.ArgumentMatchers.anyInt());
+        // 赠卡闸先于读套餐：不给「按套餐内容讨价还价」留任何分支
+        verify(packageMapper, never()).selectOne(any(Wrapper.class));
+    }
+
+    // 15) 已自然过期的赠卡：同样被赠卡闸拒绝，不收无法兑现的款
     @Test
     void finiteCardAboutToExpireRejected() {
         dbCard = card("19990101000000");
@@ -452,11 +468,12 @@ class MiniRechargeCreateTest {
         dbCard = card("20260230000000");
         dbPackage = pkg(365);
         assertThrows(JbkException.class, () -> service.create(okBo(), ME),
-                "非真实日期即使长度为14也必须拒绝");
+                "非真实日期同样落在赠卡闸内，必须拒绝");
 
+        // 合法14位有限期 = 活动赠卡：新模型下不再是「可续充」，而是被赠卡闸拒绝（D-213）
         dbCard = card("20270101000000");
-        assertEquals(1, service.create(okBo(), ME).getOrderStatus(),
-                "合法14位有限期仍应正常创单");
+        JbkException gift = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
+        assertTrue(gift.getMessage().contains("活动赠卡不支持充值"), "实际=" + gift.getMessage());
     }
 
     // 16) 下架/不存在套餐拒绝；非法金额拒绝

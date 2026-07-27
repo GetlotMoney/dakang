@@ -1,3 +1,5 @@
+# 本文件不含任何口令明文：凭据一律取同名环境变量，模板见仓库根 .env.example。
+# 本地直跑（非容器）时先 `set -a; . .env; set +a` 再启动，否则口令为空连不上库。
 spring:
   datasource:
     type: com.alibaba.druid.pool.DruidDataSource
@@ -5,18 +7,18 @@ spring:
       driver-class-name: com.mysql.cj.jdbc.Driver
       # 本地 Docker MySQL（deploy/docker-compose.yml 宿主端口 3308），独立库 dakang
       url: jdbc:mysql://localhost:3308/dakang?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=UTC&nullCatalogMeansCurrent=true
-      username: "${DAKANG_DB_USERNAME:root}"
-      password: "${DAKANG_DB_PASSWORD:}"
+      username: ${DAKANG_DB_USERNAME:root}
+      password: ${DAKANG_DB_PASSWORD:}
   redis:
     # 本地 Docker Redis（deploy/docker-compose.yml 宿主端口 6380）
     host: localhost
     port: 6380
-    password: "${DAKANG_REDIS_PASSWORD:}"
+    password: ${DAKANG_REDIS_PASSWORD:}
     database: 0
     timeout: 5000ms
   ratelimiter:
     redis-address: redis://localhost:6380
-    redis-password: "${DAKANG_REDIS_PASSWORD:}"
+    redis-password: ${DAKANG_REDIS_PASSWORD:}
     redis-database: 0
     enabled: true
     exceptionHandler:
@@ -28,8 +30,9 @@ mqtt:
   enabled: true
   broker-url: tcp://localhost:1883
   client-id: dakang-server-dev
-  username: "${DAKANG_MQTT_USERNAME:}"
-  password: "${DAKANG_MQTT_PASSWORD:}"
+  # 当前 EMQX 未开认证，留空即匿名接入；生产开认证后经 .env 注入
+  username: ${DAKANG_MQTT_USERNAME:}
+  password: ${DAKANG_MQTT_PASSWORD:}
 
 ali:
   oss:
@@ -49,13 +52,14 @@ springdoc:
 
 wechat:
   xcx:
-    # TODO 待配置：六维达康小程序主体的 AppID/AppSecret（用户端/机主端/配送端统一入口）
-    appid: ""
-    appsecret: ""
+    # TODO 待配置：六维达康小程序主体的 AppID/AppSecret（用户端/机主端/配送端统一入口）。
+    # 真值只能经 .env 的 WECHAT_XCX_APPID/WECHAT_XCX_APPSECRET 注入，禁止写进本文件。
+    appid: ${WECHAT_XCX_APPID:}
+    appsecret: ${WECHAT_XCX_APPSECRET:}
 
 mini:
   pay-sim:
     # Pay-Sim 模拟支付：仅 dev/演示环境为 true。为 true 时 PaySimSourceAdapter 与 /mini/pay-sim/**
     # 才会注册，且支付单被永久打上 PAY_SOURCE=2，模拟收款不可能混进真实微信对账口径。
     # prod 配置里必须保持 false 或缺省（缺省即 false）。
-    enabled: "${MINI_PAYSIM_ENABLED:false}"
+    enabled: true

@@ -45,6 +45,7 @@
         t.ORDER_ID        AS orderId,
         o.ORDER_NO        AS orderNo,
         o.ORDER_STATUS    AS orderStatus,
+        o.PAY_WAY         AS payWay,
         t.USER_ID         AS userId,
         u.USER_NAME       AS userName,
         u.USER_PHONE      AS userPhoneRaw,

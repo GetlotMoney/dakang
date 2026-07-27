@@ -2,7 +2,8 @@
 -- 六维达康 · 超管角色全菜单补绑（幂等，可反复执行）
 -- 用途：每次新模块 SQL 执行完后运行一次，把新增菜单自动授权给超管（ROLE_ID=1）；
 --      同时纠正历史绑定的逻辑删除位（种子数据曾出现 DATA_STATUS=1 导致登录菜单为空）。
--- 执行：mysql -h127.0.0.1 -P3308 -u"$DAKANG_DB_USERNAME" -p"$DAKANG_DB_PASSWORD" --default-character-set=utf8mb4 dakang < grant_super.sql
+-- 执行：mysql -h127.0.0.1 -P3308 -uroot -p"$DAKANG_DB_PASSWORD" --default-character-set=utf8mb4 dakang < grant_super.sql
+-- 口令不入库：先 `set -a; . .env; set +a` 导出仓库根 .env 的 DAKANG_DB_PASSWORD（模板见 .env.example）
 -- ============================================================
 
 UPDATE api_rbac_role_menu SET DATA_STATUS = 0 WHERE ROLE_ID = 1 AND DATA_STATUS <> 0;

@@ -296,6 +296,41 @@ class AdminDeliveryLinkStateTest {
         assertNotNull(AdminDeliveryServiceImpl.deliveryFlowMismatch(order(), flow().setMlChange(-100L)));
     }
 
+    // ==================== 资金链（D-214 payWay=3 混合结算） ====================
+
+    /** payWay=3 订单：ORDER_AMOUNT=配送费，抵扣量冻结在创单快照 waterMl。 */
+    private WsOrder mlOrder() {
+        return order()
+                .setPayWay(3)
+                .setOrderAmount(600L)
+                .setPackageSnap("{\"payWay\":3,\"waterMl\":36000,\"priceWaterAmountFen\":3600,"
+                        + "\"waterAmountFen\":0,\"deliveryFeeFen\":600}");
+    }
+
+    private WsWalletFlow mlFlow() {
+        return flow().setAmountChange(-600L).setMlChange(-36_000L);
+    }
+
+    @Test
+    void flowOkForMlPayWayWithSnapshotMatchedDualDeduction() {
+        assertNull(AdminDeliveryServiceImpl.deliveryFlowMismatch(mlOrder(), mlFlow()));
+    }
+
+    @Test
+    void mlFlowRejectsMlMismatchAndBrokenSnapshot() {
+        // 水量变动与快照抵扣量不一致 / 缺失
+        assertNotNull(AdminDeliveryServiceImpl.deliveryFlowMismatch(mlOrder(), mlFlow().setMlChange(-35_999L)));
+        assertNotNull(AdminDeliveryServiceImpl.deliveryFlowMismatch(mlOrder(), mlFlow().setMlChange(null)));
+        assertNotNull(AdminDeliveryServiceImpl.deliveryFlowMismatch(mlOrder(), mlFlow().setMlChange(0L)));
+        // 快照缺 waterMl / 损坏：无从核验，按证据缺失呈现
+        assertNotNull(AdminDeliveryServiceImpl.deliveryFlowMismatch(
+                mlOrder().setPackageSnap("{\"payWay\":3}"), mlFlow()));
+        assertNotNull(AdminDeliveryServiceImpl.deliveryFlowMismatch(
+                mlOrder().setPackageSnap("{broken"), mlFlow()));
+        // 金额=-订单总额的既有恒等对 payWay=3 同样必须成立
+        assertNotNull(AdminDeliveryServiceImpl.deliveryFlowMismatch(mlOrder(), mlFlow().setAmountChange(-4200L)));
+    }
+
     // ==================== 申诉行 ====================
 
     @Test

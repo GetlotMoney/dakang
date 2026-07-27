@@ -29,6 +29,10 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 配送创单资金事务实现（资金铁律1：原子 UPDATE 扣减 + 同事务流水，禁止读-算-写）。
  *
+ * <p>D-214 双支付方式：payWay=2 全余额；payWay=3 混合结算（水费按快照 waterMl 扣
+ * BALANCE_ML、配送费扣 BALANCE_AMOUNT，两步同事务、任一失败整体回滚）。
+ * 补偿边界：payWay=3 单的退款/补偿以水量回补为主，本事务不实现 ML 回补，待 E2E-04。</p>
+ *
  * @author dakang
  * @since 2026-07-23
  */
@@ -54,6 +58,9 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
     @Transactional(rollbackFor = Exception.class)
     public WsOrder createPaidDeliveryOrder(WsOrder order, WsDeliveryTask task, WsDeliveryAutoRule autoRule, String now) {
         requireConsistentDraft(order, task);
+        boolean payByMl = ObjectUtil.equal(order.getPayWay(), TradeEnum.PayWay.CARD_ML.getValue());
+        // 抵扣水量的唯一权威值来自创单冻结快照（buildSnap.waterMl）：扣的必须恰是快照里冻结的量
+        long deductMl = payByMl ? requireSnapWaterMl(order) : 0L;
         Long userId = order.getUserId();
 
         // ① 锁卡（绕过 @TableLogic 读全部 DATA_STATUS：删除卡也要锁到并显式拒绝）
@@ -65,13 +72,29 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
         if (ObjectUtil.notEqual(card.getUserId(), userId)) {
             throw new JbkException("水卡不存在或不属于当前用户");
         }
-        // ③ 状态：冻结/注销/过期/未知一律 fail-closed
+        // ③ 状态：冻结/注销/过期/未知一律 fail-closed。赠卡（有有效期的卡）在此不受额外限制：
+        //    D-214 只对充值设闸（D-213），消费路径余额/水量均可正常抵扣
         verifyCardUsable(card, now);
 
-        // ④ 原子扣减（复用取水域同一 SQL，绝不写第二份）：金额余额支付，不扣水量（规则1）
-        int affected = tradeCardMapper.deductBalance(order.getCardId(), order.getOrderAmount(), userId, userId, now);
-        if (affected != 1) {
-            throw diagnoseDeductFailure(order.getCardId(), userId);
+        // ④ 原子扣减（复用取水域两条既有 CAS SQL，绝不写第三份）：
+        //    payWay=2 全余额一次扣清；payWay=3 同一事务先扣水量再扣配送费余额——
+        //    两步任一影响 0 行即抛出，Spring 事务整体回滚，已扣的另一半一并撤销（原子性关键）
+        if (payByMl) {
+            int mlAffected = tradeCardMapper.deductMl(order.getCardId(), deductMl, userId, userId, now);
+            if (mlAffected != 1) {
+                throw diagnoseDeductFailure(order.getCardId(), userId, "水卡水量不足以抵扣本单水量");
+            }
+            int feeAffected = tradeCardMapper.deductBalance(order.getCardId(), order.getOrderAmount(),
+                    userId, userId, now);
+            if (feeAffected != 1) {
+                throw diagnoseDeductFailure(order.getCardId(), userId, "水卡余额不足以支付配送费");
+            }
+        } else {
+            int affected = tradeCardMapper.deductBalance(order.getCardId(), order.getOrderAmount(),
+                    userId, userId, now);
+            if (affected != 1) {
+                throw diagnoseDeductFailure(order.getCardId(), userId, "水卡余额不足以支付本单水费与配送费");
+            }
         }
         WsCard after = tradeCardMapper.selectById(order.getCardId());
         if (ObjectUtil.isNull(after)) {
@@ -82,7 +105,8 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
         orderMapper.insert(order);
 
         // ⑥ 唯一流水：业务幂等键 DELIVERY:<orderNo>（规则3；uk_wallet_flow_biz_key 数据库层防双扣）
-        walletFlowMapper.insert(buildConsumeFlow(order, after));
+        //    双支付方式仍恰一条：金额与水量变动记在同一行的两列上
+        walletFlowMapper.insert(buildConsumeFlow(order, after, deductMl));
 
         // ⑦ 唯一任务：uk_dtask_order / uk_dtask_task_no 保证一单一任务（规则5/6）
         task.setOrderId(order.getId());
@@ -105,8 +129,10 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
                 "配送创单成功：" + JSONUtil.createObj()
                         .set("orderNo", order.getOrderNo())
                         .set("taskNo", task.getTaskNo())
+                        .set("payWay", order.getPayWay())
                         .set("waterAmountFen", task.getWaterAmount())
                         .set("deliveryFeeFen", task.getDeliveryFee())
+                        .set("waterMl", deductMl)
                         .set("totalFen", order.getOrderAmount())
                         .set("scheduledTime", task.getScheduledTime())
                         .set("decidedAt", now));
@@ -114,16 +140,39 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
     }
 
     /**
-     * 落库前的最后一道自洽闸：订单/任务共键一致 + 总额恒等式（规则2）。
+     * payWay=3 的抵扣水量：只认创单冻结快照的 waterMl。快照缺失/非正数说明装配错位或
+     * 数据被外力改写，宁可拒单也不能按 0 或猜测值扣减（金额与配额不许猜）。
+     */
+    private long requireSnapWaterMl(WsOrder order) {
+        try {
+            Long waterMl = JSONUtil.parseObj(order.getPackageSnap()).getLong("waterMl");
+            if (ObjectUtil.isNull(waterMl) || waterMl <= 0) {
+                throw new JbkException("配送创单数据不完整");
+            }
+            return waterMl;
+        } catch (JbkException e) {
+            throw e;
+        } catch (Exception malformed) {
+            throw new JbkException("配送创单数据不完整");
+        }
+    }
+
+    /**
+     * 落库前的最后一道自洽闸：订单/任务共键一致 + 总额恒等式（规则2，D-214 口径：
+     * ORDER_AMOUNT = WATER_AMOUNT + DELIVERY_FEE 对两种支付方式一体成立——payWay=3 的
+     * 水费以水量抵扣，WATER_AMOUNT 必须为 0，订单金额即配送费）。
      * 编排层装配错位（金额拆分与总额不等、任务归属漂移）宁可拒单也不能带病入库。
      */
     private void requireConsistentDraft(WsOrder order, WsDeliveryTask task) {
         if (ObjectUtil.isNull(order) || ObjectUtil.isNull(task)) {
             throw new JbkException("配送创单数据不完整");
         }
+        boolean payByBalance = ObjectUtil.equal(order.getPayWay(), TradeEnum.PayWay.CARD_BALANCE.getValue());
+        boolean payByMl = ObjectUtil.equal(order.getPayWay(), TradeEnum.PayWay.CARD_ML.getValue());
         boolean consistent = ObjectUtil.equal(order.getOrderType(), TradeEnum.OrderType.DELIVERY.getValue())
                 && ObjectUtil.equal(order.getOrderStatus(), TradeEnum.OrderStatus.PAID.getValue())
-                && ObjectUtil.equal(order.getPayWay(), TradeEnum.PayWay.CARD_BALANCE.getValue())
+                && (payByBalance || payByMl)
+                && (!payByMl || ObjectUtil.equal(task.getWaterAmount(), 0L))
                 && ObjectUtil.equal(order.getUserId(), task.getUserId())
                 && ObjectUtil.equal(order.getStationId(), task.getStationId())
                 && ObjectUtil.isNotNull(task.getWaterAmount()) && task.getWaterAmount() >= 0
@@ -154,8 +203,12 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
         }
     }
 
-    /** 扣减 0 行时的精确拒因（同事务读取当前值；锁内已排除归属/状态，剩余基本是余额不足）。 */
-    private JbkException diagnoseDeductFailure(Long cardId, Long expectedOwnerUserId) {
+    /**
+     * 扣减 0 行时的精确拒因（同事务读取当前值；锁内已排除归属/状态，剩余基本是余量不足）。
+     * 余量不足的文案由调用点按扣减对象传入：payWay=3 两步扣减分别给出
+     * 「水量不足以抵扣」与「余额不足以支付配送费」，不得混用成一句让用户猜。
+     */
+    private JbkException diagnoseDeductFailure(Long cardId, Long expectedOwnerUserId, String insufficientMessage) {
         WsCard card = tradeCardMapper.selectById(cardId);
         if (ObjectUtil.isNull(card) || ObjectUtil.notEqual(expectedOwnerUserId, card.getUserId())) {
             return new JbkException("水卡不存在或不属于当前用户");
@@ -171,16 +224,21 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
         if (ObjectUtil.equal(card.getCardStatus(), UserEnum.CardStatus.EXPIRED.getValue()) || expiredByTime) {
             return new JbkException("水卡已过期");
         }
-        return new JbkException("水卡余额不足以支付本单水费与配送费");
+        return new JbkException(insufficientMessage);
     }
 
-    private WsWalletFlow buildConsumeFlow(WsOrder order, WsCard after) {
+    /**
+     * 唯一消费流水（规则3）：AMOUNT_CHANGE 记金额部分（payWay=3 即 -配送费），
+     * ML_CHANGE 记水量部分（payWay=2 恒 0）；AFTER 双列取扣减后重读的卡面值，
+     * 幂等键 DELIVERY:&lt;orderNo&gt; 与 uk_wallet_flow_biz_key 口径不变。
+     */
+    private WsWalletFlow buildConsumeFlow(WsOrder order, WsCard after, long deductMl) {
         WsWalletFlow flow = new WsWalletFlow()
                 .setCardId(order.getCardId())
                 .setUserId(order.getUserId())
                 .setFlowType(TradeEnum.FlowType.DELIVERY_CONSUME.getValue())
                 .setAmountChange(-order.getOrderAmount())
-                .setMlChange(0L)
+                .setMlChange(-deductMl)
                 .setAmountAfter(after.getBalanceAmount())
                 .setMlAfter(after.getBalanceMl())
                 .setOrderId(order.getId())

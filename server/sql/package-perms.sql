@@ -5,7 +5,8 @@
 -- 本文件只补权限点与超管授权，不改前端；套餐接真属主链后续任务。
 -- 权限值必须与 client/src/views/product/package/index.vue 的 hasPermission 一字不差：
 --   add / update / shelf（上下架）。ID 1130-1135 已被占用，选用 1136/1137/1138。
--- 执行：mysql -h127.0.0.1 -P3308 -u"$DAKANG_DB_USERNAME" -p"$DAKANG_DB_PASSWORD" dakang < server/sql/package-perms.sql
+-- 执行：mysql -h127.0.0.1 -P3308 -uroot -p"$DAKANG_DB_PASSWORD" dakang < server/sql/package-perms.sql
+-- 口令不入库：先 `set -a; . .env; set +a` 导出仓库根 .env 的 DAKANG_DB_PASSWORD（模板见 .env.example）
 -- 镜像：deploy/mysql/init/03-demo-baseline.sql 菜单段同步追加同样三行（双写防漂移）。
 -- ============================================================
 SET NAMES utf8mb4;

@@ -126,7 +126,7 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
         MiniOrderDetailBo detailBo = new MiniOrderDetailBo().setOrderNo(created.order().getOrderNo());
         return new MiniDeliveryCreateVo()
                 .setOrder(miniOrderService.getMyOrderDetail(detailBo, userId))
-                .setTask(toTaskVo(created.task(), created.order().getOrderNo(), null));
+                .setTask(toTaskVo(created.task(), created.order(), null));
     }
 
     @Override
@@ -148,7 +148,7 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
         }
         // 共键栅栏：任务-订单错位 fail-closed，绝不把错挂的任务证据当成本单证据展示
         DeliveryLinkGuard.requireLinked(order, task);
-        return toTaskVo(task, order.getOrderNo(), null);
+        return toTaskVo(task, order, null);
     }
 
     @Override
@@ -317,24 +317,26 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
             return List.of();
         }
         Map<Long, String> stationNames = loadStationNames(tasks);
-        Map<Long, String> orderNos = loadOrderNos(tasks);
+        Map<Long, WsOrder> orders = loadOrders(tasks);
         return tasks.stream()
-                .map(task -> toTaskVo(task, orderNos.get(task.getOrderId()), stationNames.get(task.getStationId())))
+                .map(task -> toTaskVo(task, orders.get(task.getOrderId()), stationNames.get(task.getStationId())))
                 .collect(Collectors.toList());
     }
 
     /**
-     * Po → 契约 Vo 投影。orderNo/stationName 允许调用方传入批量预取值；
-     * 单条场景传 null 时按需回查。电话只出脱敏值（PhoneMask 唯一实现）。
+     * Po → 契约 Vo 投影。order/stationName 允许调用方传入批量预取值；
+     * 单条场景传 null 时按需回查（orderNo 与 payWay 同出订单行，D-214 展示分流依据）。
+     * 电话只出脱敏值（PhoneMask 唯一实现）。
      */
-    private MiniDeliveryTaskVo toTaskVo(WsDeliveryTask task, String orderNo, String stationName) {
+    private MiniDeliveryTaskVo toTaskVo(WsDeliveryTask task, WsOrder order, String stationName) {
         long water = ObjectUtil.defaultIfNull(task.getWaterAmount(), 0L);
         long fee = ObjectUtil.defaultIfNull(task.getDeliveryFee(), 0L);
+        WsOrder linked = ObjectUtil.isNull(order) ? orderOf(task.getOrderId()) : order;
         return new MiniDeliveryTaskVo()
                 .setTaskId(task.getId())
                 .setTaskNo(task.getTaskNo())
                 .setOrderId(task.getOrderId())
-                .setOrderNo(ObjectUtil.isNull(orderNo) ? orderNoOf(task.getOrderId()) : orderNo)
+                .setOrderNo(ObjectUtil.isNull(linked) ? null : linked.getOrderNo())
                 .setUserId(task.getUserId())
                 .setCourierId(task.getCourierId())
                 .setStationId(task.getStationId())
@@ -353,6 +355,7 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
                         .setDeliveryFeeFen(fee)
                         // 总额=两者之和（规则2）；快照落库后不再重算价目
                         .setTotalAmountFen(water + fee))
+                .setPayWay(ObjectUtil.isNull(linked) ? null : linked.getPayWay())
                 .setTaskStatus(task.getTaskStatus())
                 .setVersion(task.getVersion())
                 .setScheduledTime(task.getScheduledTime())
@@ -468,11 +471,12 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
     }
 
     private String orderNoOf(Long orderId) {
-        if (ObjectUtil.isNull(orderId)) {
-            return null;
-        }
-        WsOrder order = orderMapper.selectById(orderId);
+        WsOrder order = orderOf(orderId);
         return ObjectUtil.isNull(order) ? null : order.getOrderNo();
+    }
+
+    private WsOrder orderOf(Long orderId) {
+        return ObjectUtil.isNull(orderId) ? null : orderMapper.selectById(orderId);
     }
 
     private String taskNoOf(Long taskId) {
@@ -504,7 +508,7 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
                 .collect(Collectors.toMap(WsStation::getId, WsStation::getStationName, (a, b) -> a));
     }
 
-    private Map<Long, String> loadOrderNos(List<WsDeliveryTask> tasks) {
+    private Map<Long, WsOrder> loadOrders(List<WsDeliveryTask> tasks) {
         List<Long> orderIds = tasks.stream()
                 .map(WsDeliveryTask::getOrderId)
                 .filter(ObjectUtil::isNotNull)
@@ -514,7 +518,7 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
             return new HashMap<>();
         }
         return orderMapper.selectBatchIds(orderIds).stream()
-                .collect(Collectors.toMap(WsOrder::getId, WsOrder::getOrderNo, (a, b) -> a));
+                .collect(Collectors.toMap(WsOrder::getId, order -> order, (a, b) -> a));
     }
 
     private DeliveryEnum.MediaPurpose mediaPurposeOf(Integer purpose) {

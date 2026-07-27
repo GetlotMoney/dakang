@@ -219,10 +219,14 @@ class DeliveryOrderTxDbTest {
     }
 
     private void seedCard(long userId, int cardStatus, long fen, int dataStatus) {
+        seedCard(userId, cardStatus, fen, 0L, dataStatus);
+    }
+
+    private void seedCard(long userId, int cardStatus, long fen, long ml, int dataStatus) {
         jdbc.update("DELETE FROM ws_card WHERE ID=?", CARD_ID);
         jdbc.update("INSERT INTO ws_card(ID,DATA_STATUS,CARD_NO,CARD_TYPE,USER_ID,BALANCE_AMOUNT,BALANCE_ML,"
-                        + "SCOPE_JSON,EXPIRE_TIME,CARD_STATUS) VALUES(?,?,?,1,?,?,0,NULL,NULL,?)",
-                CARD_ID, dataStatus, "VC-TEST-100", userId, fen, cardStatus);
+                        + "SCOPE_JSON,EXPIRE_TIME,CARD_STATUS) VALUES(?,?,?,1,?,?,?,NULL,NULL,?)",
+                CARD_ID, dataStatus, "VC-TEST-100", userId, fen, ml, cardStatus);
     }
 
     private DeliveryCreateBo bo(String requestId, int mode) {
@@ -242,6 +246,10 @@ class DeliveryOrderTxDbTest {
 
     private long cardBalance() {
         return jdbc.queryForObject("SELECT BALANCE_AMOUNT FROM ws_card WHERE ID=?", Long.class, CARD_ID);
+    }
+
+    private long cardMl() {
+        return jdbc.queryForObject("SELECT BALANCE_ML FROM ws_card WHERE ID=?", Long.class, CARD_ID);
     }
 
     private int count(String table) {
@@ -428,6 +436,129 @@ class DeliveryOrderTxDbTest {
         badAddress.setReceiveAddress("   ");
         assertThrows(JbkException.class, () -> orderService.createDeliveryOrder(badAddress, USER_ID));
         assertZeroResidue();
+    }
+
+    // ================= 3b：D-214 混合结算 payWay=3（水费扣水量 + 配送费扣余额） =================
+
+    /**
+     * payWay=3 成功单：同一事务双前态 CAS 落库——BALANCE_ML −40000（20L桶×2）、
+     * BALANCE_AMOUNT −400（配送费）；流水恰一条且 AMOUNT/ML 双列、AFTER 双列为预期值；
+     * ORDER_AMOUNT=配送费、任务 WATER_AMOUNT=0、快照三新字段（payWay/waterMl/priceWaterAmountFen）。
+     */
+    @Test
+    void mlPayWayDeductsMlAndFeeAtomicallyWithSingleDualColumnFlow() {
+        seedCard(USER_ID, 1, BALANCE_FEN, 50_000L, 0);
+        DeliveryCreateBo bo = bo(REQ_A, 1);
+        bo.setPayWay(3);
+        IDeliveryOrderService.CreatedDelivery created = orderService.createDeliveryOrder(bo, USER_ID);
+
+        assertEquals(10_000L, cardMl(), "水量按快照 waterMl 抵扣：50000-40000");
+        assertEquals(BALANCE_FEN - 400L, cardBalance(), "余额只扣配送费");
+        assertEquals(400L, created.order().getOrderAmount(), "ORDER_AMOUNT=本单实际应扣金额=配送费");
+        assertEquals(3, created.order().getPayWay());
+        assertEquals(0L, created.task().getWaterAmount(), "任务行 WATER_AMOUNT 同口径记 0");
+        assertEquals(400L, created.task().getDeliveryFee(), "DELIVERY_FEE 不变");
+
+        assertEquals(1, count("ws_wallet_flow"), "双支付方式流水仍恰一条");
+        assertEquals(-400L, jdbc.queryForObject("SELECT AMOUNT_CHANGE FROM ws_wallet_flow", Long.class));
+        assertEquals(-40_000L, jdbc.queryForObject("SELECT ML_CHANGE FROM ws_wallet_flow", Long.class));
+        assertEquals(BALANCE_FEN - 400L, jdbc.queryForObject("SELECT AMOUNT_AFTER FROM ws_wallet_flow", Long.class));
+        assertEquals(10_000L, jdbc.queryForObject("SELECT ML_AFTER FROM ws_wallet_flow", Long.class));
+        assertEquals("DELIVERY:" + created.order().getOrderNo(),
+                jdbc.queryForObject("SELECT BIZ_IDEMPOTENCY_KEY FROM ws_wallet_flow", String.class),
+                "幂等键口径不随支付方式变化");
+
+        cn.hutool.json.JSONObject snap = cn.hutool.json.JSONUtil.parseObj(
+                jdbc.queryForObject("SELECT PACKAGE_SNAP FROM ws_order", String.class));
+        assertEquals(3, snap.getInt("payWay"));
+        assertEquals(40_000L, snap.getLong("waterMl"));
+        assertEquals(2_600L, snap.getLong("priceWaterAmountFen"), "价目参考=原 waterAmountFen 语义");
+        assertEquals(0L, snap.getLong("waterAmountFen"), "快照水费=实际应扣口径");
+    }
+
+    @Test
+    void mlPayWayInsufficientMlRejectsWithZeroResidue() {
+        seedCard(USER_ID, 1, BALANCE_FEN, 39_999L, 0);
+        DeliveryCreateBo bo = bo(REQ_A, 1);
+        bo.setPayWay(3);
+        JbkException ex = assertThrows(JbkException.class,
+                () -> orderService.createDeliveryOrder(bo, USER_ID));
+        assertTrue(ex.getMessage().contains("水卡水量不足以抵扣本单水量"), "实际=" + ex.getMessage());
+        assertEquals(39_999L, cardMl(), "水量原封不动");
+        assertEquals(BALANCE_FEN, cardBalance(), "余额原封不动");
+        assertEquals(0, count("ws_order"));
+        assertEquals(0, count("ws_wallet_flow"));
+        assertEquals(0, count("ws_delivery_task"));
+        assertEquals(0, count("ws_message"));
+    }
+
+    /**
+     * 本包最关键的原子性性质：水量够、但余额不足以支付配送费——第一步 deductMl 已经
+     * 命中 1 行，第二步 deductBalance 0 行抛出后，<b>已扣的水量必须随事务整体回滚</b>，
+     * 不允许出现「水量被吃掉、单却没建成」的半截扣减。
+     */
+    @Test
+    void mlPayWayFeeBalanceInsufficientRollsBackAlreadyDeductedMl() {
+        seedCard(USER_ID, 1, 399L, 40_000L, 0);
+        DeliveryCreateBo bo = bo(REQ_A, 1);
+        bo.setPayWay(3);
+        JbkException ex = assertThrows(JbkException.class,
+                () -> orderService.createDeliveryOrder(bo, USER_ID));
+        assertTrue(ex.getMessage().contains("水卡余额不足以支付配送费"), "实际=" + ex.getMessage());
+        assertEquals(40_000L, cardMl(), "第一步已扣的水量必须随事务回滚");
+        assertEquals(399L, cardBalance());
+        assertEquals(0, count("ws_order"));
+        assertEquals(0, count("ws_wallet_flow"));
+        assertEquals(0, count("ws_delivery_task"));
+        assertEquals(0, count("ws_message"));
+    }
+
+    /** 同参含 payWay 重放返回原单；同 requestId 改 payWay 拒绝且零副作用（冻结参数核验含 payWay）。 */
+    @Test
+    void mlPayWayReplayReturnsOriginalOrderAndPayWaySwitchIsRejected() {
+        seedCard(USER_ID, 1, BALANCE_FEN, 50_000L, 0);
+        DeliveryCreateBo first = bo(REQ_A, 1);
+        first.setPayWay(3);
+        IDeliveryOrderService.CreatedDelivery created = orderService.createDeliveryOrder(first, USER_ID);
+
+        DeliveryCreateBo replay = bo(REQ_A, 1);
+        replay.setPayWay(3);
+        IDeliveryOrderService.CreatedDelivery hit = orderService.createDeliveryOrder(replay, USER_ID);
+        assertEquals(created.order().getOrderNo(), hit.order().getOrderNo(), "同参含 payWay 重放命中原单");
+        assertEquals(10_000L, cardMl(), "只扣一次水量");
+        assertEquals(BALANCE_FEN - 400L, cardBalance(), "只扣一次配送费");
+        assertEquals(1, count("ws_wallet_flow"));
+
+        DeliveryCreateBo switched = bo(REQ_A, 1);
+        switched.setPayWay(2);
+        JbkException ex = assertThrows(JbkException.class,
+                () -> orderService.createDeliveryOrder(switched, USER_ID));
+        assertTrue(ex.getMessage().contains("不可更换配送参数"), "实际=" + ex.getMessage());
+        assertEquals(10_000L, cardMl());
+        assertEquals(BALANCE_FEN - 400L, cardBalance());
+        assertEquals(1, count("ws_order"));
+    }
+
+    /** payWay=2 显式回归：金额、任务、流水与 null 缺省路径逐字段一致（字节级行为不变）。 */
+    @Test
+    void explicitBalancePayWayMatchesLegacyPath() {
+        DeliveryCreateBo bo = bo(REQ_A, 1);
+        bo.setPayWay(2);
+        IDeliveryOrderService.CreatedDelivery created = orderService.createDeliveryOrder(bo, USER_ID);
+
+        assertEquals(BALANCE_FEN - 3_000L, cardBalance());
+        assertEquals(0L, cardMl(), "余额支付不扣水量");
+        assertEquals(3_000L, created.order().getOrderAmount());
+        assertEquals(2, created.order().getPayWay());
+        assertEquals(2_600L, created.task().getWaterAmount());
+        assertEquals(400L, created.task().getDeliveryFee());
+        assertEquals(0L, jdbc.queryForObject("SELECT ML_CHANGE FROM ws_wallet_flow", Long.class));
+        assertEquals(-3_000L, jdbc.queryForObject("SELECT AMOUNT_CHANGE FROM ws_wallet_flow", Long.class));
+        cn.hutool.json.JSONObject snap = cn.hutool.json.JSONUtil.parseObj(
+                jdbc.queryForObject("SELECT PACKAGE_SNAP FROM ws_order", String.class));
+        assertEquals(2, snap.getInt("payWay"));
+        assertEquals(2_600L, snap.getLong("waterAmountFen"), "payWay=2 实际应扣水费=价目水费");
+        assertEquals(2_600L, snap.getLong("priceWaterAmountFen"));
     }
 
     // ================= 4：预约单（规则19 前半） =================

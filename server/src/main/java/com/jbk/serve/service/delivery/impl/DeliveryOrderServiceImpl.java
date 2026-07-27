@@ -76,7 +76,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
     public CreatedDelivery createDeliveryOrder(DeliveryCreateBo bo, Long userId) {
         String requestId = RechargeOrderNo.requireCanonicalUuid(StrUtil.trim(bo.getRequestId()));
         String now = DateUtils.time();
-        validateModeStructure(bo);
+        int payWay = normalizePayWay(bo);
+        validateModeStructure(bo, payWay);
         validateReceiver(bo.getReceiveAddress(), bo.getReceivePhone());
         long cardId = decimalId(bo.getCardId(), "cardId");
         long stationId = decimalId(bo.getStationId(), "stationId");
@@ -89,7 +90,7 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         WsOrder existing = orderMapper.selectOne(Wrappers.lambdaQuery(WsOrder.class)
                 .eq(WsOrder::getOrderNo, orderNo));
         if (ObjectUtil.isNotNull(existing)) {
-            return verifyIdempotentHit(existing, userId, requestId, bo, cardId, stationId, waterTypeId);
+            return verifyIdempotentHit(existing, userId, requestId, bo, payWay, cardId, stationId, waterTypeId);
         }
 
         // 确认无历史订单、真正新建时才校验预约时效（与当前时间比较仅对新单有意义）
@@ -114,10 +115,10 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         }
         String scheduledTime = bo.getDeliveryMode() == MODE_SCHEDULED ? bo.getScheduledTime() : null;
 
-        WsOrder order = buildOrder(orderNo, userId, cardId, stationId, quote, now,
-                buildSnap(requestId, bo, quote, waterTypeId, scheduledTime));
+        WsOrder order = buildOrder(orderNo, userId, cardId, stationId, quote, payWay, now,
+                buildSnap(requestId, bo, quote, payWay, waterTypeId, scheduledTime));
         WsDeliveryTask task = buildTask(orderNo, userId, stationId, waterType, bo.getContainerSpec(),
-                bo.getDeliveryCount(), planReturn, quote, bo.getReceiveAddress(), bo.getReceivePhone(),
+                bo.getDeliveryCount(), planReturn, quote, payWay, bo.getReceiveAddress(), bo.getReceivePhone(),
                 scheduledTime, now);
         try {
             WsOrder saved = orderTxService.createPaidDeliveryOrder(order, task, autoRule, now);
@@ -129,7 +130,7 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
             if (ObjectUtil.isNull(concurrent)) {
                 throw new JbkException("配送下单冲突，请重试");
             }
-            return verifyIdempotentHit(concurrent, userId, requestId, bo, cardId, stationId, waterTypeId);
+            return verifyIdempotentHit(concurrent, userId, requestId, bo, payWay, cardId, stationId, waterTypeId);
         }
     }
 
@@ -177,6 +178,9 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
             throw new JbkException("水种停用，本期不生成");
         }
         DeliveryPricing.Quote quote = DeliveryPricing.quote(rule.getContainerSpec(), rule.getDeliveryCount());
+        // 周期单恒走全余额（D-214 边界）：规则表无支付方式列，周期扣款口径由创建规则时的
+        // 结构校验冻结为 payWay=2（见 validateModeStructure 对 3+自动补货的拒绝）。
+        int payWay = TradeEnum.PayWay.CARD_BALANCE.getValue();
         JSONObject snap = JSONUtil.createObj()
                 .set("autoRuleId", rule.getId())
                 .set("periodIndex", period)
@@ -186,11 +190,14 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
                 .set("waterTypeId", rule.getWaterTypeId())
                 .set("waterAmountFen", quote.waterAmountFen())
                 .set("deliveryFeeFen", quote.deliveryFeeFen())
+                .set("payWay", payWay)
+                .set("waterMl", quote.waterMl())
+                .set("priceWaterAmountFen", quote.waterAmountFen())
                 .set("deliveryMode", MODE_AUTO_REFILL);
         WsOrder order = buildOrder(orderNo, rule.getUserId(), rule.getCardId(), rule.getStationId(),
-                quote, now, snap.toString());
+                quote, payWay, now, snap.toString());
         WsDeliveryTask task = buildTask(orderNo, rule.getUserId(), rule.getStationId(), waterType,
-                rule.getContainerSpec(), rule.getDeliveryCount(), rule.getPlanReturnCount(), quote,
+                rule.getContainerSpec(), rule.getDeliveryCount(), rule.getPlanReturnCount(), quote, payWay,
                 rule.getReceiveAddress(), rule.getReceivePhone(), null, now);
         orderTxService.createPaidDeliveryOrder(order, task, null, now);
     }
@@ -198,10 +205,27 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
     // ==================== 装配与校验 ====================
 
     /**
+     * 支付方式归一化（D-214 结构校验，形态级、无时钟）：null 按 2 兼容老验收包
+     * （E2E-03 封板前的调用方无 payWay 字段）；白名单外一律拒绝——1（微信）不是
+     * 配送资金链的合法入参，收进来就等于放任「未接入的支付方式」建成已支付单。
+     */
+    private int normalizePayWay(DeliveryCreateBo bo) {
+        Integer payWay = bo.getPayWay();
+        if (ObjectUtil.isNull(payWay)) {
+            return TradeEnum.PayWay.CARD_BALANCE.getValue();
+        }
+        if (payWay != TradeEnum.PayWay.CARD_BALANCE.getValue()
+                && payWay != TradeEnum.PayWay.CARD_ML.getValue()) {
+            throw new JbkException("配送支付方式不合法");
+        }
+        return payWay;
+    }
+
+    /**
      * 参数结构校验（可安全用于任何时点，包括历史重放）：只看形态不看时钟——
      * 与当前时间比较的预约时效属于「仅新建单」语义，放 {@link #requireScheduledInFuture}。
      */
-    private void validateModeStructure(DeliveryCreateBo bo) {
+    private void validateModeStructure(DeliveryCreateBo bo, int payWay) {
         Integer mode = bo.getDeliveryMode();
         if (ObjectUtil.isNull(mode)
                 || (mode != MODE_IMMEDIATE && mode != MODE_SCHEDULED && mode != MODE_AUTO_REFILL)) {
@@ -218,6 +242,12 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
             Integer interval = bo.getAutoRefillIntervalDays();
             if (ObjectUtil.isNull(interval) || interval < AUTO_REFILL_MIN_DAYS || interval > AUTO_REFILL_MAX_DAYS) {
                 throw new JbkException("自动补货需配置 3~90 天的固定周期");
+            }
+            // D-214 边界：ws_delivery_auto_rule 无支付方式列，周期生成恒走全余额；
+            // 若放行首单水量抵扣，会形成「首单扣水量、后续悄悄扣钱」的口径漂移，
+            // fail-closed 拒绝，待规则表扩列并独立评审后再放开。
+            if (payWay == TradeEnum.PayWay.CARD_ML.getValue()) {
+                throw new JbkException("自动补货暂仅支持水卡余额支付");
             }
         }
     }
@@ -247,11 +277,11 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
      * 改数量/地址/水种等任何关键参数都是冲突而不是重放，拒绝且零副作用（不扣款不建单）。
      *
      * <p>冻结位置复用既有列，不造第二套快照格式：水种/数量/回收数/配送方式/预约时间/
-     * 自动补货周期/水费/配送费在创单 PACKAGE_SNAP（见 {@link #buildSnap}），
+     * 自动补货周期/支付方式/水费/配送费在创单 PACKAGE_SNAP（见 {@link #buildSnap}），
      * 地址/电话在任务行 RECEIVE_ADDRESS/RECEIVE_PHONE，水站/水卡在订单行列。</p>
      */
     private CreatedDelivery verifyIdempotentHit(WsOrder existing, Long userId, String requestId,
-                                                DeliveryCreateBo bo, long cardId, long stationId,
+                                                DeliveryCreateBo bo, int payWay, long cardId, long stationId,
                                                 long waterTypeId) {
         if (ObjectUtil.notEqual(existing.getUserId(), userId)
                 || ObjectUtil.notEqual(existing.getOrderType(), TradeEnum.OrderType.DELIVERY.getValue())) {
@@ -283,7 +313,12 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         Integer frozenInterval = snap.getInt("autoRefillIntervalDays");
         Integer replayInterval = ObjectUtil.equal(bo.getDeliveryMode(), MODE_AUTO_REFILL)
                 ? bo.getAutoRefillIntervalDays() : null;
+        // 支付方式属冻结参数（D-214）：旧单快照缺 payWay 按 2 对待（封板前全余额唯一口径），
+        // 同 requestId 换 payWay 是换一笔资金动作，必须按冲突拒绝而不是重放
+        int frozenPayWay = ObjectUtil.defaultIfNull(snap.getInt("payWay"),
+                TradeEnum.PayWay.CARD_BALANCE.getValue());
         boolean conflict = ObjectUtil.notEqual(existing.getCardId(), cardId)
+                || frozenPayWay != payWay
                 || ObjectUtil.notEqual(existing.getStationId(), stationId)
                 || ObjectUtil.notEqual(snap.getLong("waterTypeId"), waterTypeId)
                 || ObjectUtil.notEqual(snap.getStr("containerSpec"), bo.getContainerSpec())
@@ -297,7 +332,10 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         if (conflict) {
             throw new JbkException("同一 requestId 不可更换配送参数");
         }
-        // 水费/配送费冻结自洽：快照、任务行与订单总额三方恒等（快照被改写即拒绝）
+        // 水费/配送费冻结自洽：快照、任务行与订单总额三方恒等（快照被改写即拒绝）。
+        // D-214 金额口径下 waterAmountFen 是「本单实际应扣水费」（payWay=3 恒 0，价目参考
+        // 另存 priceWaterAmountFen），恒等式 ORDER_AMOUNT = waterAmountFen + deliveryFeeFen
+        // 对两种支付方式与全部历史单一体成立，无需按 payWay 分叉。
         Long snapWater = snap.getLong("waterAmountFen");
         Long snapFee = snap.getLong("deliveryFeeFen");
         boolean amountConsistent = ObjectUtil.isNotNull(snapWater) && ObjectUtil.isNotNull(snapFee)
@@ -332,7 +370,7 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
     }
 
     private WsOrder buildOrder(String orderNo, Long userId, long cardId, long stationId,
-                               DeliveryPricing.Quote quote, String now, String snap) {
+                               DeliveryPricing.Quote quote, int payWay, String now, String snap) {
         WsOrder order = new WsOrder()
                 .setOrderNo(orderNo)
                 .setOrderType(TradeEnum.OrderType.DELIVERY.getValue())
@@ -340,9 +378,12 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
                 .setStationId(stationId)
                 .setCardId(cardId)
                 .setPackageSnap(snap)
-                .setOrderAmount(quote.totalFen())
-                .setPayWay(TradeEnum.PayWay.CARD_BALANCE.getValue())
-                // 规则5：卡余额即时扣款成功才建单，直接落已支付态进入待履约
+                // D-214 金额口径：ORDER_AMOUNT = 本单实际应扣金额 =
+                // (payWay==2 ? 水费 : 0) + 配送费；payWay=3 的水费以水量抵扣，不计入金额
+                .setOrderAmount(payWay == TradeEnum.PayWay.CARD_ML.getValue()
+                        ? quote.deliveryFeeFen() : quote.totalFen())
+                .setPayWay(payWay)
+                // 规则5：卡即时扣减成功才建单，直接落已支付态进入待履约
                 .setOrderStatus(TradeEnum.OrderStatus.PAID.getValue());
         order.setCreateTime(now);
         order.setUpdateTime(now);
@@ -351,7 +392,7 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
 
     private WsDeliveryTask buildTask(String orderNo, Long userId, long stationId, WsWaterType waterType,
                                      String containerSpec, Integer deliveryCount, int planReturn,
-                                     DeliveryPricing.Quote quote, String address, String phone,
+                                     DeliveryPricing.Quote quote, int payWay, String address, String phone,
                                      String scheduledTime, String now) {
         WsDeliveryTask task = new WsDeliveryTask()
                 .setTaskNo(DeliveryOrderNo.deriveTaskNo(orderNo))
@@ -362,7 +403,9 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
                 .setContainerSpec(containerSpec)
                 .setDeliveryCount(deliveryCount)
                 .setPlanReturnCount(planReturn)
-                .setWaterAmount(quote.waterAmountFen())
+                // WATER_AMOUNT 与订单金额同口径（D-214）：payWay=3 水费以水量抵扣，金额记 0，
+                // 保持「ORDER_AMOUNT = WATER_AMOUNT + DELIVERY_FEE」不变式对全部支付方式成立
+                .setWaterAmount(payWay == TradeEnum.PayWay.CARD_ML.getValue() ? 0L : quote.waterAmountFen())
                 .setDeliveryFee(quote.deliveryFeeFen())
                 .setReceiveAddress(address)
                 .setReceivePhone(phone)
@@ -374,8 +417,14 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         return task;
     }
 
+    /**
+     * 创单冻结快照。D-214 起 waterAmountFen 语义为「本单实际应扣水费」（payWay=3 恒 0），
+     * 原价目参考语义由 priceWaterAmountFen 承接（供展示与后续 E2E-04 补偿折算）；
+     * waterMl 为容器总水量（毫升），payWay=3 时即事务内 BALANCE_ML 抵扣量的唯一权威值。
+     */
     private String buildSnap(String requestId, DeliveryCreateBo bo, DeliveryPricing.Quote quote,
-                             long waterTypeId, String scheduledTime) {
+                             int payWay, long waterTypeId, String scheduledTime) {
+        boolean payByMl = payWay == TradeEnum.PayWay.CARD_ML.getValue();
         JSONObject snap = JSONUtil.createObj()
                 .set("requestId", requestId)
                 .set("containerSpec", bo.getContainerSpec())
@@ -384,8 +433,11 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
                 .set("waterTypeId", waterTypeId)
                 .set("unitWaterPriceFen", DeliveryPricing.requireUnitWaterPrice(bo.getContainerSpec()))
                 .set("deliveryFeePerContainerFen", DeliveryPricing.DELIVERY_FEE_PER_CONTAINER_FEN)
-                .set("waterAmountFen", quote.waterAmountFen())
+                .set("waterAmountFen", payByMl ? 0L : quote.waterAmountFen())
                 .set("deliveryFeeFen", quote.deliveryFeeFen())
+                .set("payWay", payWay)
+                .set("waterMl", quote.waterMl())
+                .set("priceWaterAmountFen", quote.waterAmountFen())
                 .set("deliveryMode", bo.getDeliveryMode());
         if (StrUtil.isNotBlank(scheduledTime)) {
             snap.set("scheduledTime", scheduledTime);

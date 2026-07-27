@@ -1,7 +1,8 @@
 -- ============================================================
 -- 六维达康 · 水站域（ws_station）
 -- 依赖：共用底座表 api_dict_type / api_dict_data / api_rbac_menu（库内已存在）
--- 执行：mysql -h127.0.0.1 -P3308 -u"$DAKANG_DB_USERNAME" -p"$DAKANG_DB_PASSWORD" dakang < ws_station.sql
+-- 执行：mysql -h127.0.0.1 -P3308 -uroot -p"$DAKANG_DB_PASSWORD" dakang < ws_station.sql
+-- 口令不入库：先 `set -a; . .env; set +a` 导出仓库根 .env 的 DAKANG_DB_PASSWORD（模板见 .env.example）
 -- 需求映射：需求池「水站管理」（P0/一期必需/MVP:是）
 -- ============================================================
 

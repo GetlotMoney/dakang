@@ -110,6 +110,24 @@ final class DeliveryDbSchema {
                   ACTIVE_TASK_KEY BIGINT GENERATED ALWAYS AS (IF(APPEAL_STATUS = 1, TASK_ID, NULL)) STORED,
                   UNIQUE KEY uk_appeal_active_task (ACTIVE_TASK_KEY)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        // 管理端申诉列表的派生展示列来源：ws_user（申诉人）/ api_employee（裁决处理人）。
+        // 只保留投影用到的列，NOT NULL 一律放宽——这里被测的是聚合口径，不是底座建表约束。
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_user (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20),
+                  USER_NAME VARCHAR(50), USER_GENDER TINYINT NULL, USER_PHONE VARCHAR(20),
+                  USER_STATUS TINYINT NULL, DISABLED_FLAG TINYINT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS api_employee (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20),
+                  LOGIN_NAME VARCHAR(50) NULL, EMPLOYEE_NAME VARCHAR(30) NULL,
+                  EMPLOYEE_PHONE VARCHAR(11) NULL, DEPT_ID BIGINT NULL, DISABLED_FLAG TINYINT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_delivery_exception (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -172,7 +190,8 @@ final class DeliveryDbSchema {
         for (String table : new String[]{
                 "ws_message", "ws_domain_event", "ws_delivery_auto_rule", "ws_delivery_media",
                 "ws_delivery_exception", "ws_delivery_appeal", "ws_delivery_task", "ws_wallet_flow",
-                "ws_order", "ws_card", "ws_courier", "ws_water_type", "ws_station"}) {
+                "ws_order", "ws_card", "ws_courier", "ws_water_type", "ws_station",
+                "ws_user", "api_employee"}) {
             jdbc.execute("TRUNCATE TABLE " + table);
         }
     }

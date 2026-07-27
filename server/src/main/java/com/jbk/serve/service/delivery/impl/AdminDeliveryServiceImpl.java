@@ -95,8 +95,10 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
 
     /** 订单类型(1340)：3=水配送。 */
     private static final int ORDER_TYPE_DELIVERY = 3;
-    /** 支付方式(1346)：2=水卡余额（当前配送资金链唯一支付方式）。 */
+    /** 支付方式(1346)：2=水卡余额（全余额）。 */
     private static final int PAY_WAY_CARD_BALANCE = 2;
+    /** 支付方式(1346)：3=水卡水量（D-214 混合结算：水费扣水量、配送费扣余额）。 */
+    private static final int PAY_WAY_CARD_ML = 3;
     /** 流水类型(1344)：7=配送扣减。 */
     private static final int FLOW_TYPE_DELIVERY_CONSUME = 7;
     /** 消息领域(1312)：3=配送。 */
@@ -124,6 +126,11 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
         return assembleTaskDetail(item, order, task);
     }
 
+    /**
+     * 申诉列表（D-215）：分页单位是<b>案件（TASK_ID）</b>而非申诉条数，聚合在 SQL 层完成——
+     * 前端聚合会被分页边界把同任务的申诉切到两页，案件残缺。本层只做脱敏与原因中文名映射，
+     * 代表申诉的选取口径、状态筛选语义与排序全部由 mapper 收口。
+     */
     @Override
     public PageDataVo<AdminDeliveryAppealItemVo> pageAppeals(AdminDeliveryAppealBo bo) {
         Page<AdminDeliveryAppealItemVo> page = new Page<>(bo.getCurrent(), bo.getSize());
@@ -155,6 +162,11 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
             return vo;
         }
         vo.setLinkStatus("ok");
+        // D-215 申诉往来：共键核验通过后才下发同任务全部申诉，裁决时能看到上一轮驳回理由。
+        // 每条同样过 decorateAppealItem（脱敏 + 原因中文名），历史不走另一套投影口径。
+        List<AdminDeliveryAppealItemVo> history = appealMapper.selectAdminAppealsByTaskId(appeal.getTaskId());
+        history.forEach(this::decorateAppealItem);
+        vo.setAppealHistory(history);
         WsCourier courier = ObjectUtil.isNull(task.getCourierId()) ? null
                 : courierMapper.selectById(task.getCourierId());
         Long courierUserId = ObjectUtil.isNull(courier) ? null : courier.getUserId();
@@ -244,6 +256,11 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
         block.setWaterAmountFen(task.getWaterAmount());
         block.setDeliveryFeeFen(task.getDeliveryFee());
         block.setTotalAmountFen(sumFen(task.getWaterAmount(), task.getDeliveryFee()));
+        // D-214：payWay=3 补下发水量抵扣（快照 waterMl），页面据此把 0 元水费如实呈现为水量抵扣
+        block.setPayWay(order.getPayWay());
+        if (ObjectUtil.equal(order.getPayWay(), PAY_WAY_CARD_ML)) {
+            block.setDeductWaterMl(snapWaterMl(order));
+        }
         block.setReceiveAddress(task.getReceiveAddress());
         block.setReceiveMaskedPhone(PhoneMask.mask(task.getReceivePhone()));
         block.setScheduledTime(blankToNull(task.getScheduledTime()));
@@ -275,6 +292,8 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
                 .setBizKey(bizKey)
                 .setAmountChangeFen(flow.getAmountChange())
                 .setAmountAfterFen(flow.getAmountAfter())
+                .setMlChange(flow.getMlChange())
+                .setMlAfter(flow.getMlAfter())
                 .setTime(flow.getCreateTime())
                 .setRemark(flow.getFlowRemark());
     }
@@ -695,12 +714,14 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
 
     /**
      * 资金链核验（DELIVERY:orderNo 幂等键流水）：
-     * 当前配送资金链只有「本人水卡余额一次性支付」，其余形态一律按证据缺失呈现。
+     * 配送资金链两种形态（D-214）——payWay=2 全余额（水量变动必须为 0）；
+     * payWay=3 混合结算（金额变动=-配送费即-订单总额，水量变动=-创单快照 waterMl）。
+     * 其余支付方式一律按证据缺失呈现。
      */
     static String deliveryFlowMismatch(WsOrder order, WsWalletFlow flow) {
         Integer payWay = order.getPayWay();
-        if (ObjectUtil.isNull(payWay) || payWay != PAY_WAY_CARD_BALANCE) {
-            return "当前配送资金链仅支持水卡余额支付，该订单支付方式（" + payWay + "）无法核验扣款流水";
+        if (ObjectUtil.isNull(payWay) || (payWay != PAY_WAY_CARD_BALANCE && payWay != PAY_WAY_CARD_ML)) {
+            return "当前配送资金链仅支持水卡余额/水量支付，该订单支付方式（" + payWay + "）无法核验扣款流水";
         }
         if (ObjectUtil.isNull(order.getCardId())) {
             return "配送订单缺少扣款水卡（CARD_ID 为空），扣款证据不完整";
@@ -726,10 +747,34 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
                 || amountChange != -orderAmount) {
             return "扣款流水金额（" + amountChange + "）与订单总额（" + orderAmount + "）不一致";
         }
-        if (ObjectUtil.isNotNull(flow.getMlChange()) && flow.getMlChange() != 0L) {
-            return "配送扣款不得变动水量（ML_CHANGE=" + flow.getMlChange() + "）";
+        if (payWay == PAY_WAY_CARD_BALANCE) {
+            if (ObjectUtil.isNotNull(flow.getMlChange()) && flow.getMlChange() != 0L) {
+                return "余额支付的配送扣款不得变动水量（ML_CHANGE=" + flow.getMlChange() + "）";
+            }
+            return null;
+        }
+        // payWay=3：水量变动必须恰等于创单冻结快照的 -waterMl（快照即扣减依据，两者不一致即证据断裂）
+        Long snapWaterMl = snapWaterMl(order);
+        if (ObjectUtil.isNull(snapWaterMl) || snapWaterMl <= 0) {
+            return "水量抵扣订单缺少创单快照 waterMl，无法核验水量扣减";
+        }
+        Long mlChange = flow.getMlChange();
+        if (ObjectUtil.isNull(mlChange) || mlChange != -snapWaterMl) {
+            return "扣款流水水量变动（" + mlChange + "）与快照抵扣水量（" + snapWaterMl + "）不一致";
         }
         return null;
+    }
+
+    /** 创单冻结快照的 waterMl（D-214）；快照缺失/损坏返回空，由调用方按证据缺失处理。 */
+    static Long snapWaterMl(WsOrder order) {
+        if (StrUtil.isBlank(order.getPackageSnap())) {
+            return null;
+        }
+        try {
+            return JSONUtil.parseObj(order.getPackageSnap()).getLong("waterMl");
+        } catch (Exception malformed) {
+            return null;
+        }
     }
 
     /**

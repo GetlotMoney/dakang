@@ -92,8 +92,10 @@ sa-token:
   token-style: uuid
   # 是否输出操作日志
   is-log: true
-  # jwt秘钥——项目专属随机值（沿用基座公共值会导致跨项目 token 可互伪造）
-  jwt-secret-key: "${DAKANG_JWT_SECRET:}"
+  # jwt秘钥——项目专属随机值（沿用基座公共值会导致跨项目 token 可互伪造）。
+  # 只从环境变量取，不留明文：deploy/docker-compose.yml 以 :? 强制要求 DAKANG_JWT_SECRET，
+  # 本地直跑需自行导出。留空会导致 sa-token 签发 token 时报错——这是有意的 fail-closed。
+  jwt-secret-key: ${DAKANG_JWT_SECRET:}
 
 management:
   endpoint:
