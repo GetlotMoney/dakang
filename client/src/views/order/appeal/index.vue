@@ -8,8 +8,8 @@
       type="info"
       :closable="false"
       show-icon
-      title="申诉由用户端在签收后 24 小时内发起"
-      description="裁决结果只有三种：不成立驳回 / 补送待执行 / 成立待补偿。资金补偿仅登记待处理，真实退款不在本页发生；照片以受控媒体元数据呈现。"
+      title="申诉由用户端在签收后 24 小时内发起；列表按订单（配送任务）聚合，一行即一个申诉案件"
+      description="裁决结果只有三种：不成立驳回 / 补送待执行 / 成立待补偿。资金补偿仅登记待处理，真实退款不在本页发生；照片以受控媒体元数据呈现。状态筛选按案件当前状态命中，历史出现过的状态不参与筛选。"
     />
 
     <ElCard class="art-table-card" shadow="never">
@@ -31,11 +31,25 @@
         <ElTag type="success" effect="plain" class="ml-auto">申诉数据来自真实后端</ElTag>
       </div>
 
-      <ElTable :data="list" row-key="appealId" border v-loading="loading">
+      <!-- 一行 = 一个案件（taskId）；同订单的多次申诉由后端聚合，行内展示代表申诉 -->
+      <ElTable :data="list" row-key="taskId" border v-loading="loading">
         <ElTableColumn label="关联订单 / 任务号" min-width="200" fixed="left">
           <template #default="{ row }">
             <div>{{ row.orderNo || '-' }}</div>
             <div class="text-xs text-secondary">{{ row.taskNo || '-' }}</div>
+          </template>
+        </ElTableColumn>
+        <!-- 反复申诉是运营信号：必须在列表一眼可见，不能只藏在抽屉里 -->
+        <ElTableColumn label="申诉次数" width="100" align="center">
+          <template #default="{ row }">
+            <ElTooltip
+              v-if="appealTimes(row) > 1"
+              content="该订单被多次申诉，点击查看完整往来"
+              placement="top"
+            >
+              <ElTag type="warning" effect="dark">{{ appealTimes(row) }} 次</ElTag>
+            </ElTooltip>
+            <span v-else>{{ appealTimes(row) }} 次</span>
           </template>
         </ElTableColumn>
         <ElTableColumn label="申诉用户" min-width="150">
@@ -64,8 +78,13 @@
             }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="申诉时间" width="150">
-          <template #default="{ row }">{{ formatTime(row.createTime) }}</template>
+        <ElTableColumn label="申诉时间" width="170">
+          <template #default="{ row }">
+            <div>{{ formatTime(row.lastAppealTime || row.createTime) }}</div>
+            <div v-if="appealTimes(row) > 1 && row.firstAppealTime" class="text-xs text-secondary">
+              首次 {{ formatTime(row.firstAppealTime) }}
+            </div>
+          </template>
         </ElTableColumn>
         <ElTableColumn label="处理人 / 结果" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">
@@ -79,9 +98,9 @@
           <template #default="{ row }">
             <ElButton type="primary" size="small" link @click="showEvidence(row)">
               {{
-                row.appealStatus === 1 && hasPermission('order:appeal:handle')
+                row.activeAppealId && hasPermission('order:appeal:handle')
                   ? '查看并裁决'
-                  : '查看证据'
+                  : '查看历史'
               }}
             </ElButton>
           </template>
@@ -102,6 +121,54 @@
     <ElDrawer v-model="evidenceVisible" title="申诉证据与配送履约" size="720px" destroy-on-close>
       <div v-loading="evidenceLoading">
         <template v-if="evidence">
+          <!--
+            申诉往来：同一订单被驳回后再次申诉时，运营必须先看到上一轮的理由与裁决说明，
+            否则是在缺上下文的情况下裁决。只有一轮时不出这个区块，避免空壳。
+          -->
+          <template v-if="appealHistory.length > 1">
+            <div class="section-title">申诉往来（共 {{ appealHistory.length }} 次）</div>
+            <ElTimeline class="pl-1">
+              <ElTimelineItem
+                v-for="(item, index) in appealHistory"
+                :key="item.appealId"
+                :type="item.appealId === evidence.appeal.appealId ? 'primary' : 'info'"
+                :hollow="item.appealId !== evidence.appeal.appealId"
+                :timestamp="formatTime(item.createTime)"
+                placement="top"
+              >
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="font-medium">第 {{ index + 1 }} 次申诉</span>
+                  <ElTag size="small" effect="plain">
+                    {{ item.appealReasonLabel || item.appealReason || '-' }}
+                  </ElTag>
+                  <ElTag
+                    v-if="item.appealId === evidence.appeal.appealId"
+                    size="small"
+                    type="primary"
+                  >
+                    本次
+                  </ElTag>
+                  <span class="text-xs text-secondary">
+                    实收 {{ item.receivedCount != null ? `${item.receivedCount} 桶` : '未填写' }}
+                  </span>
+                </div>
+                <div class="mt-1 text-sm">{{ item.appealDesc || '用户未填写说明' }}</div>
+                <div v-if="item.handleResult" class="appeal-verdict">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <ElTag :type="statusTagType(item.appealStatus)" size="small">
+                      {{ statusLabel(item.appealStatus) }}
+                    </ElTag>
+                    <span class="text-xs text-secondary">
+                      {{ item.handleByName || '-' }} · {{ formatTime(item.handleTime) }}
+                    </span>
+                  </div>
+                  <div class="mt-1 text-sm">{{ item.handleResult }}</div>
+                </div>
+                <div v-else class="mt-1 text-xs text-secondary">尚未裁决</div>
+              </ElTimelineItem>
+            </ElTimeline>
+          </template>
+
           <ElDescriptions :column="2" border label-width="96px">
             <ElDescriptionsItem label="关联订单">{{
               evidence.appeal.orderNo || '-'
@@ -498,6 +565,11 @@
     taskStatusOptions.value.find((item) => item.value === value)?.label ||
     (value == null ? '-' : String(value))
 
+  /** 聚合行的累计申诉次数；后端未下发时按 1 次呈现，不臆造更大的数字。 */
+  const appealTimes = (row: AppealAdminItem) => row.appealCount ?? 1
+  /** 共键核验未通过时后端不下发往来（fail-closed），此处同样按空处理。 */
+  const appealHistory = computed(() => evidence.value?.appealHistory ?? [])
+
   async function loadData() {
     loading.value = true
     try {
@@ -668,6 +740,13 @@
     color: var(--el-text-color-placeholder);
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .appeal-verdict {
+    padding: 8px 10px;
+    margin-top: 8px;
+    background: var(--el-fill-color-lighter);
+    border-radius: 6px;
   }
 
   .courier-evidence {

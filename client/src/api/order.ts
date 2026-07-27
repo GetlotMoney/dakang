@@ -273,6 +273,8 @@ export interface DeliveryTaskAdminItem {
   deliveryFeeFen?: number
   /** 总额=水费+配送费（服务端求和；任一侧缺失为 undefined，不用 0 冒充）。 */
   totalAmountFen?: number
+  /** 支付方式(1346)：2水卡余额 3水卡水量+余额付配送费（D-214，关联 ws_order 派生）。 */
+  payWay?: number
   receiveAddress?: string
   taskStatus: number
   scheduledTime?: string
@@ -295,7 +297,15 @@ export interface DeliveryTaskAdminDetail extends DeliveryTaskAdminItem {
   exceptions?: DeliveryExceptionAdmin[]
 }
 
-/** 管理端申诉列表项（真实接口）。 */
+/**
+ * 管理端申诉列表项（真实接口）。
+ *
+ * 分页列表下发的是<b>案件聚合行</b>（一行 = 一个 taskId，D-215）：`appealId` 及原因、
+ * 实收、状态、处理人等展示字段取代表申诉（活跃申诉优先，无活跃取最近一条），
+ * 因此 `appealStatus` 就是案件当前状态；裁决/证据接口继续用 `appealId`。
+ * 聚合列（appealCount / activeAppealId / first-lastAppealTime）只在分页下发，
+ * 证据详情的 `appeal` 与 `appealHistory` 条目上为空。
+ */
 export interface AppealAdminItem {
   appealId: string
   taskId?: string
@@ -317,6 +327,14 @@ export interface AppealAdminItem {
   handleTime?: string
   handleResult?: string
   createTime?: string
+  /** 该任务累计申诉次数；>1 表示反复申诉，列表必须显式提示运营。 */
+  appealCount?: number
+  /** 当前待裁决申诉ID；为空表示案件无待处理申诉（后端唯一键保证至多一条）。 */
+  activeAppealId?: string
+  /** 案件内最早申诉时间。 */
+  firstAppealTime?: string
+  /** 案件内最近申诉时间（列表排序与「申诉时间」列取此值）。 */
+  lastAppealTime?: string
 }
 
 /** 配送员申诉举证（COURIER_EVIDENCES JSON 投影）。 */
@@ -331,6 +349,12 @@ export interface AppealAdminEvidence {
   appeal: AppealAdminItem
   linkStatus: 'ok' | 'mismatch'
   linkReason?: string
+  /**
+   * 同任务申诉往来，按申诉时间正序（含当前查看的这条）。
+   * 历史条目只有文本与裁决结论，媒体元数据仍只针对当前 appealId 那条申诉。
+   * linkStatus=mismatch 时不下发。
+   */
+  appealHistory?: AppealAdminItem[]
   appealPhotos?: AdminMediaRef[]
   courierEvidences?: CourierEvidenceAdmin[]
   task?: DeliveryTaskAdminDetail
@@ -354,6 +378,10 @@ export interface DeliveryPaymentTrace {
   bizKey?: string
   amountChangeFen?: number
   amountAfterFen?: number
+  /** 水量变动(毫升)，payWay=3 抵扣为负；payWay=2 恒 0（D-214）。 */
+  mlChange?: number
+  /** 扣减后卡水量快照(毫升)（流水写入时冻结）。 */
+  mlAfter?: number
   time?: string
   remark?: string
 }
@@ -390,6 +418,10 @@ export interface RealDeliveryTrace {
   waterAmountFen?: number
   deliveryFeeFen?: number
   totalAmountFen?: number
+  /** 支付方式(1346)：2水卡余额 3水卡水量+余额付配送费（D-214）。 */
+  payWay?: number
+  /** payWay=3 的水量抵扣(毫升)，来源创单冻结快照；余额支付为空。 */
+  deductWaterMl?: number
   receiveAddress?: string
   receiveMaskedPhone?: string
   scheduledTime?: string
@@ -1488,6 +1520,7 @@ function normalizeDeliveryTaskAdminItem(raw: Record<string, any>): DeliveryTaskA
     waterAmountFen: toNum(raw.waterAmountFen),
     deliveryFeeFen: toNum(raw.deliveryFeeFen),
     totalAmountFen: toNum(raw.totalAmountFen),
+    payWay: toNum(raw.payWay),
     receiveAddress: toText(raw.receiveAddress),
     taskStatus: toNum(raw.taskStatus) ?? 0,
     scheduledTime: toText(raw.scheduledTime),
@@ -1538,7 +1571,12 @@ function normalizeAppealAdminItem(raw: Record<string, any>): AppealAdminItem {
     handleByName: toText(raw.handleByName),
     handleTime: toText(raw.handleTime),
     handleResult: toText(raw.handleResult),
-    createTime: toText(raw.createTime)
+    createTime: toText(raw.createTime),
+    // 聚合列只在案件分页下发；详情/往来条目上后端本就不给，归一化后保持 undefined
+    appealCount: toNum(raw.appealCount),
+    activeAppealId: toIdStr(raw.activeAppealId),
+    firstAppealTime: toText(raw.firstAppealTime),
+    lastAppealTime: toText(raw.lastAppealTime)
   }
 }
 
@@ -1584,6 +1622,8 @@ function normalizeRealDeliveryTrace(
     waterAmountFen: toNum(raw.waterAmountFen),
     deliveryFeeFen: toNum(raw.deliveryFeeFen),
     totalAmountFen: toNum(raw.totalAmountFen),
+    payWay: toNum(raw.payWay),
+    deductWaterMl: toNum(raw.deductWaterMl),
     receiveAddress: toText(raw.receiveAddress),
     receiveMaskedPhone: toText(raw.receiveMaskedPhone),
     scheduledTime: toText(raw.scheduledTime),
@@ -1599,6 +1639,8 @@ function normalizeRealDeliveryTrace(
           bizKey: toText(paymentRaw.bizKey),
           amountChangeFen: toNum(paymentRaw.amountChangeFen),
           amountAfterFen: toNum(paymentRaw.amountAfterFen),
+          mlChange: toNum(paymentRaw.mlChange),
+          mlAfter: toNum(paymentRaw.mlAfter),
           time: toText(paymentRaw.time),
           remark: toText(paymentRaw.remark)
         }
@@ -1998,7 +2040,11 @@ export async function fetchDeliveryTaskDetail(taskId: string): Promise<DeliveryT
   return normalizeDeliveryTaskAdminDetail(res)
 }
 
-/** 申诉分页（真实接口 /order/appeal/page，待处理排前）。 */
+/**
+ * 申诉分页（真实接口 /order/appeal/page）：返回的是案件聚合行（一行一个 taskId，D-215），
+ * 待处理案件排前、其余按最近申诉时间倒序；total 是案件数不是申诉条数。
+ * appealStatus 筛的是案件当前状态。
+ */
 export async function fetchAppealPage(params: {
   current: number
   size: number
@@ -2029,10 +2075,15 @@ export async function fetchAppealEvidence(appealId: string): Promise<AppealAdmin
   const evidences = Array.isArray(res?.courierEvidences)
     ? (res.courierEvidences as Record<string, any>[])
     : undefined
+  // 断链（linkStatus=mismatch）时后端不下发往来，归一化不补空数组冒充「查过且无历史」
+  const history = Array.isArray(res?.appealHistory)
+    ? (res.appealHistory as Record<string, any>[])
+    : undefined
   return {
     appeal: normalizeAppealAdminItem((res?.appeal as Record<string, any>) ?? {}),
     linkStatus: toLinkStatus(res?.linkStatus),
     linkReason: toText(res?.linkReason),
+    appealHistory: history?.map(normalizeAppealAdminItem),
     appealPhotos: photos?.map(normalizeMediaRef),
     courierEvidences: evidences?.map(normalizeCourierEvidenceAdmin),
     task: taskRaw ? normalizeDeliveryTaskAdminDetail(taskRaw) : undefined

@@ -501,10 +501,18 @@
                     : '尚未签收'
                 }}
               </ElDescriptionsItem>
+              <!-- D-214：payWay=3 水费以水量抵扣（金额恒 0），如实呈现抵扣行而不是 0 元水费 -->
               <ElDescriptionsItem label="费用快照" :span="2">
-                水费 {{ fenToYuan(trace.deliveryTrace.waterAmountFen) }} 元 + 配送费
-                {{ fenToYuan(trace.deliveryTrace.deliveryFeeFen) }} 元 =
-                {{ fenToYuan(trace.deliveryTrace.totalAmountFen) }} 元
+                <template v-if="trace.deliveryTrace.payWay === 3">
+                  水量抵扣 {{ mlToLiter(trace.deliveryTrace.deductWaterMl) }} + 配送费
+                  {{ fenToYuan(trace.deliveryTrace.deliveryFeeFen) }} 元 = 应扣
+                  {{ fenToYuan(trace.deliveryTrace.totalAmountFen) }} 元
+                </template>
+                <template v-else>
+                  水费 {{ fenToYuan(trace.deliveryTrace.waterAmountFen) }} 元 + 配送费
+                  {{ fenToYuan(trace.deliveryTrace.deliveryFeeFen) }} 元 =
+                  {{ fenToYuan(trace.deliveryTrace.totalAmountFen) }} 元
+                </template>
               </ElDescriptionsItem>
               <ElDescriptionsItem label="收水地址" :span="2">{{
                 trace.deliveryTrace.receiveAddress || '-'
@@ -598,6 +606,17 @@
               <ElDescriptionsItem label="扣款后余额">
                 ￥{{ fenToYuan(trace.deliveryTrace.payment.amountAfterFen) }}
               </ElDescriptionsItem>
+              <!-- D-214 payWay=3：同一行流水的水量扣减证据（ML_CHANGE/ML_AFTER 双列） -->
+              <template v-if="(trace.deliveryTrace.payment.mlChange ?? 0) !== 0">
+                <ElDescriptionsItem label="水量扣减">
+                  <span class="flow-minus"
+                    >-{{ mlToLiter(Math.abs(trace.deliveryTrace.payment.mlChange ?? 0)) }}</span
+                  >
+                </ElDescriptionsItem>
+                <ElDescriptionsItem label="扣减后水量">
+                  {{ mlToLiter(trace.deliveryTrace.payment.mlAfter) }}
+                </ElDescriptionsItem>
+              </template>
               <ElDescriptionsItem label="流水时间">{{
                 formatTime(trace.deliveryTrace.payment.time)
               }}</ElDescriptionsItem>

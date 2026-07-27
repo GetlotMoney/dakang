@@ -69,9 +69,15 @@
           <template #default="{ row }">
             <template v-if="row.totalAmountFen != null">
               {{ fenToYuan(row.totalAmountFen) }}
+              <!-- D-214：payWay=3 水费以水量抵扣（金额恒 0），标注抵扣而不是渲染 0 元水费 -->
               <div class="text-xs text-secondary">
-                水费 {{ fenToYuan(row.waterAmountFen) }} + 配送费
-                {{ fenToYuan(row.deliveryFeeFen) }}
+                <template v-if="row.payWay === 3">
+                  水量抵扣单 · 配送费 {{ fenToYuan(row.deliveryFeeFen) }}
+                </template>
+                <template v-else>
+                  水费 {{ fenToYuan(row.waterAmountFen) }} + 配送费
+                  {{ fenToYuan(row.deliveryFeeFen) }}
+                </template>
               </div>
             </template>
             <template v-else>-</template>
@@ -181,9 +187,18 @@
                   <template v-else>尚未到签收节点</template>
                 </ElDescriptionsItem>
                 <ElDescriptionsItem label="价格快照">
-                  水费 {{ fenToYuan(detail.waterAmountFen) }} 元 + 配送费
-                  {{ fenToYuan(detail.deliveryFeeFen) }} 元 =
-                  {{ fenToYuan(detail.totalAmountFen) }} 元
+                  <template v-if="detail.payWay === 3">
+                    水量抵扣单：配送费 {{ fenToYuan(detail.deliveryFeeFen) }} 元 = 应扣
+                    {{
+                      fenToYuan(detail.totalAmountFen)
+                    }}
+                    元（水费以水卡水量抵扣，抵扣量见订单中心追溯）
+                  </template>
+                  <template v-else>
+                    水费 {{ fenToYuan(detail.waterAmountFen) }} 元 + 配送费
+                    {{ fenToYuan(detail.deliveryFeeFen) }} 元 =
+                    {{ fenToYuan(detail.totalAmountFen) }} 元
+                  </template>
                 </ElDescriptionsItem>
                 <ElDescriptionsItem label="配送员">
                   <template v-if="detail.courierName">
