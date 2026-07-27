@@ -31,13 +31,21 @@ import { withRealSession } from './real-session'
 import { post } from './request'
 import { currentMode, realAdapterPending, selectAdapter } from './runtime'
 import { scenarioStore } from '@/scenario/store'
+import { formatFen, formatMl } from '@/utils/format'
 
 export type DeliveryTaskStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7
 export type DeliveryTaskView = 'available' | 'active' | 'history'
 export type SignPhotoType = 1 | 2 | 3
 export type CourierAdmissionStatus = 0 | 1 | 2 | 3 | 4
 
+/**
+ * 配送支付方式（D-214 二选一，1346 子集）：2 全余额（水费+配送费均扣余额）；
+ * 3 混合结算（水费按容器水量抵扣 BALANCE_ML，配送费仍扣余额——配送费是服务费，不得用毫升支付）。
+ */
+export type DeliveryPayWay = 2 | 3
+
 export interface DeliveryPriceSnapshot {
+  /** D-214 口径：本单实际应扣水费（payWay=3 恒 0，抵扣升数由容器规格×数量换算展示）。 */
   waterAmountFen: MoneyFen
   deliveryFeeFen: MoneyFen
   totalAmountFen: MoneyFen
@@ -74,6 +82,11 @@ export interface DeliveryTask {
   receiveAddress: string
   maskedPhone: string
   priceSnapshot: DeliveryPriceSnapshot
+  /**
+   * 支付方式（D-214）。可选以兼容封板前的 Mock 夹具与后端旧单：缺省一律按 2（全余额）
+   * 展示——历史配送单只有余额支付一种口径。
+   */
+  payWay?: DeliveryPayWay
   taskStatus: DeliveryTaskStatus
   version: number
   acceptTime?: BusinessTime
@@ -106,6 +119,8 @@ export interface CreateDeliveryOrderInput {
   receiveAddress?: string
   /** 收货电话（real 必填，11 位手机号；服务端入库供配送联系、出网必脱敏）；Mock 由 addressId 解析。 */
   receivePhone?: string
+  /** 支付方式（D-214 二选一）：缺省按 2 全余额，兼容既有调用方；金额判定最终在服务端。 */
+  payWay?: DeliveryPayWay
 }
 
 /**
@@ -228,6 +243,127 @@ export const CONTAINER_WATER_PRICE_FEN: Record<DeliveryTask['containerSpec'], Mo
   '20L桶': 1300,
 }
 export const DELIVERY_FEE_PER_CONTAINER_FEN: MoneyFen = 200
+
+/**
+ * 容器规格 → 单桶水量（毫升），D-214 混合结算（payWay=3）的抵扣量换算表。
+ * 与后端 DeliveryPricing.CONTAINER_WATER_ML 契约同源同值：规格是容器物理容量，
+ * 服务端按同表折算并冻结进创单快照，前端只用于费用预览与快照展示的升数换算。
+ */
+export const CONTAINER_WATER_ML: Record<DeliveryTask['containerSpec'], number> = {
+  '3L袋': 3000,
+  '5L桶': 5000,
+  '10L桶': 10000,
+  '20L桶': 20000,
+}
+
+/** 本单抵扣水量（毫升）＝单桶水量×数量；白名单外规格/非法数量 fail-closed，与后端同口径。 */
+export function deliveryWaterMl(containerSpec: DeliveryTask['containerSpec'], count: number): number {
+  const unit = CONTAINER_WATER_ML[containerSpec]
+  if (!unit) {
+    throw new ContractError('DELIVERY_INPUT_INVALID', '容器规格不合法')
+  }
+  if (!Number.isSafeInteger(count) || count <= 0 || count > 99) {
+    throw new ContractError('INVALID_DELIVERY_COUNT', '配送数量不合法')
+  }
+  return unit * count
+}
+
+/** 价格快照展示行（label/value 均为最终展示文案；total 行加粗）。 */
+export interface DeliveryPriceLine {
+  label: string
+  value: string
+  total?: boolean
+}
+
+/** 展示分流所需的最小任务形状（创单预览可用草稿对象构造同形入参）。 */
+export interface DeliveryPriceView {
+  payWay?: DeliveryPayWay
+  containerSpec: DeliveryTask['containerSpec']
+  plannedDeliveryCount: number
+  priceSnapshot: DeliveryPriceSnapshot
+}
+
+/**
+ * 价格快照展示行（D-214 展示分流唯一实现，U06/D01/D03/创单预览共用）：
+ * payWay=3 时水费行呈现为「水量抵扣 X L」而不是 0 元水费——0 元会被读成免费，
+ * 事实是水费以水量支付了；应扣合计仍如实等于快照 totalAmountFen（即配送费）。
+ * payWay 缺省按 2（历史单只有余额口径）。
+ */
+export function deliveryPriceLines(view: DeliveryPriceView): DeliveryPriceLine[] {
+  const snapshot = view.priceSnapshot
+  if ((view.payWay ?? 2) !== 3) {
+    return [
+      { label: '水费', value: formatFen(snapshot.waterAmountFen) },
+      { label: '配送费', value: formatFen(snapshot.deliveryFeeFen) },
+      { label: '合计', value: formatFen(snapshot.totalAmountFen), total: true },
+    ]
+  }
+  const ml = deliveryWaterMl(view.containerSpec, view.plannedDeliveryCount)
+  return [
+    { label: '水量抵扣', value: formatMl(ml) },
+    { label: '配送费', value: formatFen(snapshot.deliveryFeeFen) },
+    {
+      label: '应扣合计',
+      value: `${formatFen(snapshot.totalAmountFen)}（另抵扣 ${formatMl(ml)}）`,
+      total: true,
+    },
+  ]
+}
+
+/** 列表紧凑合计：payWay=3 呈现「¥配送费+抵扣升数」，绝不把只剩配送费的金额当全部对价。 */
+export function deliveryTotalText(view: DeliveryPriceView): string {
+  if ((view.payWay ?? 2) !== 3) {
+    return formatFen(view.priceSnapshot.totalAmountFen)
+  }
+  const ml = deliveryWaterMl(view.containerSpec, view.plannedDeliveryCount)
+  return `${formatFen(view.priceSnapshot.totalAmountFen)}+${formatMl(ml)}`
+}
+
+/** 支付方式选项可用性（创单页实时展示）；disabled 时 reason 即禁用原因文案。 */
+export interface DeliveryPayOption {
+  payWay: DeliveryPayWay
+  disabled: boolean
+  reason?: string
+}
+
+/** 自动补货边界拒因（与后端/Mock 同文案）：规则表无支付方式列，周期单恒走余额。 */
+const AUTO_REFILL_PAY_WAY_REASON = '自动补货暂仅支持水卡余额支付'
+
+/**
+ * 两种支付方式的实时可用性（与服务端拒因同文案，页面提示不另造第二套说法）：
+ * 全余额需 余额≥水费+配送费；水量抵扣需 卡水量≥抵扣量 且 余额≥配送费，
+ * 且自动补货方式下水量抵扣直接禁用（服务端同边界）。无卡时两项均禁用。
+ * 最终裁决仍在服务端扣减事务（这里只是预检提示）。
+ */
+export function deliveryPayWayOptions(
+  card: { balanceFen: number, balanceMl: number } | null,
+  quote: { totalFen: number, deliveryFeeFen: number, waterMl: number },
+  context: { autoRefill?: boolean } = {},
+): DeliveryPayOption[] {
+  if (!card) {
+    return [
+      { payWay: 2, disabled: true, reason: '当前账号暂无水卡，请先购卡后再下配送单' },
+      { payWay: 3, disabled: true, reason: '当前账号暂无水卡，请先购卡后再下配送单' },
+    ]
+  }
+  const balance: DeliveryPayOption = card.balanceFen >= quote.totalFen
+    ? { payWay: 2, disabled: false }
+    : { payWay: 2, disabled: true, reason: '水卡余额不足以支付本单水费与配送费' }
+  let ml: DeliveryPayOption
+  if (context.autoRefill) {
+    ml = { payWay: 3, disabled: true, reason: AUTO_REFILL_PAY_WAY_REASON }
+  }
+  else if (card.balanceMl < quote.waterMl) {
+    ml = { payWay: 3, disabled: true, reason: '水卡水量不足以抵扣本单水量' }
+  }
+  else if (card.balanceFen < quote.deliveryFeeFen) {
+    ml = { payWay: 3, disabled: true, reason: '水卡余额不足以支付配送费' }
+  }
+  else {
+    ml = { payWay: 3, disabled: false }
+  }
+  return [balance, ml]
+}
 
 function accountIdOfUser(userId: EntityId): EntityId | undefined {
   return scenarioStore.accounts.find(item => item.userId === userId)?.accountId
@@ -352,6 +488,11 @@ const mockDeliveryApi: DeliveryApi = {
     if (input.deliveryCount <= 0 || input.plannedReturnCount < 0) {
       throw new ContractError('INVALID_DELIVERY_COUNT', '配送和回收数量不合法')
     }
+    // D-214 结构校验与后端同构：白名单 {2,3}，缺省按 2 兼容既有调用方
+    const payWay: DeliveryPayWay = input.payWay ?? 2
+    if (payWay !== 2 && payWay !== 3) {
+      throw new ContractError('DELIVERY_PAY_WAY_INVALID', '配送支付方式不合法')
+    }
     if (input.deliveryMode === 'scheduled') {
       if (!input.scheduledTime) {
         throw new ContractError('SCHEDULE_TIME_REQUIRED', '预约配送必须选择预约时间')
@@ -364,6 +505,10 @@ const mockDeliveryApi: DeliveryApi = {
       const interval = input.autoRefillIntervalDays
       if (!interval || interval < 3 || interval > 90) {
         throw new ContractError('AUTO_REFILL_RULE_REQUIRED', '自动补货需配置 3~90 天的固定周期')
+      }
+      // 与后端同边界：规则表无支付方式列，周期单恒走余额，首单也不许水量抵扣
+      if (payWay === 3) {
+        throw new ContractError('AUTO_REFILL_PAY_WAY_UNSUPPORTED', AUTO_REFILL_PAY_WAY_REASON)
       }
     }
     const account = scenarioStore.activeAccount()
@@ -379,10 +524,14 @@ const mockDeliveryApi: DeliveryApi = {
       throw new ContractError('STATION_NOT_OPEN', '该水站检修或暂停营业中，暂不支持配送下单')
     }
 
-    const waterAmountFen = input.deliveryCount * CONTAINER_WATER_PRICE_FEN[input.containerSpec]
+    const priceWaterAmountFen = input.deliveryCount * CONTAINER_WATER_PRICE_FEN[input.containerSpec]
     const deliveryFeeFen = input.deliveryCount * DELIVERY_FEE_PER_CONTAINER_FEN
+    const waterMl = deliveryWaterMl(input.containerSpec, input.deliveryCount)
+    // D-214 金额口径：实际应扣金额 = (payWay===2 ? 水费 : 0) + 配送费；
+    // payWay=3 的水费以水量抵扣，orderAmountFen 只含配送费
+    const waterAmountFen = payWay === 3 ? 0 : priceWaterAmountFen
     const totalAmountFen = waterAmountFen + deliveryFeeFen
-    // 2026-07-18 决策：配送单默认水卡余额原型支付——校验余额后以"已支付"入池，
+    // 2026-07-18 决策：配送单水卡原型支付——校验余额/水量后以"已支付"入池，
     // 消除"待支付订单可接单履约"矛盾；不改变卡面余额，不伪造微信支付。
     const card = scenarioStore.cards.find(item => item.userId === account.userId)
     if (!card) {
@@ -391,7 +540,16 @@ const mockDeliveryApi: DeliveryApi = {
     if (card.cardStatus !== 1) {
       throw new ContractError('CARD_NOT_USABLE', '水卡状态不可用（冻结/过期/注销），无法支付配送单')
     }
-    if (card.balanceFen < totalAmountFen) {
+    // 拒因与后端扣减事务同文案：payWay=3 先验水量抵扣、再验配送费余额
+    if (payWay === 3) {
+      if (card.balanceMl < waterMl) {
+        throw new ContractError('INSUFFICIENT_ML', '水卡水量不足以抵扣本单水量')
+      }
+      if (card.balanceFen < deliveryFeeFen) {
+        throw new ContractError('INSUFFICIENT_BALANCE', '水卡余额不足以支付配送费')
+      }
+    }
+    else if (card.balanceFen < totalAmountFen) {
       throw new ContractError('INSUFFICIENT_BALANCE', '水卡余额不足以支付本单水费与配送费')
     }
 
@@ -407,7 +565,7 @@ const mockDeliveryApi: DeliveryApi = {
         orderType: 3,
         orderStatus: 2,
         orderAmountFen: totalAmountFen,
-        payWay: 2,
+        payWay,
         cardId: card.cardId,
         stationId: station.id,
         stationName: station.stationName,
@@ -417,9 +575,11 @@ const mockDeliveryApi: DeliveryApi = {
       trace: [
         {
           node: 'paid',
-          label: '水卡余额原型支付',
+          label: payWay === 3 ? '水卡水量+余额原型支付' : '水卡余额原型支付',
           time: createTime,
-          detail: '原型扣减：不改变卡面余额，不发生真实结算',
+          detail: payWay === 3
+            ? `原型扣减：水量抵扣 ${formatMl(waterMl)}，余额支付配送费 ${formatFen(deliveryFeeFen)}（不改变卡面余额与水量，不发生真实结算）`
+            : '原型扣减：不改变卡面余额，不发生真实结算',
           tone: 'success',
         },
         {
@@ -452,6 +612,7 @@ const mockDeliveryApi: DeliveryApi = {
         deliveryFeeFen,
         totalAmountFen,
       },
+      payWay,
       taskStatus: 1,
       version: 1,
       signPhotos: [],
@@ -816,6 +977,8 @@ const realDeliveryApi: DeliveryApi = {
         deliveryMode: DELIVERY_MODE_TO_VALUE[input.deliveryMode],
         scheduledTime: input.deliveryMode === 'scheduled' ? input.scheduledTime : undefined,
         autoRefillIntervalDays: input.deliveryMode === 'auto-refill' ? input.autoRefillIntervalDays : undefined,
+        // D-214：缺省显式发 2，冻结进服务端幂等快照（同 requestId 改 payWay 会被服务端拒绝）
+        payWay: input.payWay ?? 2,
       })
       if (!raw?.order || !raw.task) {
         throw new ContractError('DELIVERY_CONTRACT_BROKEN', '配送下单响应缺少订单或任务')

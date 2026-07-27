@@ -3,7 +3,7 @@ import type { DeliveryTask, DeliveryTaskView } from '@/api/delivery'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
-import { deliveryApi } from '@/api/delivery'
+import { deliveryApi, deliveryTotalText } from '@/api/delivery'
 import AppNavbar from '@/components/app-navbar.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { useAccountStore } from '@/store/account'
@@ -11,7 +11,6 @@ import {
   ADMISSION_STATUS_LABELS,
   ADMISSION_STATUS_TONES,
   formatBizTimeShort,
-  formatFen,
   TASK_STATUS_LABELS,
   TASK_STATUS_TONES,
 } from '@/utils/format'
@@ -215,8 +214,9 @@ function latestNodeText(task: DeliveryTask) {
             </view>
           </view>
           <view class="task-card-footer">
+            <!-- D-214：payWay=3 呈现「¥配送费+抵扣升数」，不把只剩配送费的金额当全部对价 -->
             <view class="task-card-amount">
-              {{ formatFen(task.priceSnapshot.totalAmountFen) }}
+              {{ deliveryTotalText(task) }}
             </view>
             <view class="muted-text">
               {{ latestNodeText(task) }}

@@ -134,6 +134,41 @@ function applyBoundSession(raw: RawAuthResult): AccountContext {
  */
 export const testLoginPhone: string | undefined = import.meta.env.VITE_TEST_LOGIN_PHONE
 
+/** 显式退出登录后要求入口停在测试账号选择的标记（仅测试登录模式写入/消费）。 */
+export const TEST_LOGIN_SWITCH_KEY = 'dakang-test-login-switch'
+
+export interface TestLoginAccount {
+  phone: string
+  label: string
+}
+
+/**
+ * 解析「手机号:标签」逗号清单为测试账号白名单（仅测试环境构建配置 VITE_TEST_LOGIN_PHONES）。
+ * 非法手机号一律丢弃——白名单是构建期写死的，不提供自由输入，杜绝把测试入口变成账号枚举面。
+ * 未配置时回退单号 VITE_TEST_LOGIN_PHONE，旧构建行为不变（入口自动登录、无选择页）。
+ */
+export function parseTestLoginAccounts(raw: string | undefined, fallbackPhone?: string): TestLoginAccount[] {
+  const parsed = (raw ?? '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(item => item.length > 0)
+    .map((item) => {
+      const [phone = '', label = ''] = item.split(':').map(part => part.trim())
+      return { phone, label: label || phone }
+    })
+    .filter(account => /^1\d{10}$/.test(account.phone))
+  if (parsed.length > 0) {
+    return parsed
+  }
+  return fallbackPhone ? [{ phone: fallbackPhone, label: fallbackPhone }] : []
+}
+
+/** 测试账号白名单；入口自动登录仍用 testLoginPhone，本清单只服务显式退出后的切换。 */
+export const testLoginAccounts: TestLoginAccount[] = parseTestLoginAccounts(
+  import.meta.env.VITE_TEST_LOGIN_PHONES,
+  testLoginPhone,
+)
+
 export async function loginByTestPhone(phone: string): Promise<AccountContext> {
   const raw = await post<RawAuthResult>('/mini/test-login/by-phone', { phone })
   if (raw.result !== RESULT_BOUND) {

@@ -12,7 +12,7 @@
  * - 开跑前核验验收种子哨兵（ws_user 9001/9002、ws_package 9501）与测试登录路由
  *  （/mini/test-login 仅在 Pay-Sim 开关开启时注册——它同时证明被测实例开着 Pay-Sim）。
  *
- * 结果纪律：场景总数必须恰为 9（禁止 0/0 PASS）；每场景输出 PASS/FAIL + DB 证据摘要；
+ * 结果纪律：场景总数必须恰为 10（S1~S9 + S10 赠卡不可充值，禁止 0/0 PASS）；每场景输出 PASS/FAIL + DB 证据摘要；
  * 批次只落盘 docs/acceptance/card-lifecycle/runs/<批次>/result.json，人工摘要统一维护在
  * docs/acceptance/card-lifecycle/README.md，避免每轮生成重复 Markdown。
  */
@@ -32,11 +32,22 @@ if (String(process.env.CARD_ACC_MODE || '').trim() !== 'full') {
 }
 
 const BASE = (process.env.ACC_BASE || 'http://127.0.0.1:13340/dakangApi').replace(/\/$/, '')
+// 凭据只从环境变量取，**不设硬编码兜底**：兜底口令一旦与验收库口令重合，
+// 就等于把「口令必须与主库不同」这道防触主库护栏写死在源码里，且真值会随源码公开。
+// 取值方式：先 `set -a; . .env; set +a`（仓库根 .env，模板见 .env.example）再跑本脚本。
+if (!String(process.env.ACC_DB_PASSWORD || '').trim()) {
+  console.error('安全闸拒绝执行：缺少 ACC_DB_PASSWORD（请在仓库根 .env 配置后导出，参照 .env.example）')
+  process.exit(2)
+}
+if (!String(process.env.ACC_OPS_PWD_CIPHER || '').trim()) {
+  console.error('安全闸拒绝执行：缺少 ACC_OPS_PWD_CIPHER（acc-ops 登录口令密文，见 .env.example 说明）')
+  process.exit(2)
+}
 const DB_CONFIG = {
   host: process.env.ACC_DB_HOST || '127.0.0.1',
   port: Number(process.env.ACC_DB_PORT || 3309),
   user: process.env.ACC_DB_USER || 'root',
-  password: process.env.ACC_DB_PASSWORD || '',
+  password: process.env.ACC_DB_PASSWORD,
   database: process.env.ACC_DB_NAME || 'dakang',
 }
 if (/:(?:13330|8081)(?:\/|$)/.test(BASE)) {
@@ -63,9 +74,11 @@ const QR_STATION1 = 'ACC-QR-DEV1-O1'
 const QR_STATION2 = 'ACC-QR-DEV2-O1'
 const DEVICE1_ID = 9201
 const WATER_TYPE_ID = 1
-// 运营账号（acc-seed）：LOGIN_PWD 与底座 admin 同一 RSA 密文，登录时服务端两侧解密后比较明文
+// 运营账号（acc-seed）：LOGIN_PWD 与底座 admin 同一 RSA 密文，登录时服务端两侧解密后比较明文。
+// 密文随 RSA 密钥对与 admin 口令一起变，故不写死在脚本里，由 ACC_OPS_PWD_CIPHER 注入
+// （上面已 fail-closed 校验；与 acc-seed.sql 里 acc-ops 的 LOGIN_PWD 必须是同一串）。
 const OPS_LOGIN_NAME = 'acc-ops'
-const OPS_LOGIN_PWD_CIPHER = 'B51yw4neAThtpTnUhsmvp+Ikho2Cu6ToTXw3c3iDtbTR7HSOfPIk6vY0cHjGRQzy6UdINaYqQbKpKeBOYSYAw/d1oQM2OmevVJ2UgCUTi3eVopeNXL5YHk+Uyx6JDV61M0M3kymmNn5ZLPaaqZeYMH0YHRKQMdDHXDpNl05IkhQ='
+const OPS_LOGIN_PWD_CIPHER = process.env.ACC_OPS_PWD_CIPHER
 
 // ---------------------------------------------------------------------------
 // 基础工具
@@ -97,10 +110,7 @@ function epochToT14(ms) {
   const p = (n, l = 2) => String(n).padStart(l, '0')
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`
 }
-/** 独立复算日历天数（epoch 精确 +N*86400s，闰年天然正确——20280709 教训见 RechargeCreditTxDbTest）。 */
-const addDays14 = (t14, days) => epochToT14(t14ToEpoch(t14) + days * 86_400_000)
 const addMinutes14 = (t14, minutes) => epochToT14(t14ToEpoch(t14) + minutes * 60_000)
-const maxT14 = (a, b) => (String(a) >= String(b) ? String(a) : String(b))
 
 // ---------------------------------------------------------------------------
 // HTTP / DB
@@ -317,7 +327,7 @@ scenario('S1', '首次购卡：无卡创单(CARD_ID=NULL)→Pay-Sim→原子发�
   eq(credited.flow.ML_CHANGE, 500000, '发卡流水水量变动')
   eq(credited.flow.ML_AFTER, 500000, '发卡流水 AFTER 水量')
   eq(credited.flow.AMOUNT_AFTER, 0, '发卡流水 AFTER 余额')
-  eq(card.EXPIRE_TIME, addDays14(payment.PAY_SUCCESS_TIME, 365), '新卡有效期应=支付成功+365天（独立复算）')
+  ok(card.EXPIRE_TIME == null, '付费新卡应永久（EXPIRE_TIME=NULL，付费权益不过期，D-213）', String(card.EXPIRE_TIME))
 
   // 范围与快照一致：卡范围 = 快照 targetCardScopeSnapshot = 仅水站 9101
   const cardScope = JSON.parse(card.SCOPE_JSON)
@@ -329,27 +339,26 @@ scenario('S1', '首次购卡：无卡创单(CARD_ID=NULL)→Pay-Sim→原子发�
 
   ctx.cardId = card.ID
   ctx.s1OrderNo = orderNo
-  ev.push(`card#${card.ID} issueOrder=${card.ISSUE_ORDER_ID} ml=500000 expire=${card.EXPIRE_TIME}(=paySuccess+365d) scope=[9101]`)
+  ev.push(`card#${card.ID} issueOrder=${card.ISSUE_ORDER_ID} ml=500000 expire=永久(NULL) scope=[9101]`)
 })
 
 // ---------------------------------------------------------------------------
 // S2 同卡再充
 // ---------------------------------------------------------------------------
-scenario('S2', '同卡再充：原卡加权益不建二卡，有效期 max(当前,支付时间)+天数续期', async (ev) => {
+scenario('S2', '同卡再充：原卡加权益不建二卡，永久有效期保持 NULL', async (ev) => {
   const before = await cardById(ctx.cardId)
   const created = await rechargeCreate(ctx.owner, { cardId: ctx.cardId, requestId: crypto.randomUUID() })
   const pay = await paySim(ctx.owner, created.orderNo)
   eq(pay.resultCode, 'CREDITED', 'Pay-Sim 再充应入账')
 
-  const credited = await assertCredited(created.orderNo, ev)
+  await assertCredited(created.orderNo, ev)
   const cards = await cardsByUser(OWNER_USER_ID)
   eq(cards.length, 1, '再充后仍应只有一张卡（不建二卡）')
   const after = cards[0]
   eq(after.ID, ctx.cardId, '再充应落在原卡')
   eq(Number(after.BALANCE_ML), Number(before.BALANCE_ML) + 500000, '原卡水量应+500000')
-  const expectedExpire = addDays14(maxT14(before.EXPIRE_TIME, credited.payment.PAY_SUCCESS_TIME), 365)
-  eq(after.EXPIRE_TIME, expectedExpire, '续期应=max(当前有效期,支付时间)+365天（独立复算）')
-  ev.push(`同卡#${after.ID} ml ${before.BALANCE_ML}→${after.BALANCE_ML} expire ${before.EXPIRE_TIME}→${after.EXPIRE_TIME}`)
+  ok(before.EXPIRE_TIME == null && after.EXPIRE_TIME == null, '永久卡再充后有效期必须保持 NULL（充值绝不引入到期日，D-213）', `before=${before.EXPIRE_TIME} after=${after.EXPIRE_TIME}`)
+  ev.push(`同卡#${after.ID} ml ${before.BALANCE_ML}→${after.BALANCE_ML} expire 永久保持NULL`)
 })
 
 // ---------------------------------------------------------------------------
@@ -637,6 +646,36 @@ scenario('S9', '成员授权限额：日限6000 取5000成功→再取2000拒→
 })
 
 // ---------------------------------------------------------------------------
+// S10 活动赠卡不可充值（D-213）
+// ---------------------------------------------------------------------------
+scenario('S10', '活动赠卡不可充值：赠卡 canRecharge=false，充值创单被拒零写入', async (ev) => {
+  // 赠卡只能由运营发放，一期无发放入口：按发放结果直接落库一张有限期赠卡
+  await q(
+    `INSERT INTO ws_card (DATA_STATUS, CREATE_BY, CREATE_TIME, UPDATE_BY, UPDATE_TIME, CARD_NO, CARD_TYPE,
+       USER_ID, BALANCE_AMOUNT, BALANCE_ML, SCOPE_JSON, EXPIRE_TIME, CARD_STATUS, CARD_REMARK)
+     VALUES (0, 1, '20260725000000', 1, '20260725000000', 'GIFT-ACC-0001', 1, ?, 0, 20000,
+       '{"scopeType":"specified","stationIds":[9101]}', '20301231235959', 1, 'S10 活动赠卡夹具')`,
+    [OWNER_USER_ID],
+  )
+  const gift = await one('SELECT * FROM ws_card WHERE CARD_NO = ?', ['GIFT-ACC-0001'])
+  ok(gift, '赠卡夹具应落库成功')
+
+  const usable = await apiOk('/mini/card/usable-list', {}, ctx.owner)
+  const giftVo = (usable || []).find(c => String(c.cardId) === String(gift.ID))
+  const mainVo = (usable || []).find(c => String(c.cardId) === String(ctx.cardId))
+  ok(giftVo && mainVo, 'usable-list 应同时包含付费卡与赠卡')
+  eq(giftVo.canRecharge, false, '赠卡 canRecharge 必须为 false（页面不得出现充值入口）')
+  eq(mainVo.canRecharge, true, '付费永久卡保持可充值')
+
+  const before = await q('SELECT ID FROM ws_order WHERE CARD_ID = ?', [gift.ID])
+  const denied = await apiFail('/mini/order/recharge/create', { cardId: String(gift.ID), packageId: ACC_PACKAGE_ID, requestId: crypto.randomUUID() }, ctx.owner)
+  ok(String(denied.msg || '').includes('活动赠卡不支持充值'), '拒绝话术应指明赠卡不可充值', `msg=${denied.msg}`)
+  const after = await q('SELECT ID FROM ws_order WHERE CARD_ID = ?', [gift.ID])
+  eq(after.length, before.length, '拒绝必须零写入（不产生订单）')
+  ev.push(`gift#${gift.ID} canRecharge=false；创单拒绝：${denied.msg}`)
+})
+
+// ---------------------------------------------------------------------------
 // 环境指纹核验（开跑前 fail-closed）
 // ---------------------------------------------------------------------------
 async function verifyEnvironment() {
@@ -665,9 +704,9 @@ async function verifyEnvironment() {
 // 主流程
 // ---------------------------------------------------------------------------
 async function main() {
-  // 结构化结果闸：场景总数必须恰为 9，杜绝 0/0 或缺场景「全过」
-  if (scenarios.length !== 9) {
-    console.error(`场景登记数=${scenarios.length}，必须恰为 9；拒绝执行`)
+  // 结构化结果闸：场景总数必须恰为 10，杜绝 0/0 或缺场景「全过」
+  if (scenarios.length !== 10) {
+    console.error(`场景登记数=${scenarios.length}，必须恰为 10；拒绝执行`)
     process.exit(2)
   }
   const mysql = require('mysql2/promise')

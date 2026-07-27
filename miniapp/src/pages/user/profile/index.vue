@@ -5,6 +5,7 @@ import { onShow } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { cardApi } from '@/api/card'
 import { deliveryApi } from '@/api/delivery'
+import { TEST_LOGIN_SWITCH_KEY, testLoginAccounts, testLoginPhone } from '@/api/auth'
 import { currentMode, isAllMockBuild } from '@/api/runtime'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { appServiceNoticeText } from '@/components/runtime-notice'
@@ -101,15 +102,22 @@ function backToEntry() {
   uni.reLaunch({ url: '/pages/entry/index' })
 }
 
-/** 退出登录（契约占位）：清会话回统一入口；微信静默登录下次进入会自动重新登录。 */
+/** 退出登录：清会话回统一入口；测试登录多账号构建下停在账号选择，支持一台真机切换角色。 */
 function handleLogout() {
+  const canSwitchTestAccount = Boolean(testLoginPhone) && testLoginAccounts.length > 1
   uni.showModal({
     title: '退出登录',
-    content: '将清除本端会话并返回统一入口。原型说明：微信小程序为静默登录，下次进入会自动重新登录。',
+    content: canSwitchTestAccount
+      ? '将清除本端会话并返回统一入口选择测试账号（仅测试环境）。'
+      : '将清除本端会话并返回统一入口。原型说明：微信小程序为静默登录，下次进入会自动重新登录。',
     confirmText: '退出',
     success: (result) => {
       if (!result.confirm) {
         return
+      }
+      if (canSwitchTestAccount) {
+        // 显式退出才写切换标记；401 强制登出不写，入口仍自动重登默认号
+        uni.setStorageSync(TEST_LOGIN_SWITCH_KEY, '1')
       }
       accountStore.logout()
       uni.reLaunch({ url: '/pages/entry/index' })

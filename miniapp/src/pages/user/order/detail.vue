@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DeliveryTask } from '@/api/delivery'
+import { deliveryPriceLines } from '@/api/delivery'
 import type { CardDetail } from '@/api/card'
 import type { DeliveryAppeal, OrderDetail, OrderTraceNode } from '@/api/order'
 import type { RechargePayStatus } from '@/api/recharge'
@@ -664,18 +665,16 @@ function goAppeal() {
               <wd-cell title="收货地址" :label="task.receiveAddress" />
               <wd-cell title="联系电话" :value="task.maskedPhone" />
             </wd-cell-group>
+            <!-- D-214 展示分流：payWay=3 呈现「水量抵扣 X L + 配送费」，不把 0 元水费渲染成免费 -->
             <view class="price-rows">
-              <view class="price-row">
-                <view>水费</view>
-                <view>{{ formatFen(task.priceSnapshot.waterAmountFen) }}</view>
-              </view>
-              <view class="price-row">
-                <view>配送费</view>
-                <view>{{ formatFen(task.priceSnapshot.deliveryFeeFen) }}</view>
-              </view>
-              <view class="price-row price-total">
-                <view>合计</view>
-                <view>{{ formatFen(task.priceSnapshot.totalAmountFen) }}</view>
+              <view
+                v-for="line in deliveryPriceLines(task)"
+                :key="line.label"
+                class="price-row"
+                :class="{ 'price-total': line.total }"
+              >
+                <view>{{ line.label }}</view>
+                <view>{{ line.value }}</view>
               </view>
             </view>
             <view class="trace-title">

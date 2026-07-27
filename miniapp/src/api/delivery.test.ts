@@ -216,6 +216,109 @@ describe('delivery mock data scope', () => {
       syncedToPc: false,
     })
     expect(result.task.orderNo).toBe(result.order.order.orderNo)
+    // D-214 缺省口径回归：不传 payWay 一律按 2 全余额，金额=水费+配送费
+    expect(result.order.order.payWay).toBe(2)
+    expect(result.task.payWay).toBe(2)
+    expect(result.order.order.orderAmountFen).toBe(3000)
+    expect(result.task.priceSnapshot).toEqual({
+      waterAmountFen: 2600,
+      deliveryFeeFen: 400,
+      totalAmountFen: 3000,
+    })
+  })
+
+  // ==================== D-214 双支付方式（mock 与后端同构） ====================
+
+  it('creates a payWay=3 order charging only the delivery fee with zero water amount (D-214)', async () => {
+    scenarioStore.selectAccount('ACCOUNT-USER-001')
+
+    const result = await deliveryApi.createDeliveryOrder({
+      addressId: 'ADDR-1',
+      stationId: '1',
+      waterTypeId: '1',
+      containerSpec: '20L桶',
+      deliveryCount: 2,
+      plannedReturnCount: 1,
+      deliveryMode: 'immediate',
+      payWay: 3,
+    })
+
+    expect(result.order.order.payWay).toBe(3)
+    expect(result.order.order.orderAmountFen).toBe(400)
+    expect(result.task.payWay).toBe(3)
+    expect(result.task.priceSnapshot).toEqual({
+      waterAmountFen: 0,
+      deliveryFeeFen: 400,
+      totalAmountFen: 400,
+    })
+    const paid = result.order.trace.find(node => node.node === 'paid')!
+    expect(paid.label).toContain('水量')
+    expect(paid.detail).toContain('40L')
+  })
+
+  it('rejects payWay=3 with precise reasons: insufficient ml first, then insufficient fee balance (D-214)', async () => {
+    scenarioStore.selectAccount('ACCOUNT-USER-001')
+    // 卡水量 500000ml：20L桶×26 需 520000ml → 水量不足（余额 5500 ≥ 配送费 5200 不背锅）
+    await expect(
+      deliveryApi.createDeliveryOrder({
+        addressId: 'ADDR-1',
+        stationId: '1',
+        waterTypeId: '1',
+        containerSpec: '20L桶',
+        deliveryCount: 26,
+        plannedReturnCount: 0,
+        deliveryMode: 'immediate',
+        payWay: 3,
+      }),
+    ).rejects.toMatchObject({ code: 'INSUFFICIENT_ML', message: '水卡水量不足以抵扣本单水量' })
+
+    // 3L袋×28 只需 84000ml（够）但配送费 5600 > 余额 5500 → 配送费余额不足
+    await expect(
+      deliveryApi.createDeliveryOrder({
+        addressId: 'ADDR-1',
+        stationId: '1',
+        waterTypeId: '1',
+        containerSpec: '3L袋',
+        deliveryCount: 28,
+        plannedReturnCount: 0,
+        deliveryMode: 'immediate',
+        payWay: 3,
+      }),
+    ).rejects.toMatchObject({ code: 'INSUFFICIENT_BALANCE', message: '水卡余额不足以支付配送费' })
+
+    // 拒绝零副作用：无新订单/任务落入原型库
+    expect(scenarioStore.orderDetails.some(item => item.order.orderNo.startsWith('MD'))).toBe(false)
+    expect(scenarioStore.deliveryTasks.some(task => task.taskNo.startsWith('MDT-'))).toBe(false)
+  })
+
+  it('rejects unknown payWay values and payWay=3 auto-refill (D-214 whitelist and boundary)', async () => {
+    scenarioStore.selectAccount('ACCOUNT-USER-001')
+    await expect(
+      deliveryApi.createDeliveryOrder({
+        addressId: 'ADDR-1',
+        stationId: '1',
+        waterTypeId: '1',
+        containerSpec: '20L桶',
+        deliveryCount: 1,
+        plannedReturnCount: 0,
+        deliveryMode: 'immediate',
+        payWay: 5 as never,
+      }),
+    ).rejects.toMatchObject({ code: 'DELIVERY_PAY_WAY_INVALID' })
+
+    await expect(
+      deliveryApi.createDeliveryOrder({
+        addressId: 'ADDR-1',
+        stationId: '1',
+        waterTypeId: '1',
+        containerSpec: '20L桶',
+        deliveryCount: 1,
+        plannedReturnCount: 0,
+        deliveryMode: 'auto-refill',
+        autoRefillIntervalDays: 7,
+        payWay: 3,
+      }),
+    ).rejects.toMatchObject({ code: 'AUTO_REFILL_PAY_WAY_UNSUPPORTED' })
   })
 
   it('rejects delivery orders when the account has no card or insufficient balance', async () => {

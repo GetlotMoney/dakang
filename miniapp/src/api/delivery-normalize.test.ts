@@ -82,6 +82,17 @@ describe('normalizeDeliveryTask', () => {
     expect(() => normalizeDeliveryTask(taskRaw({ containerSpec: '50L桶' }))).toThrow(ContractError)
   })
 
+  it('支付方式（D-214）：缺省按 2 兼容旧单，2/3 双收（number|串），白名单外 fail-closed', () => {
+    expect(normalizeDeliveryTask(taskRaw()).payWay).toBe(2)
+    expect(normalizeDeliveryTask(taskRaw({ payWay: 3 })).payWay).toBe(3)
+    expect(normalizeDeliveryTask(taskRaw({ payWay: '3' })).payWay).toBe(3)
+    expect(normalizeDeliveryTask(taskRaw({ payWay: '2' })).payWay).toBe(2)
+    // 1（微信）不是配送任务快照的合法支付口径；未知值决定金额展示语义，宁可拒绝不猜
+    expect(() => normalizeDeliveryTask(taskRaw({ payWay: 1 }))).toThrow(ContractError)
+    expect(() => normalizeDeliveryTask(taskRaw({ payWay: '03' }))).toThrow(ContractError)
+    expect(() => normalizeDeliveryTask(taskRaw({ payWay: 'ml' }))).toThrow(ContractError)
+  })
+
   it('价格快照总额 ≠ 水费+配送费 即契约破坏（金额不许猜）', () => {
     expect(() => normalizeDeliveryTask(taskRaw({
       priceSnapshot: { waterAmountFen: 3600, deliveryFeeFen: 600, totalAmountFen: 4300 },

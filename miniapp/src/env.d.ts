@@ -29,6 +29,7 @@ interface ImportMetaEnv {
    * 供 appid/appsecret 尚未配置时在真机上验收接真业务链。交付构建绝不配置此项。
    */
   readonly VITE_TEST_LOGIN_PHONE?: string
+  readonly VITE_TEST_LOGIN_PHONES?: string
   readonly VITE_SERVER_BASEURL: string
   readonly VITE_DELETE_CONSOLE: 'true' | 'false'
 }

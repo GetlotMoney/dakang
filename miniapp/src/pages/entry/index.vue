@@ -4,7 +4,7 @@ import { onLoad } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { useToast } from 'wot-design-uni'
 import { accountApi } from '@/api/account'
-import { authApi, loginByTestPhone, readPhoneAuthorization, testLoginPhone } from '@/api/auth'
+import { authApi, loginByTestPhone, readPhoneAuthorization, TEST_LOGIN_SWITCH_KEY, testLoginAccounts, testLoginPhone } from '@/api/auth'
 import { ContractError } from '@/api/common'
 import { buildRuntimeModes, currentMode, isAllMockBuild } from '@/api/runtime'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
@@ -32,8 +32,8 @@ const statusText = ref('正在恢复账号会话')
 const entryState = ref<EntryContractState | null>(null)
 const accounts = ref<MockAccountSummary[]>([])
 
-/** 正式登录阶段（仅 real 入口使用）：登录中 / 待授权手机号 / 失败可重试。 */
-const authStage = ref<'LOGGING_IN' | 'PHONE_REQUIRED' | 'FAILED'>('LOGGING_IN')
+/** 登录阶段：登录中 / 待授权手机号（real 入口）/ 失败可重试 / 测试账号选择（显式退出后）。 */
+const authStage = ref<'LOGGING_IN' | 'PHONE_REQUIRED' | 'FAILED' | 'CHOOSE_TEST_ACCOUNT'>('LOGGING_IN')
 const authBusy = ref(false)
 const bindTicket = ref('')
 
@@ -72,6 +72,14 @@ onLoad(async () => {
   if (testLoginPhone) {
     // 测试登录：建立的是**真实 KH_USER 会话**，因此不触犯"接真业务域不得用 Mock 账号进入"这条——
     // 那条禁的是拿原型身份打真实接口，而这里拿到的 token 与正式登录落地的是同一份。
+    // 显式退出登录后停在账号选择（不自动重登）：一台真机切换下单方/配送员即可走通完整业务链；
+    // 401 强制登出不带该标记，仍自动重登默认号，保证会话失效恢复路径与 e2e 行为不变。
+    if (uni.getStorageSync(TEST_LOGIN_SWITCH_KEY) && testLoginAccounts.length > 1) {
+      uni.removeStorageSync(TEST_LOGIN_SWITCH_KEY)
+      authStage.value = 'CHOOSE_TEST_ACCOUNT'
+      statusText.value = '请选择测试账号（仅测试环境，均为真实会话）'
+      return
+    }
     await runTestLogin(testLoginPhone)
     return
   }
@@ -128,6 +136,10 @@ async function runTestLogin(phone: string) {
     statusText.value = error instanceof ContractError
       ? `测试登录失败：${error.message}`
       : '测试登录失败，请确认后端已开启 MINI_PAYSIM_ENABLED 且该手机号账号存在'
+    if (testLoginAccounts.length > 1) {
+      // 多账号构建：失败后停回选择页，允许直接换号重试
+      authStage.value = 'CHOOSE_TEST_ACCOUNT'
+    }
   }
   finally {
     authBusy.value = false
@@ -262,6 +274,22 @@ async function toggleCourierWork(enabled: boolean) {
     </view>
     <view class="entry-status">
       {{ statusText }}
+    </view>
+
+    <view v-if="authStage === 'CHOOSE_TEST_ACCOUNT'" class="entry-test-accounts">
+      <wd-button
+        v-for="account in testLoginAccounts"
+        :key="account.phone"
+        block
+        size="large"
+        :loading="authBusy"
+        @click="runTestLogin(account.phone)"
+      >
+        {{ account.label }}（{{ account.phone }}）
+      </wd-button>
+      <view class="muted-text entry-auth-tip">
+        测试账号与 Pay-Sim 同闸，仅测试环境注册；每个账号都是真实会话，切换即可分角色走通业务链。
+      </view>
     </view>
 
     <view v-if="isRealAuth" class="entry-auth">
@@ -438,6 +466,14 @@ async function toggleCourierWork(enabled: boolean) {
 
 .entry-auth-btn[disabled] {
   opacity: 0.6;
+}
+
+.entry-test-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 0 8px;
 }
 
 .entry-dev-panel {

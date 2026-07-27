@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { CardSummary, DeliveryAddress } from '@/api/card'
 import type { StationSummary, WaterType } from '@/api/catalog'
-import type { CreateDeliveryOrderInput, DeliveryTask } from '@/api/delivery'
+import type { CreateDeliveryOrderInput, DeliveryPayWay, DeliveryTask } from '@/api/delivery'
 import { onLoad, onShow } from '@dcloudio/uni-app'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useMessage, useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { catalogApi } from '@/api/catalog'
@@ -12,13 +12,16 @@ import {
   CONTAINER_WATER_PRICE_FEN,
   DELIVERY_FEE_PER_CONTAINER_FEN,
   deliveryApi,
+  deliveryPayWayOptions,
+  deliveryPriceLines,
+  deliveryWaterMl,
   newDeliveryRequestId,
 } from '@/api/delivery'
 import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { consumeDeliveryDraft } from '@/store/delivery-draft'
-import { formatFen, PAY_WAY_LABELS } from '@/utils/format'
+import { formatFen, formatMl, PAY_WAY_LABELS } from '@/utils/format'
 import { goTo, redirectTo } from '@/utils/navigation'
 
 definePage({
@@ -59,6 +62,8 @@ const plannedReturnCount = ref(0)
 const deliveryMode = ref<CreateDeliveryOrderInput['deliveryMode']>('immediate')
 const scheduledTimestamp = ref<number | string>('')
 const autoRefillIntervalDays = ref(7)
+/** 支付方式（D-214 二选一）：默认余额；水量抵扣需卡水量与配送费余额双满足。 */
+const payWay = ref<DeliveryPayWay>(2)
 
 // real 无地址簿域（包A 冻结为快照式输入）：收水地址与电话随单直填，服务端最终校验。
 const receiveAddress = ref('')
@@ -84,12 +89,70 @@ const waterTypeColumns = computed(() =>
   waterTypes.value.map(item => ({ label: item.name, value: item.id })),
 )
 
-// 费用预览三行实时计算，复用契约导出的价目常量，不另抄数字（蓝图 S06.2）。
+// 费用预览实时计算，复用契约导出的价目常量与水量换算表，不另抄数字（蓝图 S06.2 / D-214）。
 const waterAmountFen = computed(
   () => deliveryCount.value * CONTAINER_WATER_PRICE_FEN[containerSpec.value],
 )
 const deliveryFeeFen = computed(() => deliveryCount.value * DELIVERY_FEE_PER_CONTAINER_FEN)
 const totalAmountFen = computed(() => waterAmountFen.value + deliveryFeeFen.value)
+const waterMlPreview = computed(() => deliveryWaterMl(containerSpec.value, deliveryCount.value))
+
+/**
+ * 两支付选项的实时可用性（契约纯函数，拒因与服务端同文案）：
+ * 全余额需 余额≥水费+配送费；水量抵扣需 卡水量≥抵扣量 且 余额≥配送费。
+ * 自动补货只支持余额（服务端同边界：规则表无支付方式列）。
+ */
+const payOptions = computed(() => deliveryPayWayOptions(
+  primaryCard.value
+    ? { balanceFen: primaryCard.value.balanceFen, balanceMl: primaryCard.value.balanceMl }
+    : null,
+  {
+    totalFen: totalAmountFen.value,
+    deliveryFeeFen: deliveryFeeFen.value,
+    waterMl: waterMlPreview.value,
+  },
+  { autoRefill: deliveryMode.value === 'auto-refill' },
+))
+const balanceOption = computed(() => payOptions.value.find(option => option.payWay === 2)!)
+const mlOption = computed(() => payOptions.value.find(option => option.payWay === 3)!)
+
+/** 选项说明行：可用时给余额/水量现状，禁用时给禁用原因（不足项文案与服务端拒因一致）。 */
+const balanceOptionNote = computed(() => {
+  if (balanceOption.value.disabled) {
+    return balanceOption.value.reason ?? ''
+  }
+  return primaryCard.value
+    ? `当前余额 ${formatFen(primaryCard.value.balanceFen)}，本单应扣 ${formatFen(totalAmountFen.value)}`
+    : ''
+})
+const mlOptionNote = computed(() => {
+  if (mlOption.value.disabled) {
+    return mlOption.value.reason ?? ''
+  }
+  return primaryCard.value
+    ? `当前水量 ${formatMl(primaryCard.value.balanceMl)}，本单抵扣 ${formatMl(waterMlPreview.value)}；`
+    + `配送费 ${formatFen(deliveryFeeFen.value)} 从余额扣除`
+    : ''
+})
+
+// 所选方式被数量/方式变化挤成不可用时回落默认余额，避免带着禁用项提交
+watch([payOptions, payWay], () => {
+  if (payWay.value === 3 && mlOption.value.disabled && !balanceOption.value.disabled) {
+    payWay.value = 2
+  }
+})
+
+/** 费用预览行与订单详情共用同一契约展示函数：payWay=3 呈现水量抵扣行而不是 0 元水费。 */
+const priceLines = computed(() => deliveryPriceLines({
+  payWay: payWay.value,
+  containerSpec: containerSpec.value,
+  plannedDeliveryCount: deliveryCount.value,
+  priceSnapshot: {
+    waterAmountFen: payWay.value === 3 ? 0 : waterAmountFen.value,
+    deliveryFeeFen: deliveryFeeFen.value,
+    totalAmountFen: payWay.value === 3 ? deliveryFeeFen.value : totalAmountFen.value,
+  },
+}))
 
 onLoad((options?: Record<string, string>) => {
   const query = options ?? {}
@@ -193,6 +256,12 @@ async function handleSubmit() {
     toast.show('请选择预约配送时间')
     return
   }
+  // 支付方式预检提示（最终裁决在服务端扣减事务）：带着禁用项提交只会得到同一拒因
+  const selectedOption = payWay.value === 3 ? mlOption.value : balanceOption.value
+  if (selectedOption.disabled) {
+    toast.show(selectedOption.reason ?? '当前支付方式不可用')
+    return
+  }
   submitting.value = true
   try {
     const { order } = await deliveryApi.createDeliveryOrder({
@@ -212,14 +281,26 @@ async function handleSubmit() {
       requestId: requestId.value,
       receiveAddress: isDeliveryReal ? receiveAddress.value.trim() : undefined,
       receivePhone: isDeliveryReal ? receivePhone.value.trim() : undefined,
+      payWay: payWay.value,
     })
     // 本次提交意图已完成：换新幂等键，防止下一单误复用旧键命中旧订单。
     requestId.value = newDeliveryRequestId()
     // 成功后不复位 submitting：确认弹框关闭即 redirectTo 离开本页，避免二次提交。
+    const paidByMl = payWay.value === 3
     message
       .alert(isDeliveryReal
-        ? { title: '下单成功', msg: '已从水卡余额扣款并生成配送任务，可在订单详情跟踪配送与签收进度。' }
-        : { title: '下单成功（原型）', msg: '订单已按水卡余额原型支付并生成配送任务（不改变卡面余额，不发生真实结算）' })
+        ? {
+            title: '下单成功',
+            msg: paidByMl
+              ? `已按水量抵扣 ${formatMl(waterMlPreview.value)} 并从余额扣除配送费，可在订单详情跟踪配送与签收进度。`
+              : '已从水卡余额扣款并生成配送任务，可在订单详情跟踪配送与签收进度。',
+          }
+        : {
+            title: '下单成功（原型）',
+            msg: paidByMl
+              ? '订单已按水量抵扣+余额配送费原型支付并生成配送任务（不改变卡面余额与水量，不发生真实结算）'
+              : '订单已按水卡余额原型支付并生成配送任务（不改变卡面余额，不发生真实结算）',
+          })
       .then(() => redirectTo('U06', { orderNo: order.order.orderNo }))
   }
   catch (error) {
@@ -356,50 +437,55 @@ async function handleSubmit() {
 
       <view class="page-section">
         <wd-card title="费用预览">
-          <view class="fee-row">
-            <view>水费</view>
-            <view>{{ formatFen(waterAmountFen) }}</view>
-          </view>
-          <view class="fee-row">
-            <view>配送费</view>
-            <view>{{ formatFen(deliveryFeeFen) }}</view>
-          </view>
-          <view class="fee-row fee-total">
-            <view>合计</view>
-            <view>{{ formatFen(totalAmountFen) }}</view>
+          <view
+            v-for="line in priceLines"
+            :key="line.label"
+            class="fee-row"
+            :class="{ 'fee-total': line.total }"
+          >
+            <view>{{ line.label }}</view>
+            <view>{{ line.value }}</view>
           </view>
           <view class="field-note muted-text">
             {{ isDeliveryReal
-              ? '一期占位价目，正式价格待商业确认；提交即从水卡余额真实扣款（水费+配送费）。'
-              : '原型价目，正式价格待确认；提交即以水卡余额完成原型支付（不改变卡面余额，不发生真实结算）。' }}
+              ? '一期占位价目，正式价格待商业确认；提交即按所选支付方式从水卡真实扣减。'
+              : '原型价目，正式价格待确认；提交即按所选支付方式完成原型支付（不改变卡面余额与水量，不发生真实结算）。' }}
           </view>
         </wd-card>
       </view>
 
       <view class="page-section">
-        <wd-cell-group title="支付方式说明" border>
-          <wd-cell
-            :title="PAY_WAY_LABELS[2]"
-            :label="primaryCard
-              ? `当前余额 ${formatFen(primaryCard.balanceFen)}${isDeliveryReal ? '（下单即真实扣款）' : '（原型扣减，不改变卡面余额）'}`
-              : '当前账号暂无水卡'"
-            center
-          >
-            <wd-tag type="primary" plain>
-              本单默认
-            </wd-tag>
-          </wd-cell>
+        <wd-cell-group title="支付方式" border>
+          <wd-radio-group v-model="payWay" cell>
+            <wd-radio :value="2" :disabled="balanceOption.disabled">
+              {{ PAY_WAY_LABELS[2] }}（水费+配送费均扣余额）
+            </wd-radio>
+            <view class="pay-option-note muted-text" :class="{ 'pay-option-blocked': balanceOption.disabled }">
+              {{ balanceOptionNote }}
+            </view>
+            <wd-radio :value="3" :disabled="mlOption.disabled">
+              水量抵扣水费 + 余额付配送费
+            </wd-radio>
+            <view class="pay-option-note muted-text" :class="{ 'pay-option-blocked': mlOption.disabled }">
+              {{ mlOptionNote }}
+            </view>
+          </wd-radio-group>
           <wd-cell :title="PAY_WAY_LABELS[1]" center>
             <wd-tag plain>
               待接入
             </wd-tag>
           </wd-cell>
         </wd-cell-group>
+        <view class="field-note muted-text">
+          配送费为上门服务费，仅支持余额支付；水量抵扣按 3L袋=3L、5L桶=5L、10L桶=10L、20L桶=20L 折算。
+        </view>
       </view>
 
       <view class="page-section">
         <wd-button block size="large" :loading="submitting" @click="handleSubmit">
-          {{ isDeliveryReal ? '提交配送订单（水卡余额支付）' : '提交配送订单（水卡余额原型支付）' }}
+          {{ payWay === 3
+            ? (isDeliveryReal ? '提交配送订单（水量抵扣+余额配送费）' : '提交配送订单（水量抵扣原型支付）')
+            : (isDeliveryReal ? '提交配送订单（水卡余额支付）' : '提交配送订单（水卡余额原型支付）') }}
         </wd-button>
       </view>
     </template>
@@ -424,5 +510,15 @@ async function handleSubmit() {
 .fee-total {
   font-size: 16px;
   font-weight: 600;
+}
+
+.pay-option-note {
+  padding: 0 16px 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.pay-option-blocked {
+  color: var(--wot-color-danger, #fa4350);
 }
 </style>

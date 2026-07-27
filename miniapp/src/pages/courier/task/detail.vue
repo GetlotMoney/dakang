@@ -5,7 +5,7 @@ import { onLoad, onShow } from '@dcloudio/uni-app'
 import { computed, reactive, ref } from 'vue'
 import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
-import { deliveryApi, uploadDeliveryMedia } from '@/api/delivery'
+import { deliveryApi, deliveryPriceLines, uploadDeliveryMedia } from '@/api/delivery'
 import {
   canAcceptDeliveryTask,
   canAdvanceDeliveryTask,
@@ -21,7 +21,6 @@ import {
   APPEAL_STATUS_LABELS,
   APPEAL_STATUS_TONES,
   formatBizTime,
-  formatFen,
   TASK_STATUS_LABELS,
   TASK_STATUS_TONES,
 } from '@/utils/format'
@@ -368,10 +367,14 @@ async function handleAppendEvidence() {
       </view>
 
       <view class="page-section">
+        <!-- D-214 展示分流：payWay=3 呈现「水量抵扣 X L + 配送费」，不把 0 元水费渲染成免费 -->
         <wd-cell-group title="价格快照" border>
-          <wd-cell title="水费" :value="formatFen(task.priceSnapshot.waterAmountFen)" />
-          <wd-cell title="配送费" :value="formatFen(task.priceSnapshot.deliveryFeeFen)" />
-          <wd-cell title="合计" :value="formatFen(task.priceSnapshot.totalAmountFen)" />
+          <wd-cell
+            v-for="line in deliveryPriceLines(task)"
+            :key="line.label"
+            :title="line.label"
+            :value="line.value"
+          />
         </wd-cell-group>
       </view>
 

@@ -142,6 +142,7 @@ export interface DeliveryTaskRaw {
     deliveryFeeFen?: string | number | null
     totalAmountFen?: string | number | null
   } | null
+  payWay?: string | number | null
   taskStatus?: number | null
   version?: string | number | null
   scheduledTime?: string | null
@@ -264,9 +265,16 @@ export function normalizeDeliveryTask(raw: DeliveryTaskRaw): DeliveryTask {
   if (waterAmountFen === undefined || deliveryFeeFen === undefined || totalAmountFen === undefined) {
     throw broken('价格快照')
   }
-  // 规则2 校验而非重算：总额必须恰等于水费+配送费，不一致即契约破坏（金额不许猜）
+  // 规则2 校验而非重算：总额必须恰等于水费+配送费，不一致即契约破坏（金额不许猜）。
+  // D-214 口径下恒等式对 payWay=3 同样成立（水费=0、总额=配送费），无需按支付方式分叉
   if (totalAmountFen !== waterAmountFen + deliveryFeeFen) {
     throw broken('价格快照总额')
+  }
+  // 支付方式（D-214）：缺省按 2 兼容旧后端/旧单；白名单外 fail-closed——
+  // 支付口径决定金额展示语义，未知值宁可拒绝也不猜着渲染
+  const payWayRaw = raw.payWay == null ? 2 : strictInt(raw.payWay)
+  if (payWayRaw !== 2 && payWayRaw !== 3) {
+    throw broken('支付方式')
   }
   const photos = (raw.signPhotos ?? [])
     .map(normalizeSignPhoto)
@@ -290,6 +298,7 @@ export function normalizeDeliveryTask(raw: DeliveryTaskRaw): DeliveryTask {
     receiveAddress: optionalText(raw.receiveAddress) ?? '',
     maskedPhone: optionalText(raw.maskedPhone) ?? '',
     priceSnapshot: { waterAmountFen, deliveryFeeFen, totalAmountFen },
+    payWay: payWayRaw,
     taskStatus: taskStatus as DeliveryTaskStatus,
     version,
     acceptTime: optionalBizTime(raw.acceptTime),

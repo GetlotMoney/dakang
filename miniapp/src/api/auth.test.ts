@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAccountStore } from '@/store/account'
-import { authApi, readPhoneAuthorization } from './auth'
+import { authApi, parseTestLoginAccounts, readPhoneAuthorization } from './auth'
 import * as request from './request'
 import { resolveApiMode } from './runtime'
 
@@ -209,5 +209,39 @@ describe('构建门禁：auth 域模式解析', () => {
     expect(resolveApiMode('recharge', { globalMode: 'mock', authMode: 'real', rechargeMode: 'mock' })).toBe('mock')
     expect(resolveApiMode('auth', { globalMode: 'mock', authMode: 'mock', rechargeMode: 'real' })).toBe('mock')
     expect(resolveApiMode('recharge', { globalMode: 'mock', authMode: 'mock', rechargeMode: 'real' })).toBe('real')
+  })
+})
+
+describe('测试账号白名单解析（parseTestLoginAccounts）', () => {
+  it('解析「手机号:标签」清单，标签缺省回退手机号', () => {
+    const list = parseTestLoginAccounts('13900001111:演示用户,13999990002', undefined)
+    expect(list).toEqual([
+      { phone: '13900001111', label: '演示用户' },
+      { phone: '13999990002', label: '13999990002' },
+    ])
+  })
+
+  it('非法手机号一律丢弃：白名单不成为账号枚举面', () => {
+    const list = parseTestLoginAccounts('abc:坏号,1390000111:短号,239000011112:非1开头,13900001111:好号', undefined)
+    expect(list).toEqual([{ phone: '13900001111', label: '好号' }])
+  })
+
+  it('未配置清单时回退单号（旧构建行为不变）', () => {
+    expect(parseTestLoginAccounts(undefined, '13900001111'))
+      .toEqual([{ phone: '13900001111', label: '13900001111' }])
+    expect(parseTestLoginAccounts('', '13900001111'))
+      .toEqual([{ phone: '13900001111', label: '13900001111' }])
+  })
+
+  it('清单与单号都缺席时为空：不渲染任何测试入口', () => {
+    expect(parseTestLoginAccounts(undefined, undefined)).toEqual([])
+  })
+
+  it('容忍空白与空项', () => {
+    const list = parseTestLoginAccounts(' 13900001111 : 张女士 , ,13999990001 ', undefined)
+    expect(list).toEqual([
+      { phone: '13900001111', label: '张女士' },
+      { phone: '13999990001', label: '13999990001' },
+    ])
   })
 })
