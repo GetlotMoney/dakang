@@ -19,8 +19,6 @@ import mqtt from 'mqtt'
 const deviceNo = process.argv[2] || 'DK-DEV-0001'
 const modes = new Set(process.argv.slice(3))
 const broker = process.env.BROKER || 'tcp://localhost:1883'
-const mqttUsername = process.env.DAKANG_MQTT_USERNAME || ''
-const mqttPassword = process.env.DAKANG_MQTT_PASSWORD || ''
 
 // 设备上报时间固定用 +8 时区（与服务器 Asia/Shanghai 一致）：
 // 开发机为 UTC-7 时本地时区会导致 ackTs/finishTs 与服务器时间差 15h，PC timeline 出现"回执早于下发"倒挂。
@@ -34,8 +32,8 @@ const nextMsgId = () => `SIM-${deviceNo}-${Date.now()}-${++msgSeq}`
 
 const client = mqtt.connect(broker, {
   clientId: deviceNo,
-  username: mqttUsername,
-  password: mqttPassword,
+  username: 'device',
+  password: 'device',
   keepalive: 30
 })
 

@@ -1,21 +1,5 @@
 # 六维达康共享健康水站平台
 
-> [!WARNING]
-> 本仓库来自 2026-07-24 的一期源码交付包。该交付包缺少
-> `server/src/main/java/com/jbk/tool/data/`，当前后端无法独立编译。
-> 请勿将本仓库直接用于生产部署；找到完整原始源码后，应补回该目录并重新运行全部验证。
-
-## 公开仓库安全说明
-
-仓库不包含数据库、Redis、MQTT、JWT、RSA 或微信的真实凭据。首次启动前：
-
-1. 将根目录 `.env.example` 复制为 `.env`。
-2. 为每个空值生成独立的随机凭据，禁止复用示例密码。
-3. 保持 `MINI_PAYSIM_ENABLED=false`；仅在隔离验收环境中临时开启。
-4. 普通小程序开发构建默认全域 Mock，不会连接真实业务接口。
-
-本地 `.env`、私钥文件和 `application-secret*.yml` 已被 Git 忽略。
-
 六维达康是面向社区自助售水场景的多端业务平台，包含 PC 运营后台、微信小程序、设备接入服务以及 MySQL、Redis、EMQX 基础设施。
 
 ## 一期业务进度
@@ -42,11 +26,23 @@
 - 设备接入：基于 EMQX 的 MQTT 心跳、遥测、指令、ACK 和 result 通道。
 - 数据服务：MySQL 8、Redis 7、Spring Boot 3.5、MyBatis-Plus。
 
+## 安全说明
+
+本仓库不含任何真实凭据：数据库、Redis、MQTT、JWT、RSA 与微信密钥全部经环境变量注入。
+
+- 仓库根 `.env` 是全仓唯一的口令来源，**不入库**；模板见 `.env.example`。
+- `deploy/docker-compose.yml` 里带 `:?` 的变量是强制项，缺失即拒绝启动，不会静默用空口令跑起来。
+- 数据库、Redis、EMQX 只绑定 `127.0.0.1`，不暴露到局域网；后端 13330 与 PC 8081 保持全网卡是为了小程序真机联调，生产应改回回环并由反向代理承接 TLS。
+- `deploy/mysql/init/01-base.sql` 与 `client/.env.demo` 中的 Demo 管理员口令（及其 RSA 密文）与源码内置的 Demo 密钥对配套，公开即等同明文，**只可用于本机演示**。任何对外可达的部署都必须重置管理员口令、更换 RSA 密钥对，并关闭 `client/.env.demo` 的自动填充。
+- `MINI_PAYSIM_ENABLED` 默认关闭。它同时门控模拟支付与测试登录入口，生产环境不注册这两条路由。
+
 ## 首次启动
 
 源码交付包不包含依赖和构建产物。首次解压后执行：
 
 ```bash
+cp .env.example .env        # 填入本机口令后再继续，否则容器会拒绝启动
+
 cd client
 pnpm install --frozen-lockfile
 
@@ -59,6 +55,8 @@ cd ../deploy
 
 本机要求：Docker、Java 17、Maven、Node.js 20.19+、pnpm 8.8+。
 
+小程序真机联调另需 `miniapp/env/.env.development`（不入库，模板见同目录 `.env.development.example`）：填本机局域网 IP 与自己的小程序 AppID。
+
 ## 运行入口
 
 | 服务 | 地址 |
@@ -67,8 +65,8 @@ cd ../deploy
 | 后端 API | http://localhost:13330/dakangApi |
 | Knife4j | http://localhost:13330/dakangApi/doc.html |
 | EMQX 管理台 | http://localhost:18083 |
-| MySQL | localhost:3308 |
-| Redis | localhost:6380 |
+| MySQL | 127.0.0.1:3308（仅本机） |
+| Redis | 127.0.0.1:6380（仅本机） |
 
 前端开发端口 `13321` 仅用于热更新，不作为验收入口。
 
@@ -77,7 +75,6 @@ cd ../deploy
 | 范围 | 文档 |
 |---|---|
 | 项目规则 | `AGENTS.md`、`docs/development-workflow.md` |
-| 技术演进 | `docs/TECH_STACK_HISTORY.md` |
 | 当前状态 | `docs/demo-module-status.md`、`docs/requirements/demo-business-chain-matrix.md` |
 | 运行部署 | `docs/runtime-entrypoints.md` |
 | 需求与决策 | `docs/requirements/README.md`、`docs/requirements/requirements-pool.csv`、`docs/requirements/decisions.md` |

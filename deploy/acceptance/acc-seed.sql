@@ -21,6 +21,9 @@ USE dakang;
 -- 运营账号（S5/S8 经 PC /user/card/changeStatus 冻结解冻用）。
 -- LOGIN_PWD 与 01-base 的 admin 为同一 RSA 密文（登录时两侧都走 RSAUtils.decrypt 后比较明文），
 -- 不引入新明文口令，也不改动底座 admin。
+-- 该密文是 **Demo 固定密文**，仅与源码内置的 Demo RSA 密钥对（示例值见 .env.example 的
+-- DAKANG_RSA_PRIVATE_KEY/DAKANG_RSA_PUBLIC_KEY 注释）配套，公开即等同明文，只可用于验收环境。
+-- 生产部署必须更换 RSA 密钥对并重置管理员口令；届时 e2e 的 ACC_OPS_PWD_CIPHER 也要同步换成新密文。
 INSERT IGNORE INTO `api_employee`
 (`ID`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `DATA_STATUS`, `LOGIN_NAME`, `LOGIN_PWD`, `EMPLOYEE_NAME`, `EMPLOYEE_GENDER`, `EMPLOYEE_PHONE`, `DEPT_ID`, `POSITION_ID`, `DISABLED_FLAG`) VALUES
 (9001, 1, '20260723000000', 1, '20260723000000', 0, 'acc-ops', 'B51yw4neAThtpTnUhsmvp+Ikho2Cu6ToTXw3c3iDtbTR7HSOfPIk6vY0cHjGRQzy6UdINaYqQbKpKeBOYSYAw/d1oQM2OmevVJ2UgCUTi3eVopeNXL5YHk+Uyx6JDV61M0M3kymmNn5ZLPaaqZeYMH0YHRKQMdDHXDpNl05IkhQ=', '验收运营', 1, '13999990009', 1, 1, 1);
@@ -61,4 +64,4 @@ INSERT IGNORE INTO `ws_qrcode`
 -- 100 元 / 500 升 / 365 天，与一期主推套餐同数值域，保证 RechargeLimits 校验可过。
 INSERT IGNORE INTO `ws_package`
 (`ID`, `DATA_STATUS`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `PACKAGE_NAME`, `PAY_AMOUNT`, `WATER_ML`, `BONUS_AMOUNT`, `UNIT_PRICE_SNAP`, `SCOPE_JSON`, `EXPIRE_DAYS`, `PACKAGE_STATUS`, `PACKAGE_REMARK`) VALUES
-(9501, 0, 1, '20260723000000', 1, '20260723000000', '验收100元500升卡', 10000, 500000, 0, '20.00', '{"scopeType":"specified","stationIds":["9101"]}', 365, 1, '水卡生命周期验收专用：仅允许验收水站1');
+(9501, 0, 1, '20260723000000', 1, '20260723000000', '验收100元500升卡', 10000, 500000, 0, '20.00', '{"scopeType":"specified","stationIds":["9101"]}', NULL, 1, '水卡生命周期验收专用：仅允许验收水站1；付费卡永久有效（D-213）');

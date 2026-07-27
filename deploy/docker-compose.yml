@@ -3,6 +3,12 @@
 # 端口与本机既有 wuye-* 服务（3307/6379/13320/8080）隔离：
 #   MySQL 3308 / Redis 6380 / EMQX 1883+18083 / 后端 13330 / Web 8081
 #
+# 凭据：本文件不含任何口令明文，全部经 ${VAR:?...} 从 .env 注入，缺失即启动失败（fail-closed）。
+# .env 位于**仓库根**且不入库；deploy/.env 是指向它的软链（同样不入库），
+# 因为 docker compose 只读取「compose 文件所在目录」的 .env —— 没有这个软链，
+# 从任何目录执行 `docker compose -f deploy/docker-compose.yml ...` 都会因变量未定义而拒绝启动。
+# 首次使用：cp .env.example .env 并填入本机口令（模板列出全部变量与用途）。
+#
 # 用法：
 #   ./build-all.sh                              # 源码包首次/日常完整构建并创建五容器
 #   docker compose up -d mysql redis emqx      # 仅提前启动基础设施
@@ -11,8 +17,8 @@
 # 入口：
 #   PC 管理端     http://localhost:8081/#/dashboard/console（使用正式鉴权流程，不提供测试绕过机制）
 #   后端接口      http://localhost:13330/dakangApi/（knife4j: /doc.html）
-#   EMQX 管理台   http://localhost:18083/
-#   MySQL 调试    localhost:3308
+#   EMQX 管理台   http://localhost:18083/         （admin / 见 .env 的 DAKANG_EMQX_DASHBOARD_PASSWORD）
+#   MySQL 调试    localhost:3308（root / 见 .env 的 DAKANG_DB_PASSWORD）
 
 services:
   mysql:
@@ -24,16 +30,21 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_general_ci
     environment:
-      MYSQL_ROOT_PASSWORD: "${DAKANG_DB_PASSWORD:?set DAKANG_DB_PASSWORD in .env}"
+      MYSQL_ROOT_PASSWORD: ${DAKANG_DB_PASSWORD:?set DAKANG_DB_PASSWORD in .env}
       TZ: Asia/Shanghai
     volumes:
       # 首次启动（数据卷为空时）自动执行：01 基础底座、02 业务表、03 Demo 最终菜单与契约
       - ./mysql/init:/docker-entrypoint-initdb.d:ro
       - dakang-mysql-data:/var/lib/mysql
     ports:
+      # 基础设施一律只绑回环：数据库/缓存/消息中间件绝不暴露到局域网，
+      # 否则同 Wi-Fi 下任何设备都能直连 3308。需要外部工具连库时走 SSH 隧道。
       - "127.0.0.1:3308:3306"
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      # 口令取容器内已有的 MYSQL_ROOT_PASSWORD，避免在文件里再写一遍明文。
+      # `$$` 是 compose 的转义：它把字面量 `$` 传给容器 shell；写单个 `$` 会被 compose
+      # 在宿主侧当作插值提前展开成空串，健康检查将永远认证失败。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
       timeout: 4s
       retries: 30
@@ -54,9 +65,10 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
-      # 生产必须关闭匿名接入并配置设备认证。
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: "${DAKANG_EMQX_DASHBOARD_PASSWORD:?set DAKANG_EMQX_DASHBOARD_PASSWORD in .env}"
+      # 管理台账号 admin，口令见 .env 的 DAKANG_EMQX_DASHBOARD_PASSWORD；生产必须关闭匿名接入并配置设备认证
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${DAKANG_EMQX_DASHBOARD_PASSWORD:?set DAKANG_EMQX_DASHBOARD_PASSWORD in .env}
     ports:
+      # MQTT/Dashboard 同样只绑回环；真实设备接入需另行开放并先启用 EMQX 认证
       - "127.0.0.1:1883:1883"     # MQTT（设备/后端/模拟器接入）
       - "127.0.0.1:18083:18083"   # Dashboard
     healthcheck:
@@ -79,13 +91,25 @@ services:
     # 订单与指令时间采用 yyyyMMddHHmmss 字符串，固定使用 Asia/Shanghai 以避免时区偏差。
     environment:
       TZ: Asia/Shanghai
-      DAKANG_DB_PASSWORD: "${DAKANG_DB_PASSWORD:?set DAKANG_DB_PASSWORD in .env}"
-      DAKANG_REDIS_PASSWORD: "${DAKANG_REDIS_PASSWORD:?set DAKANG_REDIS_PASSWORD in .env}"
-      DAKANG_MQTT_USERNAME: "${DAKANG_MQTT_USERNAME:?set DAKANG_MQTT_USERNAME in .env}"
-      DAKANG_MQTT_PASSWORD: "${DAKANG_MQTT_PASSWORD:?set DAKANG_MQTT_PASSWORD in .env}"
-      DAKANG_JWT_SECRET: "${DAKANG_JWT_SECRET:?set DAKANG_JWT_SECRET in .env}"
-      DAKANG_RSA_PRIVATE_KEY: "${DAKANG_RSA_PRIVATE_KEY:?set DAKANG_RSA_PRIVATE_KEY in .env}"
-      DAKANG_RSA_PUBLIC_KEY: "${DAKANG_RSA_PUBLIC_KEY:?set DAKANG_RSA_PUBLIC_KEY in .env}"
+      # 凭据透传给 Spring：application-prod.yml 里对应位置写的是 ${同名变量}，
+      # 容器环境变量即最终取值。任何一项缺失，上面的 :? 会让 compose 直接拒绝启动。
+      DAKANG_DB_USERNAME: ${DAKANG_DB_USERNAME:-root}
+      DAKANG_DB_PASSWORD: ${DAKANG_DB_PASSWORD:?set DAKANG_DB_PASSWORD in .env}
+      DAKANG_REDIS_PASSWORD: ${DAKANG_REDIS_PASSWORD:?set DAKANG_REDIS_PASSWORD in .env}
+      # MQTT：EMQX 当前未开认证，.env 里给空串即匿名接入。这里用无冒号的 `?` 而非 `:?`——
+      # `:?` 把"空串"也判为缺失，会让本就该留空的匿名接入直接启动失败；无冒号只在变量
+      # 未声明时报错，正好区分开"忘配"与"有意留空"。生产开认证后在 .env 填真值。
+      DAKANG_MQTT_USERNAME: ${DAKANG_MQTT_USERNAME?set DAKANG_MQTT_USERNAME in .env (可为空串=匿名接入)}
+      DAKANG_MQTT_PASSWORD: ${DAKANG_MQTT_PASSWORD?set DAKANG_MQTT_PASSWORD in .env (可为空串=匿名接入)}
+      # sa-token 签发 JWT 的密钥：必须是本项目专属随机值，与其他基座项目共用会导致 token 可互伪造。
+      DAKANG_JWT_SECRET: ${DAKANG_JWT_SECRET:?set DAKANG_JWT_SECRET in .env}
+      # 口令传输用 RSA 密钥对：源码内不留任何密钥，缺失即拒绝启动。
+      # 换密钥对必须同时重置管理员口令——库里的旧密文用新私钥解不出，账号会直接登不上。
+      DAKANG_RSA_PRIVATE_KEY: ${DAKANG_RSA_PRIVATE_KEY:?set DAKANG_RSA_PRIVATE_KEY in .env}
+      DAKANG_RSA_PUBLIC_KEY: ${DAKANG_RSA_PUBLIC_KEY:?set DAKANG_RSA_PUBLIC_KEY in .env}
+      # 微信小程序凭据：未接入正式登录前保持空；填入即 wechat.xcx.appid/appsecret 生效。
+      WECHAT_XCX_APPID: ${WECHAT_XCX_APPID:-}
+      WECHAT_XCX_APPSECRET: ${WECHAT_XCX_APPSECRET:-}
       # 8081 使用固定 Demo 快照，关闭心跳与指令超时扫描，避免定时任务修改验收样例。
       # 真实环境应保留默认值 true，并由真实设备或 tools/device-sim 持续上报心跳。
       DAKANG_DEVICE_MONITOR_ENABLED: "false"
@@ -93,10 +117,10 @@ services:
       SPRINGDOC_SWAGGERUI_ENABLED: "true"
       SPRINGDOC_APIDOCS_ENABLED: "true"
       KNIFE4J_ENABLE: "true"
-      # 演示环境显式开启 Pay-Sim 模拟支付（覆盖 prod profile 里的 mini.pay-sim.enabled=false）。
+      # Pay-Sim 模拟支付：默认 false（安全默认），演示环境在 .env 里置 true 才开。
       # 开启后 /mini/pay-sim/** 才注册，且支付单被永久打上 PAY_SOURCE=2，
-      # 模拟收款不可能混进真实微信对账口径。真生产不设此变量即默认关闭。
-      MINI_PAYSIM_ENABLED: "${MINI_PAYSIM_ENABLED:-false}"
+      # 模拟收款不可能混进真实微信对账口径。生产环境 .env 必须保持 false。
+      MINI_PAYSIM_ENABLED: ${MINI_PAYSIM_ENABLED:-false}
     volumes:
       - ./dist/server/dakang-server.jar:/app/app.jar:ro
       - ./logs:/app/logs
@@ -110,7 +134,9 @@ services:
       - app.jar
       - --spring.profiles.active=prod
     ports:
-      - "127.0.0.1:13330:13330"
+      # 应用层刻意保持全网卡监听：小程序真机调试需要手机经局域网访问本机后端。
+      # 生产改回 127.0.0.1 并由反向代理承接 TLS。
+      - "13330:13330"
 
   web:
     image: nginx:1.27-alpine
@@ -122,7 +148,8 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./dist/client:/usr/share/nginx/html/pc:ro
     ports:
-      - "127.0.0.1:8081:80"
+      # 同 backend：PC 演示需要局域网内其他设备打开，生产同样改回 127.0.0.1 + 反向代理
+      - "8081:80"
 
 volumes:
   dakang-mysql-data:

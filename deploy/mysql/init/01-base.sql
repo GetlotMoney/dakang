@@ -354,6 +354,12 @@ UNLOCK TABLES;
 
 LOCK TABLES `api_employee` WRITE;
 /*!40000 ALTER TABLE `api_employee` DISABLE KEYS */;
+-- admin 的 LOGIN_PWD 是 **Demo 固定口令密文**，仅与源码内置的 Demo RSA 密钥对
+-- （server/.../RSAUtils.java 的 DEMO_PRIVATE_KEY/DEMO_PUBLIC_KEY，示例值见 .env.example 的
+-- DAKANG_RSA_PRIVATE_KEY/DAKANG_RSA_PUBLIC_KEY 注释）配套；密钥对随源码公开，该密文等同明文。
+-- 保留它是为了让全新环境 `docker compose up` 后能直接登录 PC 走通 Demo。
+-- **生产部署必须**：先换 RSA 密钥对（含前端 client/.env 的 VITE_ACCESS_LOGIN_KEY 同步换成新公钥），
+-- 再用新密钥对重置管理员口令覆盖本行密文——只做其中一步会导致管理员账号登不上。
 INSERT IGNORE INTO `api_employee` (`ID`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `DATA_STATUS`, `LOGIN_NAME`, `LOGIN_PWD`, `EMPLOYEE_NAME`, `EMPLOYEE_GENDER`, `EMPLOYEE_PHONE`, `DEPT_ID`, `POSITION_ID`, `DISABLED_FLAG`) VALUES (1,1,'20260520120000',1,'20260520120000',0,'admin','B51yw4neAThtpTnUhsmvp+Ikho2Cu6ToTXw3c3iDtbTR7HSOfPIk6vY0cHjGRQzy6UdINaYqQbKpKeBOYSYAw/d1oQM2OmevVJ2UgCUTi3eVopeNXL5YHk+Uyx6JDV61M0M3kymmNn5ZLPaaqZeYMH0YHRKQMdDHXDpNl05IkhQ=','超级管理员',1,'13800000001',1,1,1);
 /*!40000 ALTER TABLE `api_employee` ENABLE KEYS */;
 UNLOCK TABLES;

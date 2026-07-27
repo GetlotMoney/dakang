@@ -22,8 +22,8 @@
 | 后端   | Java 17 + Spring Boot 3.5.11 + MyBatis-Plus + Sa-Token       | `server/`（13330，context-path `/dakangApi`） |
 | 小程序 | unibest（uni-app + Vue3 + TypeScript）+ Wot UI，D2 基座已初始化 | `miniapp/`                                    |
 | MQTT   | EMQX 5.8（Docker），MQTT 1883 / 管理台 18083                 | `deploy/docker-compose.yml`                   |
-| 数据库 | MySQL 8.0 本地 Docker，宿主端口 3308，库 `dakang`            | 凭据由根目录 `.env` 注入                     |
-| 缓存   | Redis 7 本地 Docker，宿主端口 6380                           | 凭据由根目录 `.env` 注入                     |
+| 数据库 | MySQL 8.0 本地 Docker，宿主端口 3308，库 `dakang`            | root / 口令见仓库根 `.env`（`DAKANG_DB_PASSWORD`） |
+| 缓存   | Redis 7 本地 Docker，宿主端口 6380                           | 口令见仓库根 `.env`（`DAKANG_REDIS_PASSWORD`） |
 
 ## 当前开发阶段与主工作流（强制）
 
@@ -71,8 +71,11 @@
 
 - PC 管理端（容器版）http://localhost:8081/#/dashboard/console
 - 后端接口 http://localhost:13330/dakangApi/ ，knife4j 文档 http://localhost:13330/dakangApi/doc.html
-- EMQX 管理台 http://localhost:18083/（密码由根目录 `.env` 注入）
-- MySQL localhost:3308、Redis localhost:6380（凭据由根目录 `.env` 注入）
+- EMQX 管理台 http://localhost:18083/（admin / 口令见 `.env` 的 `DAKANG_EMQX_DASHBOARD_PASSWORD`）
+- MySQL localhost:3308（root / `DAKANG_DB_PASSWORD`），Redis localhost:6380（`DAKANG_REDIS_PASSWORD`）
+
+> 全部口令只存在于**不入库**的仓库根 `.env`（首次使用 `cp .env.example .env` 后填写；`.env.example` 列出全部变量与用途）。
+> 任何文档、SQL 注释、配置文件里都不得再出现口令明文——公开仓库同步会把它们一并带走。
 
 前端通过 Vite 代理转发请求到后端，代理规则在 `client/vite.config.ts` 中配置（一期前缀：`/api` `/station` `/device` `/product` `/user` `/order` `/delivery`；商业一期追加 `/finance` `/workorder`，需与 `deploy/nginx/nginx.conf` 反代正则同步）。
 
@@ -117,7 +120,7 @@
 2. **检查枚举冲突**：读取 `server/src/main/java/com/jbk/tool/consts/ApiEnum.java` 中 `DictType` 已占用编号，选择未冲突的编号
 3. 编写建表 SQL + **字典数据 INSERT** + 权限菜单 INSERT + **测试数据 INSERT**
 4. 将 SQL 文件保存到 `server/sql/<模块名>.sql`
-5. **执行 SQL**：`mysql -h127.0.0.1 -P3308 -u"$DAKANG_DB_USERNAME" -p"$DAKANG_DB_PASSWORD" dakang < server/sql/<模块名>.sql`，并**同时同步一份到 `deploy/mysql/init/`**，供全新环境 `docker compose up` 首次初始化整库
+5. **执行 SQL**：先 `set -a; . .env; set +a` 导出仓库根 `.env`，再 `mysql -h127.0.0.1 -P3308 -uroot -p"$DAKANG_DB_PASSWORD" dakang < server/sql/<模块名>.sql`，并**同时同步一份到 `deploy/mysql/init/`**，供全新环境 `docker compose up` 首次初始化整库
 
 > **【强制】字典 SQL 必须执行到数据库**：字典数据插入 `api_dict_type` + `api_dict_data` 表，如果只写 SQL 不执行，字典接口会返回"字典不存在"，前端下拉框永远无数据。
 > **【强制】必须使用 `INSERT IGNORE INTO`**，禁止使用 `INSERT INTO`，以保证 SQL 幂等性（可重复执行而不产生重复数据）。字典和权限菜单均同理。

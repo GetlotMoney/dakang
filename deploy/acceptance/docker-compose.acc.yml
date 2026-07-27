@@ -1,6 +1,9 @@
 # 六维达康 · 水卡生命周期验收环境（与主环境物理隔离的独立容器组）
 #
 # 只描述与主环境 deploy/docker-compose.yml 的差异：独立容器名 / 宿主端口 / 口令 / 数据卷。
+#
+# 凭据全部经 ${DAKANG_ACC_*} 从 .env 注入，缺失即拒绝启动。compose 只读取「compose 文件所在目录」
+# 的 .env，故 deploy/acceptance/.env 是指向仓库根 .env 的软链（不入库），删掉它本文件就起不来。
 # schema 与种子完全复用 ../mysql/init（首次启动自动执行 01/02/03），不存在第三份 DDL；
 # 迁移与验收种子由 acc-env.sh 在容器就绪后按文件名顺序灌入。
 #
@@ -28,16 +31,19 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_general_ci
     environment:
-      # 验收口令必须与主库不同，误连主库时认证应直接失败。
-      MYSQL_ROOT_PASSWORD: "${DAKANG_ACC_DB_PASSWORD:?set DAKANG_ACC_DB_PASSWORD in .env}"
+      # 验收库与主库口令由 .env 分别配置（DAKANG_ACC_DB_PASSWORD / DAKANG_DB_PASSWORD），
+      # **两者必须不同**：这样脚本误配到 3308 时认证即失败，形成第二道防触主库护栏；
+      # 若图省事配成同一个口令，这道护栏就没了。
+      MYSQL_ROOT_PASSWORD: ${DAKANG_ACC_DB_PASSWORD:?set DAKANG_ACC_DB_PASSWORD in .env}
       TZ: Asia/Shanghai
     volumes:
       - ../mysql/init:/docker-entrypoint-initdb.d:ro
       - dakang-acc-mysql-data:/var/lib/mysql
     ports:
-      - "127.0.0.1:3309:3306"
+      - "3309:3306"
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      # 口令取容器内已有的 MYSQL_ROOT_PASSWORD；`$$` 是 compose 转义，写单个 `$` 会在宿主侧被展开成空串
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
       timeout: 4s
       retries: 30
@@ -49,17 +55,17 @@ services:
     environment:
       TZ: Asia/Shanghai
     ports:
-      - "127.0.0.1:6381:6379"
+      - "6381:6379"
 
   emqx:
     image: emqx/emqx:5.8
     container_name: dakang-acc-emqx
     environment:
       TZ: Asia/Shanghai
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: "${DAKANG_ACC_EMQX_DASHBOARD_PASSWORD:?set DAKANG_ACC_EMQX_DASHBOARD_PASSWORD in .env}"
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${DAKANG_ACC_EMQX_DASHBOARD_PASSWORD:?set DAKANG_ACC_EMQX_DASHBOARD_PASSWORD in .env}
     ports:
-      - "127.0.0.1:1884:1883"
-      - "127.0.0.1:18084:18083"
+      - "1884:1883"
+      - "18084:18083"
     healthcheck:
       test: ["CMD", "emqx", "ctl", "status"]
       interval: 10s

@@ -13,10 +13,30 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# 凭据一律来自仓库根 .env（不入库；模板见 .env.example），本文件不留口令明文。
+# set -a 让 source 进来的键自动导出，供下面的 compose 与后端命令行参数使用。
+if [ -f "${REPO_ROOT}/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "${REPO_ROOT}/.env"
+  set +a
+fi
+# fail-closed：缺任何一项立即退出，绝不回落到硬编码口令——回落会让「验收口令必须与主库不同」
+# 这道防触主库护栏在配置缺失时静默失效。
+: "${DAKANG_ACC_DB_PASSWORD:?请在仓库根 .env 配置 DAKANG_ACC_DB_PASSWORD（参照 .env.example）}"
+: "${DAKANG_ACC_REDIS_PASSWORD:?请在仓库根 .env 配置 DAKANG_ACC_REDIS_PASSWORD（参照 .env.example）}"
+# 「验收口令 ≠ 主库口令」原本由源码写死两个不同常量保证；口令改为 .env 注入后，
+# 这条前提只能由配置保证，故显式断言：两者一旦配成相同，误连 3308 就不再被认证挡下，护栏形同虚设。
+if [ -n "${DAKANG_DB_PASSWORD:-}" ] && [ "${DAKANG_ACC_DB_PASSWORD}" = "${DAKANG_DB_PASSWORD}" ]; then
+  echo "错误：DAKANG_ACC_DB_PASSWORD 与主库 DAKANG_DB_PASSWORD 相同，防误触主库的第二道护栏失效；请在 .env 改成不同口令。" >&2
+  exit 2
+fi
+
 COMPOSE=(docker compose -f "${SCRIPT_DIR}/docker-compose.acc.yml")
 MYSQL_CONTAINER="dakang-acc-mysql"
-MYSQL_PWD="${DAKANG_ACC_DB_PASSWORD:?请先设置 DAKANG_ACC_DB_PASSWORD}"
-ACC_REDIS_PASSWORD="${DAKANG_ACC_REDIS_PASSWORD:?请先设置 DAKANG_ACC_REDIS_PASSWORD}"
+MYSQL_PWD="${DAKANG_ACC_DB_PASSWORD}"
+REDIS_PWD="${DAKANG_ACC_REDIS_PASSWORD}"
 DB_NAME="dakang"
 BACKEND_PORT=13340
 RUN_DIR="${SCRIPT_DIR}/.run"
@@ -102,9 +122,9 @@ cmd_backend_start() {
     --spring.datasource.druid.password="${MYSQL_PWD}" \
     --spring.redis.host=127.0.0.1 \
     --spring.redis.port=6381 \
-    --spring.redis.password="${ACC_REDIS_PASSWORD}" \
+    --spring.redis.password="${REDIS_PWD}" \
     --spring.ratelimiter.redis-address=redis://127.0.0.1:6381 \
-    --spring.ratelimiter.redis-password="${ACC_REDIS_PASSWORD}" \
+    --spring.ratelimiter.redis-password="${REDIS_PWD}" \
     --mqtt.enabled=true \
     --mqtt.broker-url=tcp://127.0.0.1:1884 \
     --mqtt.client-id=dakang-server-acc \

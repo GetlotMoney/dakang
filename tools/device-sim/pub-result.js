@@ -9,8 +9,6 @@ const success = process.argv[4] === 'true'
 const actualMl = Number(process.argv[5])
 const suffix = process.argv[6] || String(Date.now())
 const broker = process.env.BROKER || 'tcp://localhost:1883'
-const mqttUsername = process.env.DAKANG_MQTT_USERNAME || ''
-const mqttPassword = process.env.DAKANG_MQTT_PASSWORD || ''
 
 // 与 sim.js 同口径：finishTs 固定 +8 时区，避免开发机本地时区（如 UTC-7）造成时间倒挂。
 const ts = () => {
@@ -19,11 +17,7 @@ const ts = () => {
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`
 }
 
-const client = mqtt.connect(broker, {
-  clientId: `pub-${deviceNo}-${suffix}`,
-  username: mqttUsername,
-  password: mqttPassword
-})
+const client = mqtt.connect(broker, { clientId: `pub-${deviceNo}-${suffix}`, username: 'device', password: 'device' })
 client.on('connect', () => {
   const payload = { msgId: `MANUAL-${deviceNo}-${suffix}`, cmdNo, success, finishTs: ts() }
   if (!Number.isNaN(actualMl)) payload.actualMl = actualMl
