@@ -1,10 +1,38 @@
 # L2 购卡充值链可执行契约 v2
 
-> 日期：2026-07-21
+> 日期：2026-07-21（有效期口径于 2026-07-25 被 D-213 修订，见下方失效声明）
 > 状态：内部技术实现已完成；正式微信支付、退款和生产财务能力待接入
 > 范围：仅 L2 购卡充值；H3 异常取水处理已拆出，不得在本契约中实施
 > 核心需求：REQ-003、REQ-006、REQ-007、REQ-008、REQ-021、REQ-022、REQ-023、REQ-042、REQ-043、REQ-061
 > 决策依据：用户已确认 D1～D8、G1 与 M1～M8
+
+## 0. 失效声明：有效期口径已被 D-213 取代
+
+**本文写于 2026-07-21，其中「有限卡 / 有限套餐」的口径已于 2026-07-25 被 `requirements/decisions.md`
+的 D-213 整体修订。冲突时一律以 decisions.md 为准**（权威性顺序见 `requirements/README.md`）：
+
+- **正规渠道付费购买的水卡一律永久有效**，`EXPIRE_DAYS`/`EXPIRE_TIME` 机制仅用于活动赠卡；
+- **赠卡不可充值**（`canRecharge=false` + 创单拒绝）。
+
+由此，本文第 2.2、4.2、6.4 等节描述的「有限卡买有限套餐」「有限卡续期
+`max(currentExpireTime, paySuccessTime) + expireDays`」「有限卡 `PAY_EXPIRE_TIME` 取较早者」等分支，
+**在当前产品口径下不再是可售形态**。相关代码与真库事务测试仍保留（D-205 明示「转为机制保留，
+公式由测试钉住」），所以这些描述对**代码**仍然准确，只是对**可售业务路径**不再成立——
+读本文推断「系统今天支持买有限期卡」会得出错误结论。
+
+> **本节曾有一处错误断言，2026-08-06 更正**：此前写作「线上无可达路径」，但当时
+> D-213 只写在 decisions.md 与本文里、**代码零守卫**——PC 建套餐时把售价设为正数、
+> 同时填 `expireDays`，校验全部通过、套餐正常上架、小程序判为可购，用户买完就拿到
+> 一张有限期付费卡。所谓"无可达路径"是推断，不是事实。现已在
+> `RechargeLimits.validatePackage` 落 `rejectPaidLimitedExpiry` 硬拒绝，
+> 由 `RechargeLimitsTest.paidPackageMustNotCarryExpiry` 变异验证。
+> 守卫**只加在套餐创建/售卖路径**，不加在 `validateSnapshotValues`——
+> 历史订单快照与权益入账要读旧数据，新规则不得让它们读不出来。
+
+
+
+本节之外的内容（幂等合同、支付两阶段事务、状态机、范围规范化算法、流水与对账口径）未被修订，
+仍然有效。
 
 ## 1. 目标、范围与完成口径
 
@@ -58,6 +86,7 @@ E2E-02 已完成模拟环境内部验收。正式微信支付和生产财务状�
 ### 2.2 有效期与权益模型
 
 - 第一版仅允许相同有效期类型：有限卡仅买有限套餐，永久卡仅买永久套餐，交叉组合拒绝。
+  **（已被 D-213 取代：付费卡一律永久、赠卡不可充值，故实际只剩「永久卡买永久套餐」一条可达路径；见第 0 节）**
 - 新规则只约束新订单，不追溯否定历史快照。
 - `EXPIRE_TIME IS NULL` 表示永久；迁移前将历史空字符串规范化为 `NULL`。
 - `EXPIRE_DAYS IS NULL` 表示永久；有限套餐必须为正整数天数。
@@ -486,8 +515,8 @@ Service 必须以 `KH_USER` 会话强制过滤本人，并核验：
   - `payment 2 / order 2`：充值流水为 0，必须至少一条 `PAY_SUCCESS_TIME <= PAY_EXPIRE_TIME` 的 SUCCESS，且处理态只允许 PENDING/PROCESSING/RETRY_WAIT；不得存在 PROCESSED/RECONCILIATION_REQUIRED 的 SUCCESS 或任何 CLOSED；
   - `payment 2 / order 4`：必须至少一条 `PAY_SUCCESS_TIME <= PAY_EXPIRE_TIME` 且 PROCESSED 的 SUCCESS，充值流水恰好一条并与目标卡、快照和 AFTER 一致；所有 SUCCESS 必须属于同一支付事实组，处理态只允许 PROCESSED，或处于事务 B 只读幂等收敛中的 PENDING/PROCESSING/RETRY_WAIT，任何 RECONCILIATION_REQUIRED/CLOSED 均 mismatch；
   - `payment 2 / order 6`：不得存在已完成充值流水，可保留迟到支付前的 PROCESSED CLOSED；全部 SUCCESS 必须属于同一支付事实组，并且要么全部为 RECONCILIATION_REQUIRED，要么全部带有同一非空 `RECOVERY_APPROVAL_GROUP_KEY`、审批字段与 canonical 审计且只处于 RETRY_WAIT/PROCESSING，禁止混用组键或留有未批准的 PENDING；
-  - `payment 2 / order 7`：该组合为后续真实退款合同预留；在 REQ-044 独立合同未冻结、未启用前，当前 pay-status 必须 fail-closed 返回 `REFUND_CONTRACT_NOT_ENABLED`，不得把状态 7 拼成成功。后续合同至少还须要求 PROCESSED 的 SUCCESS、恰好一条共键退款单、退款成功回调和金额对账；
-  - 其他组合，包括充值单 `order 3/8`，全部为 mismatch。
+  - `payment 2 / order 7/8`：原支付事实、原充值流水和账本证据须继续满足已完成订单口径；读取端还必须通过 E2E-04 售后终态证据校验，确认充值退款动作与订单、用户、金额和终态时间共键一致。`order 7` 返回 `REFUNDED`，`order 8` 返回 `PART_REFUNDED`；任一证据缺失、重复或错位均 mismatch，不得只凭订单状态拼接退款成功；
+  - 其他未列组合，包括充值单 `order 3`，全部为 mismatch。
 
 多事件 `processingStatus` 聚合优先级固定为 `RECONCILIATION_REQUIRED > PROCESSING > RETRY_WAIT > PENDING > PROCESSED`；待支付且无事件时返回 `WAITING_PAYMENT`。聚合只用于展示，不能替代上面的逐事件共键和合法组合校验。
 

@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "chain": "E2E-06",
+  "batchId": "2026-07-31T05-51-40-691Z",
+  "round": "round2",
+  "createdAt": "2026-07-31T05:51:53.978Z",
+  "envFingerprint": {
+    "base": "http://127.0.0.1:13340/dakangApi",
+    "dbHost": "127.0.0.1",
+    "dbPort": 3309,
+    "dbName": "dakang",
+    "round": "round2",
+    "seedSentinel": true,
+    "backendPidVerified": true,
+    "jarSha256": "d51018d8f54ac307b8d633ba7e1b09b4eb53d12b5b3b76966062d7840cabee58"
+  },
+  "scriptSha256": "8feea47a1f5333471d0e98353825a6d884b0e73236a3c55cb0ee59591157c5ef",
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "无归属账号：不投影经营能力，概览与快照服务端拒绝",
+      "pass": true,
+      "evidence": [
+        "capabilities=USER_BASE/COURIER_APPLY；overview 拒绝=机主授权范围为空，默认不可访问经营数据；快照拒绝=机主授权范围为空，默认不可访问经营数据"
+      ],
+      "error": "",
+      "durationMs": 37
+    },
+    {
+      "id": "S2",
+      "name": "设备指标与真实状态一致：在线→故障→恢复全程同源",
+      "pass": true,
+      "evidence": [
+        "在线 1/1，故障 0→1→0 全程与设备上行同源"
+      ],
+      "error": "",
+      "durationMs": 6913
+    },
+    {
+      "id": "S3",
+      "name": "站轨可见配送单（DEVICE_ID=NULL 走站轨计入）",
+      "pass": true,
+      "evidence": [
+        "OA-DELIVERY-1 站轨命中（station=9101）"
+      ],
+      "error": "",
+      "durationMs": 91
+    },
+    {
+      "id": "S4",
+      "name": "双轨去重：站+设备双命中的取水单只计一次",
+      "pass": true,
+      "evidence": [
+        "orderCount +1、金额 +1000、明细 1 行——OR 双命中天然去重"
+      ],
+      "error": "",
+      "durationMs": 60
+    },
+    {
+      "id": "S5",
+      "name": "充值单永不计入任何机主",
+      "pass": true,
+      "evidence": [
+        "TYPE=2 显式排除生效（即便带站也不计入）"
+      ],
+      "error": "",
+      "durationMs": 43
+    },
+    {
+      "id": "S6",
+      "name": "配送单金额=水费+配送费整额计入站轨",
+      "pass": true,
+      "evidence": [
+        "配送单 1500 分整额进入毛额"
+      ],
+      "error": "",
+      "durationMs": 25
+    },
+    {
+      "id": "S7",
+      "name": "真实取水链结算口径：实际水量计入；待支付/已取消不计入",
+      "pass": true,
+      "evidence": [
+        "真实链 WO20F917EE97BDAC1AD554 actualMl=4980 计入；待支付/已取消零影响；水量支付单列 4980mL"
+      ],
+      "error": "",
+      "durationMs": 4220
+    },
+    {
+      "id": "S8",
+      "name": "全额退款单按毛额计入且明细状态如实",
+      "pass": true,
+      "evidence": [
+        "毛额口径：退款 400 分计入，状态 7 可见"
+      ],
+      "error": "",
+      "durationMs": 39
+    },
+    {
+      "id": "S9",
+      "name": "快照筛选与防护：时间窗/设备筛选/越权拒绝/非法分页拒绝",
+      "pass": true,
+      "evidence": [
+        "设备筛选 3 行；越权/不存在同文案；0页/101条/坏时间全拒"
+      ],
+      "error": "",
+      "durationMs": 74
+    },
+    {
+      "id": "S10",
+      "name": "明细零身份泄露：响应原文不含用户ID/手机号/openid",
+      "pass": true,
+      "evidence": [
+        "原文扫描 1040 字节，零身份字段"
+      ],
+      "error": "",
+      "durationMs": 20
+    },
+    {
+      "id": "S11",
+      "name": "周期边界与「全部」语义：闭区间精确 + 不传周期返回全量",
+      "pass": true,
+      "evidence": [
+        "不传周期返回 6 单（含历史单 OA-ANCIENT-1）"
+      ],
+      "error": "",
+      "durationMs": 21
+    },
+    {
+      "id": "S11B",
+      "name": "周期闭区间边界：恰好命中/差一秒不命中",
+      "pass": true,
+      "evidence": [
+        "varchar(14) 闭区间字符串比较边界正确"
+      ],
+      "error": "",
+      "durationMs": 31
+    },
+    {
+      "id": "S12",
+      "name": "三方一致 + 范围投影：概览 == SQL 直查 == 快照合计；ownerScope 下发",
+      "pass": true,
+      "evidence": [
+        "三方一致：6 单 / 3700 分 / 12480 mL；scope={\"stationIds\":[\"9101\"],\"deviceNos\":[\"ACC-DEV-0001\"]}"
+      ],
+      "error": "",
+      "durationMs": 27
+    }
+  ],
+  "passed": 13,
+  "total": 13,
+  "pass": true
+}
