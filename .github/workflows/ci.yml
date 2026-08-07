@@ -1,0 +1,167 @@
+name: CI 质量门禁
+
+# R-202：把此前只能人工执行的编译、测试、基线与敏感信息检查固化为流水线。
+# 只做校验，不做部署——主库迁移、Pay-Sim、真实支付与设备指令一律需要独立授权，
+# 不能由 CI 触发（见 AGENTS.md「资金与设备安全铁律」与主工作流验收门）。
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新提交取消尚在跑的旧任务，避免排队堆积
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------
+  # 需求基线与仓库卫生：秒级作业，放最前面，坏得快
+  # ---------------------------------------------------------------
+  baseline:
+    name: 需求基线与仓库卫生
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 一期需求与业务链基线
+        run: python3 tools/check-demo-baseline.py
+
+      # 先自检再检查：本闸最危险的失效是把代码注释误判成界面文案，
+      # 那会逼着人去删注释——正好和「为什么写进代码」的铁律反着来。
+      - name: UI 文案闸自检
+        run: python3 tools/check-ui-copy.py --selftest
+
+      - name: 界面不得写给 agent 看的解释性文字
+        run: python3 tools/check-ui-copy.py
+
+      - name: 空白字符与冲突标记
+        run: git diff --check HEAD
+
+      - name: 凭据未入库
+        run: bash .github/scripts/check-secrets.sh
+
+  # ---------------------------------------------------------------
+  # 后端：编译 + 全量测试。真库用例依赖 Docker，runner 自带
+  # ---------------------------------------------------------------
+  server:
+    name: 后端编译与测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: 编译
+        working-directory: server
+        run: mvn -B compile
+
+      - name: 全量测试
+        working-directory: server
+        run: mvn -B test
+
+      # 【必须】Maven 在真库用例被整批跳过时仍报 BUILD SUCCESS——
+      # 用例带 @Testcontainers(disabledWithoutDocker=true)，Docker 不可用即静默跳过。
+      # 2026-08-04 本机实际发生过一次：433 条被跳过而门禁全绿。
+      # 故门禁不看 mvn 退出码，看 surefire 报告里的 skipped 与总数。
+      - name: 门禁——Skipped 必须为 0 且总数不得塌陷
+        run: python3 .github/scripts/check-surefire.py server/target/surefire-reports
+
+      - name: 归档测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: server/target/surefire-reports/
+          retention-days: 7
+
+  # ---------------------------------------------------------------
+  # PC 管理端：类型检查 + 格式 + 生产构建
+  # ---------------------------------------------------------------
+  client:
+    name: PC 类型检查与构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: 安装依赖
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        working-directory: client
+        run: pnpm exec vue-tsc --noEmit
+
+      - name: 格式检查（只读，不写回）
+        working-directory: client
+        run: pnpm exec prettier --check "src/**/*.{ts,tsx,vue,json,css,scss}"
+
+      - name: 生产构建（含 5+1 导航一致性检查）
+        working-directory: client
+        run: pnpm run build
+
+  # ---------------------------------------------------------------
+  # 小程序：类型检查 + ESLint + 单测 + E2E 门禁 + 双端构建
+  # ---------------------------------------------------------------
+  miniapp:
+    name: 小程序检查与构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: miniapp/pnpm-lock.yaml
+
+      # postinstall 会跑 prepare:config 生成 manifest.json / pages.json
+      - name: 安装依赖
+        working-directory: miniapp
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        working-directory: miniapp
+        run: pnpm run type-check
+
+      - name: ESLint
+        working-directory: miniapp
+        run: pnpm run lint
+
+      - name: 单元测试
+        working-directory: miniapp
+        run: pnpm run test
+
+      - name: E2E 门禁
+        working-directory: miniapp
+        run: pnpm run test:e2e-gate
+
+      - name: H5 构建
+        working-directory: miniapp
+        run: pnpm run build:h5
+
+      - name: 微信小程序构建
+        working-directory: miniapp
+        run: pnpm run build:mp-weixin

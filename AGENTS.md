@@ -40,6 +40,37 @@
 
 > **【优先级】资金与设备安全铁律始终最高；业务链阶段划分与验收门以主工作流为准；下文四步真实模块开发流程只在对应验收门打开且获得实施授权后执行。不得因下文写有“完整执行、不要中断”等表述而跳过该链的 Demo 或契约验收门。**
 
+## 读者分工（强制）
+
+本仓库的文字有三类读者，**写错地方比写少更有害**：
+
+| 类别 | 载体 | 要求 |
+|---|---|---|
+| **人读** | `README.md`、`miniapp/README.md`、`miniapp/e2e/README.md`、`docs/requirements/pending-*.md`、`docs/acceptance/*/README.md` | 结论先行、一屏到两屏读完、**不复制状态与计数**（只写指针）、不写实现细节 |
+| **agent 读** | `AGENTS.md`、`CLAUDE.md`、`miniapp/AGENTS.md`、`docs/development-workflow.md`、`docs/demo-module-status.md`、`docs/requirements/*`、`docs/contracts/*`、`docs/runtime-entrypoints.md`、`docs/mqtt-topics.md`、各 `.agents/skills/**` | 职责唯一、判据精确、不与其他文档竞争口径；篇幅其次，但每条断言都要能被代码或门禁核对 |
+| **最终用户读** | PC 页面 `client/src/views/**`、小程序页面 `miniapp/src/pages/**` 上一切渲染出来的文字 | 只写用户做决定需要的信息，一句话说完；**禁止**实现术语、系统行为讲解、免责声明、口语旁白（见铁律 4） |
+
+四条铁律：
+
+1. **状态单点**：业务链与需求状态只在 `docs/requirements/demo-business-chain-matrix.md` 断言，
+   模块状态只在 `docs/demo-module-status.md` 断言。其余任何文档一律写指针，**不得复制状态词、计数或日期**。
+   已发生过的后果：`README.md` 自建了一张业务链状态表，因不在任何 agent 必读链上而无人更新，
+   长期写着"完成 3 条、E2E-04~08 待开工"，而 8 条链早已全部验收。
+2. **改代码即改人读文档**：变更若使 `README.md` / `miniapp/README.md` 的任何一句话不再成立
+   （工具链版本、构建命令、数据源、开关、目录），必须同轮改掉。人读文档没有 agent 会顺带更新它，
+   只能靠这条规则。
+3. **"为什么"写进代码**：设计取舍、踩过的坑、失效边界写在代码注释、迁移脚本头注释与测试 javadoc 里
+   ——那里不会与实现漂移。文档只留结论与指针，不做第二份副本。
+4. **UI 不是文档**：产品界面（PC 页面与小程序页面）是**第三类读者**，读者是最终用户，
+   不是甲方也不是 agent。界面上**禁止**出现实现术语（mock / 原型 / 契约 / 口径 / 受控媒体 /
+   服务端 / 端点 / 状态码流转 / 表名字段名）、系统行为讲解、免责式自我声明、口语化旁白
+   （"会真的…""这里的…""是正常的"）。
+   界面只写**用户不知道就会做错决定的事实**，一句话说完，只给结论不解释原因。
+   由 `python3 tools/check-ui-copy.py` 常态看守。
+   已发生过的后果：登录页写"本地 Demo 账号密码已自动填充，完成滑块验证即可登录"，
+   小程序写"接单、送达这些操作会真的改变用户订单的状态"——2026-08-06 全量清扫时,
+   两端界面共查出 102 处把系统说明书写进 UI 的文案。
+
 ## 需求基线（强制）
 
 2026-07-05 需求池快照与当前一期需求追踪关系统一维护在：
@@ -108,7 +139,7 @@
 
 ## MQTT 主题规则
 
-设备通信协议（主题、消息格式、QoS、幂等、断网补传约定）统一维护在 **`docs/mqtt-topics.md`**，开发设备接入相关代码前必读。要点：上行 `up/{deviceNo}/…`（heartbeat/telemetry/event/ack/result），下行 `down/{deviceNo}/cmd`；QoS 1；服务端按 `msgId` 幂等去重。
+设备通信协议（主题、消息格式、QoS、幂等、断网补传约定）统一维护在 **`docs/mqtt-topics.md`**，开发设备接入相关代码前必读。要点：上行 `up/{deviceNo}/{type}`，type 全集 6 个 —— `heartbeat` / `status` / `telemetry` / `ack` / `result` / `replay`（以 `DeviceTopics` 常量为准，由 `DeviceTopicsDocParityTest` 与文档常态对齐）；下行只有 `down/{deviceNo}/cmd`；QoS 1；服务端按 `msgId` 幂等去重。
 
 ## 审核通过后的真实模块开发流程
 
@@ -119,11 +150,48 @@
 1. 根据业务需求设计表结构（遵循 `mysql8` skill）
 2. **检查枚举冲突**：读取 `server/src/main/java/com/jbk/tool/consts/ApiEnum.java` 中 `DictType` 已占用编号，选择未冲突的编号
 3. 编写建表 SQL + **字典数据 INSERT** + 权限菜单 INSERT + **测试数据 INSERT**
-4. 将 SQL 文件保存到 `server/sql/<模块名>.sql`
-5. **执行 SQL**：先 `set -a; . .env; set +a` 导出仓库根 `.env`，再 `mysql -h127.0.0.1 -P3308 -uroot -p"$DAKANG_DB_PASSWORD" dakang < server/sql/<模块名>.sql`，并**同时同步一份到 `deploy/mysql/init/`**，供全新环境 `docker compose up` 首次初始化整库
+4. 将 SQL 文件保存到 `server/sql/<模块名>.sql`，并**同步一份到 `deploy/mysql/init/`**
+5. **应用 SQL —— 按目标库是否为空库分两条互斥路径，绝不混用**：
+
+> **【铁律】`server/sql/*.sql` 是领域源文件，只能作用于空库，禁止对任何既有库执行。**
+> 该目录下的建表文件一律以 `DROP TABLE IF EXISTS` 开头（当前 9 份 `ws_*.sql` **无一例外**，
+> `ws_device.sql` 与 `ws_delivery.sql` 各删 6 张表）。对既有库执行不会有任何警告，
+> 直接静默删光该域全部数据——设备档案、订单、审计留痕都不可恢复。
+>
+> | 目标库 | 用哪份 SQL | 怎么执行 |
+> |---|---|---|
+> | **空库 / 全新环境** | `deploy/mysql/init/*.sql`（内容与 `server/sql/` 同源） | `docker compose up` 首启自动执行，人不手动跑 |
+> | **既有库**（主库 3308、验收库 3309、任何已部署环境） | `deploy/mysql/migrations/<日期>-<模块>.sql` | 先 `set -a; . .env; set +a`，再 `mysql -h127.0.0.1 -P3308 -uroot -p"$DAKANG_DB_PASSWORD" dakang < deploy/mysql/migrations/<文件>`，**须经用户逐次授权** |
+>
+> 迁移文件只允许非破坏语句：`CREATE TABLE IF NOT EXISTS`、`ALTER TABLE ... ADD`、幂等 INSERT。
+> **禁止** `DROP TABLE` / `DROP DATABASE` / `TRUNCATE` / 无 `WHERE` 的 `DELETE`、`UPDATE`。
+> 由 `SchemaParityTest.migrationsCarryNoDestructiveDdl` 常态看守。
+>
+> 新建表时两份都要写：`server/sql/` + `init/` 给全新库，`migrations/` 给既有库。
+> 只写前者会导致新表在主库根本不存在，接口全 500。
 
 > **【强制】字典 SQL 必须执行到数据库**：字典数据插入 `api_dict_type` + `api_dict_data` 表，如果只写 SQL 不执行，字典接口会返回"字典不存在"，前端下拉框永远无数据。
-> **【强制】必须使用 `INSERT IGNORE INTO`**，禁止使用 `INSERT INTO`，以保证 SQL 幂等性（可重复执行而不产生重复数据）。字典和权限菜单均同理。
+> **【强制】所有种子/字典/菜单 SQL 必须幂等（可重复执行而不产生重复数据），但实现幂等的写法取决于表上有没有可撞的唯一约束**：
+>
+> - **携带显式主键 ID 的 INSERT** —— 权限菜单（`api_rbac_menu`）、角色绑定（`api_rbac_role_menu`）、业务表测试数据都属此类：用 `INSERT IGNORE INTO`，重复执行撞主键被忽略，幂等成立。
+> - **依赖自增主键、且表上没有业务唯一键的 INSERT** —— **`api_dict_type` 与 `api_dict_data` 正是这种**（两表除 `PRIMARY KEY(ID)` 外没有任何唯一索引，而字典 INSERT 一律不写 ID）：此时 `IGNORE` **无键可撞，等同于普通 `INSERT`**，每执行一次就多一整套重复行。必须改用 `INSERT ... SELECT ... WHERE NOT EXISTS`：
+>
+> ```sql
+> INSERT INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`)
+> SELECT s.* FROM (SELECT '状态名' AS DICT_NAME, '13xx' AS DICT_TYPE, '说明' AS DICT_REMARK) s
+> WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE = s.DICT_TYPE);
+>
+> INSERT INTO `api_dict_data`(`DICT_CLASS`,`DICT_DEFAULT_FLAG`,`DICT_TYPE`,`DICT_SORT`,`DICT_VALUE`,`DICT_LABEL`)
+> SELECT NULL, 1, s.DICT_TYPE, s.DICT_SORT, s.DICT_VALUE, s.DICT_LABEL FROM (
+>             SELECT '13xx' AS DICT_TYPE, 1 AS DICT_SORT, 1 AS DICT_VALUE, '标签1' AS DICT_LABEL
+>   UNION ALL SELECT '13xx', 2, 2, '标签2'
+> ) s
+> WHERE NOT EXISTS (SELECT 1 FROM api_dict_data d WHERE d.DICT_TYPE = s.DICT_TYPE AND d.DICT_VALUE = s.DICT_VALUE);
+> ```
+>
+> **为什么单列出来**：`init` 在空库首启灌一套、迁移在既有库再灌一套，字典用 `IGNORE` 必然翻倍；而字典查询是 `selectJoinOne`，遇重复行直接 TooManyResults，`/api/dict/listByType` 对该编号**整个返回 500**。本项目已因这条踩过两次（E2E-08 的 1376~1381、B23 的 1382），两次都是照着"必须用 INSERT IGNORE"的旧表述写的——故此处按约束事实改写，不再一刀切。判据只有一条：**这条 INSERT 有没有携带能撞上真实唯一约束的值**。
+>
+> 该规则由 `SchemaParityTest.dictionaryInsertsNeverUseInsertIgnore` 常态看守，覆盖 `deploy/mysql/migrations/` 与 `server/sql/`；存量欠账在测试内以清单登记，只减不增。
 > **【强制】必须生成测试数据**：建表 SQL 末尾必须附带 5~10 条贴近真实业务的测试数据（`INSERT IGNORE INTO`），覆盖各枚举值和边界情况。目的：前端开发时列表页、搜索、分页等功能可直接看到数据效果，无需手动录入。时间字段使用 `varchar(14)` 格式（如 `'20260711120000'`），`CREATE_BY`/`UPDATE_BY` 填 1。
 
 ### 第 2 步：后端开发

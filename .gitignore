@@ -41,7 +41,13 @@ deploy/acceptance/.run/
 
 # --- 敏感（凭据一律外置，不入库） ---
 **/application-secret*.yml
+# 两个目录都要挡：单数 backup/ 是实际在用的那个（含主库 dump 与 jar 备份），
+# 此前只写了复数 backups/，导致 490MB 备份既未被忽略、也未被交付脚本排除。
 deploy/backups/
+deploy/backup/
+# 数据库转储与 JAR/产物备份无论落在哪个目录都不入库
+*.bak
+*.sql.gz
 
 # 仓库根 .env 是全仓唯一的口令来源；只有模板 .env.example 入库。
 /.env
@@ -61,3 +67,5 @@ deploy/backups/
 *.key
 *.p12
 *.pfx
+__pycache__/
+.claude/
