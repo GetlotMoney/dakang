@@ -5,7 +5,6 @@ import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   ONLINE_STATUS_LABELS,
   ONLINE_STATUS_TONES,
@@ -24,6 +23,12 @@ definePage({
 
 /** 遥测字段降级口径（S09.3）：undefined 一律展示该占位，不猜测数值。 */
 const UNSUPPORTED = '未上报/不支持'
+const SIM_STATUS_LABELS: Record<number, string> = {
+  1: '正常',
+  2: '未激活',
+  3: '欠费',
+  4: '停用',
+}
 
 const loading = ref(true)
 const errorMessage = ref('')
@@ -47,7 +52,7 @@ onLoad(async (options) => {
   deviceNo.value = String(options?.deviceNo ?? '')
   if (!deviceNo.value) {
     loading.value = false
-    errorMessage.value = '缺少设备参数 deviceNo，无法查询设备详情'
+    errorMessage.value = '未指定设备，无法查看详情'
     return
   }
   await refresh()
@@ -73,7 +78,6 @@ async function refresh() {
 <template>
   <view class="page-shell">
     <AppNavbar title="设备详情" back-to="O02" />
-    <AppPrototypeNotice />
 
     <view v-if="loading" class="page-section muted-text">
       加载中…
@@ -121,7 +125,7 @@ async function refresh() {
 
       <view class="page-section readonly-banner">
         <wd-icon name="lock-on" size="14px" color="#646a73" />
-        <text>只读监控：不提供远程出水、改价、锁机、重启</text>
+        <text>仅查看，不支持远程控制设备</text>
       </view>
 
       <view class="page-section">
@@ -137,6 +141,16 @@ async function refresh() {
               {{ detail.lastFaultCode ?? '无' }}
             </text>
           </wd-cell>
+        </wd-cell-group>
+      </view>
+
+      <view class="page-section">
+        <wd-cell-group title="联网信息" border>
+          <wd-cell title="SIM 状态" :value="detail.simStatus ? (SIM_STATUS_LABELS[detail.simStatus] ?? '状态异常') : '未配置'" />
+          <wd-cell
+            title="SIM 到期"
+            :value="detail.simExpireTime ? formatBizTime(detail.simExpireTime) : '未配置'"
+          />
         </wd-cell-group>
       </view>
 
@@ -176,11 +190,6 @@ async function refresh() {
             @click="goTo('O05', { deviceNo: detail.deviceNo })"
           />
         </wd-cell-group>
-      </view>
-
-      <view class="page-section readonly-footer">
-        <wd-icon name="lock-on" size="14px" color="#646a73" />
-        <text>机主视图为只读监控：无提现、无远程控制</text>
       </view>
     </template>
   </view>
@@ -249,15 +258,5 @@ async function refresh() {
 .outlet-title {
   font-size: 14px;
   font-weight: 600;
-}
-
-.readonly-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 12px 0;
-  color: var(--app-text-secondary);
-  font-size: 13px;
 }
 </style>

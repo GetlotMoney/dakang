@@ -1,7 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { UsableCard } from './card'
-import { canShowRechargeEntry, cardApi, resolveCardSelection } from './card'
-import { scenarioStore } from '@/scenario/store'
+import { canShowRechargeEntry, resolveCardSelection } from './card'
 
 /**
  * U04 取水卡选择与成员卡权限（CARD-MEMBER）。
@@ -23,6 +22,7 @@ describe('u04 卡选择判定', () => {
     accessRole: role,
     canRecharge: role === 'OWNER',
     canManageMembers: role === 'OWNER',
+    canMergeToPaidCard: false,
     remainingDailyLimitMl: role === 'MEMBER' ? 6000 : undefined,
   } as UsableCard)
 
@@ -49,30 +49,5 @@ describe('u04 卡选择判定', () => {
     expect(canShowRechargeEntry(cardOf('1', 'OWNER'))).toBe(true)
     // 服务端明确 canRecharge=false 的 OWNER 卡（如注销中）同样隐藏——前端不越权放宽
     expect(canShowRechargeEntry({ accessRole: 'OWNER', canRecharge: false })).toBe(false)
-  })
-})
-
-describe('usable-list Mock 域行为（与后端契约同构）', () => {
-  beforeEach(() => {
-    scenarioStore.reset()
-    scenarioStore.selectAccount('ACCOUNT-USER-001')
-  })
-
-  it('返回本人卡为 OWNER 且可充值可管成员', async () => {
-    const cards = await cardApi.listUsableCards()
-    const own = cards.filter(c => c.accessRole === 'OWNER')
-    expect(own.length).toBeGreaterThan(0)
-    own.forEach((c) => {
-      expect(c.canRecharge).toBe(true)
-      expect(c.canManageMembers).toBe(true)
-    })
-  })
-
-  it('成员卡只带取水所需最小摘要：不可充值、不可管成员', async () => {
-    const cards = await cardApi.listUsableCards()
-    cards.filter(c => c.accessRole === 'MEMBER').forEach((c) => {
-      expect(c.canRecharge).toBe(false)
-      expect(c.canManageMembers).toBe(false)
-    })
   })
 })

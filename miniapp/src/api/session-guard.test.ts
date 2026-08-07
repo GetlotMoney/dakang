@@ -38,6 +38,7 @@ describe('全局会话失效处理器 (P1-2)', () => {
       userId: '1',
       userName: '张三',
       userPhone: '138****5678',
+      phoneBound: true,
       capabilities: ['USER_BASE'],
     })
     expect(store.context).not.toBeNull()
@@ -57,6 +58,7 @@ describe('全局会话失效处理器 (P1-2)', () => {
       userId: '1',
       userName: '张三',
       userPhone: '138****5678',
+      phoneBound: true,
       capabilities: ['USER_BASE'],
     })
 

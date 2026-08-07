@@ -45,15 +45,15 @@ const courierGuidance = computed(() => {
   }
   const status = admission.value?.status ?? 0
   if (status === 1) {
-    return { title: '配送员申请审核中', desc: '等待运营审核，通过后首页将出现配送工作视角', action: '查看进度' }
+    return { title: '配送员申请审核中', desc: '等待运营审核，通过后可接单', action: '查看进度' }
   }
   if (status === 3) {
-    return { title: '配送能力已停用', desc: '停用期间无法接单，如需恢复请联系运营', action: '查看详情' }
+    return { title: '配送能力已停用', desc: '无法接单，如需恢复请联系运营', action: '查看详情' }
   }
   if (status === 4) {
     return { title: '配送员申请被驳回', desc: admission.value?.rejectReason || '可完善资料后重新提交', action: '重新申请' }
   }
-  return { title: '成为配送员', desc: '提交准入申请，审核通过后可在服务范围内接单', action: '去申请' }
+  return { title: '成为配送员', desc: '审核通过后可在服务范围内接单', action: '去申请' }
 })
 
 watch(() => props.refreshTick, refresh, { immediate: true })
@@ -75,7 +75,7 @@ async function refresh() {
   }
 }
 
-/** U01 原位扫码：失败原位提示并停留本页，成功以短期会话进入 U04（蓝图 §1）。 */
+/** U01 原位扫码：失败原位提示并停留本页，成功以短期会话进入 U04。 */
 async function handleScan() {
   if (scanning.value) {
     return
@@ -105,7 +105,7 @@ function handleCardTap() {
 }
 
 function handleFutureEntry(name: string) {
-  toast.show(`${name}为后续能力，本期未开放`)
+  toast.show(`${name}暂未开放`)
 }
 </script>
 
@@ -147,7 +147,7 @@ function handleFutureEntry(name: string) {
         </view>
         <view v-else class="card-empty" @click="handleCardTap">
           <view class="muted-text">
-            当前账号暂无水卡，可查看充值与套餐契约
+            当前账号暂无水卡，去充值开卡
           </view>
           <wd-icon name="arrow-right" size="16px" />
         </view>

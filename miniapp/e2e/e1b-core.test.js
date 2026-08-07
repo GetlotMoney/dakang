@@ -278,3 +278,37 @@ test('a replaced screenshot is rejected by its captured hash', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// S2：扫码入口回归。页面早已改用 uni.scanCode，脚本若还 mock showActionSheet 选码，
+// 就会绿着跑过一个真实不存在的动线——这正是本轮要消灭的「自动化与入口脱节」。
+test('E1b 扫码步骤使用 scanCode，且仓库内不再残留旧的 showActionSheet 选码入口', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const runner = fs.readFileSync(path.join(__dirname, 'run-e1b.js'), 'utf8')
+
+  assert.match(runner, /mockWxMethod\('scanCode'/, '必须 mock 微信 scanCode')
+  assert.match(runner, /scanType: 'QR_CODE'/, 'scanCode 返回必须带 scanType')
+  assert.match(runner, /errMsg: 'scanCode:ok'/, 'scanCode 返回必须带成功 errMsg')
+  assert.match(runner, /const SCAN_CODE = 'DK-QR-DEV0001-O1'/, '样例码必须是种子里的真实码')
+  // 旧入口只允许出现在解释性注释里，绝不能再有可执行的 mock 调用
+  assert.ok(!/mockWxMethod\('showActionSheet'/.test(runner), '不得再 mock showActionSheet 选码')
+  // 步骤三必须证明页面真的消费了扫码返回值，而不只是"到了确认页"。
+  // 断言必须锚定到可执行构造：裸 /scanSessionId/ 会匹配上方的解释性注释，
+  // 把真正的取值与判定整段删掉也依旧全绿。
+  assert.match(
+    runner,
+    /confirmPage\.query\.scanSessionId/,
+    '确认页断言须从 query 取出 scanSessionId',
+  )
+  assert.match(runner, /consumedScan\s*=\s*String\(query\)\.length > 0/, 'scanSessionId 必须参与判定而非仅取值')
+  assert.match(runner, /consumedScan\s*&&/, 'consumedScan 必须计入步骤三的 check 结论')
+  // S2 报价冻结提示同样要真参与判定，不能只出现在注释里
+  assert.match(runner, /hasQuoteHint\s*=\s*\/本次扫码报价有效至\//, '须断言报价有效期提示在页')
+  assert.match(runner, /hasQuoteHint,/, 'hasQuoteHint 必须计入步骤三的 check 结论')
+})
+
+test('E1b 固定 7 步与步骤名同步更新为 scanCode', () => {
+  assert.equal(FULL_STEP_NAMES.length, 7)
+  assert.equal(FULL_STEP_NAMES[1], '02 mock 微信 scanCode 返回真码')
+  assert.ok(!FULL_STEP_NAMES.some(name => name.includes('showActionSheet')))
+})

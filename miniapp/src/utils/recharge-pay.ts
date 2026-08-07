@@ -48,13 +48,13 @@ export function continuePayGate(
   const expire = status.payExpireTime
   if (!expire || expire.length !== 14) {
     // 截止时间是付款资格的唯一依据，缺了就无从判断按时与否：fail-closed，不显示按钮
-    return { visible: false, reason: '该订单缺少付款截止时间，无法继续支付，请联系客服核对。' }
+    return { visible: false, reason: '无法继续支付，请联系客服核对。' }
   }
   // 同为定长 yyyyMMddHHmmss，字典序即时间序
   if (now > expire) {
     return {
       visible: false,
-      reason: `该订单已超过付款截止时间（${formatBizTime(expire)}），不可再支付，也不会自动扣款或到账；如需充值请重新下单。`,
+      reason: `已过付款截止时间（${formatBizTime(expire)}），请重新下单。`,
     }
   }
   return { visible: true }
@@ -89,7 +89,7 @@ export async function payAndSettle(
   amountFen: number,
   prompts: RechargePayPrompts,
 ): Promise<RechargePayStatus | null> {
-  const confirmed = await prompts.confirm(`即将支付 ${formatFen(amountFen)}（测试环境模拟支付）`)
+  const confirmed = await prompts.confirm(`即将支付 ${formatFen(amountFen)}`)
   if (!confirmed) {
     return null
   }

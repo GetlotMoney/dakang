@@ -7,7 +7,6 @@ import { ContractError } from '@/api/common'
 import { messageApi } from '@/api/message'
 import { orderApi } from '@/api/order'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   formatBizTime,
   MESSAGE_DOMAIN_LABELS,
@@ -26,12 +25,6 @@ definePage({
 const CHANNEL_LABELS: Record<MessageItem['channel'], string> = {
   'wechat-subscribe': '微信订阅',
   'in-app': '站内',
-}
-
-/** 证据来源口径（S10.3：固定成功快照只读展示来源，不由本次动作产生）。 */
-const EVIDENCE_MODE_LABELS: Record<MessageItem['evidenceMode'], string> = {
-  'prototype': '原型消息',
-  'external-snapshot': '固定外部快照（只读，非本次发送）',
 }
 
 const OBJECT_TYPE_LABELS: Record<NonNullable<MessageItem['objectType']>, string> = {
@@ -61,7 +54,7 @@ async function refresh() {
   if (!messageId.value) {
     loading.value = false
     message.value = null
-    errorMessage.value = '缺少 messageId 参数，无法定位消息'
+    errorMessage.value = '无法打开该消息'
     return
   }
   loading.value = true
@@ -128,7 +121,6 @@ function handleBack() {
     <AppNavbar title="消息详情" back-to="C02" />
     <view class="page-shell">
       <wd-toast />
-      <AppPrototypeNotice />
 
       <view v-if="loading" class="muted-text detail-placeholder">
         加载中…
@@ -155,36 +147,16 @@ function handleBack() {
           </view>
         </view>
 
-        <view v-if="message.sendStatus === 3" class="page-section detail-notice">
-          <wd-notice-bar
-            type="danger"
-            prefix="warning"
-            wrapable
-            :scrollable="false"
-            text="微信订阅消息发送失败，站内提醒为降级通道，不影响申诉权利。"
-          />
-        </view>
-        <view v-else-if="message.sendStatus === 1" class="page-section detail-notice">
-          <wd-notice-bar
-            type="info"
-            prefix="tips"
-            wrapable
-            :scrollable="false"
-            text="微信订阅模板/资质确认前不宣称已发送。"
-          />
-        </view>
-
         <view class="page-section">
-          <wd-cell-group title="发送证据" border>
+          <wd-cell-group title="发送信息" border>
             <wd-cell title="发送时间" :value="formatBizTime(message.sendTime)" />
-            <wd-cell title="证据来源" :value="EVIDENCE_MODE_LABELS[message.evidenceMode]" />
           </wd-cell-group>
         </view>
 
         <!-- S10.4：能力撤销只保留安全摘要，不显示对象详情、不提供跳转按钮。 -->
         <view v-if="message.objectAccess === 'capability-revoked'" class="page-section">
           <wd-cell-group title="关联对象" border>
-            <wd-cell title="相关业务能力已撤销，仅保留消息摘要" />
+            <wd-cell title="你已无权查看关联内容" />
           </wd-cell-group>
         </view>
         <view
@@ -198,9 +170,6 @@ function handleBack() {
               ellipsis
             />
           </wd-cell-group>
-          <view class="muted-text revalidate-note">
-            打开时将按当前能力重新校验
-          </view>
           <wd-button block icon="view" :loading="opening" @click="openRelatedObject">
             查看关联对象
           </wd-button>
@@ -250,15 +219,6 @@ function handleBack() {
   color: var(--app-text-primary);
   font-size: 15px;
   line-height: 1.7;
-}
-
-.detail-notice {
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.revalidate-note {
-  margin: 8px 4px;
 }
 
 .detail-error {

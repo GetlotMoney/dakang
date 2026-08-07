@@ -32,6 +32,7 @@ const BOUND_RESPONSE = {
     userId: '10000000000000001',
     userName: '张三',
     userPhone: '138****5678',
+    phoneBound: true,
     capabilities: ['USER_BASE'],
   },
 }
@@ -135,6 +136,85 @@ describe('authApi.login', () => {
   })
 })
 
+describe('仅微信身份建号（手机号可后补）', () => {
+  it('上下文缺 userPhone 不判契约破坏：正常建会话并标 phoneBound=false', async () => {
+    stubWechatLoginSuccess()
+    const { userPhone: _dropped, ...noPhone } = BOUND_RESPONSE.accountContext
+    post.mockResolvedValueOnce({
+      ...BOUND_RESPONSE,
+      accountContext: { ...noPhone, phoneBound: false },
+    })
+
+    const result = await authApi.login()
+
+    expect(result.stage).toBe('BOUND')
+    if (result.stage === 'BOUND') {
+      expect(result.context.userPhone).toBeUndefined()
+      expect(result.context.phoneBound).toBe(false)
+    }
+    expect(setToken).toHaveBeenCalledWith('TOKEN-KH-XYZ')
+  })
+
+  it('phoneBound 只认号码本身：后端不下发该字段也照样判对', async () => {
+    stubWechatLoginSuccess()
+    post.mockResolvedValueOnce(BOUND_RESPONSE) // 无 phoneBound 字段，但有 userPhone
+
+    const result = await authApi.login()
+
+    expect(result.stage === 'BOUND' && result.context.phoneBound).toBe(true)
+  })
+
+  // 后端声明与号码打架时以号码为准，否则会出现「首页写未绑、我的页却没有补绑入口」的死角
+  it('后端谎报 phoneBound=true 但没给号码 → 判未绑，补绑入口照常出现', async () => {
+    stubWechatLoginSuccess()
+    const { userPhone: _dropped, ...noPhone } = BOUND_RESPONSE.accountContext
+    post.mockResolvedValueOnce({
+      ...BOUND_RESPONSE,
+      accountContext: { ...noPhone, phoneBound: true },
+    })
+
+    const result = await authApi.login()
+
+    expect(result.stage === 'BOUND' && result.context.phoneBound).toBe(false)
+  })
+
+  it('userAvatar 缺省/空串归一为 undefined，合法路径原样透出', async () => {
+    stubWechatLoginSuccess()
+    post.mockResolvedValueOnce({
+      ...BOUND_RESPONSE,
+      accountContext: { ...BOUND_RESPONSE.accountContext, userAvatar: '/mini/profile/avatar/AVX.png' },
+    })
+    const withAvatar = await authApi.login()
+    expect(withAvatar.stage === 'BOUND' && withAvatar.context.userAvatar).toBe('/mini/profile/avatar/AVX.png')
+
+    stubWechatLoginSuccess()
+    post.mockResolvedValueOnce(BOUND_RESPONSE) // 无 userAvatar 字段
+    const without = await authApi.login()
+    expect(without.stage === 'BOUND' && without.context.userAvatar).toBeUndefined()
+  })
+
+  it('userPhone 类型非法仍判契约破坏（放开的是缺省，不是任意类型）', async () => {
+    stubWechatLoginSuccess()
+    post.mockResolvedValueOnce({
+      ...BOUND_RESPONSE,
+      accountContext: { ...BOUND_RESPONSE.accountContext, userPhone: 13800001111 },
+    })
+
+    await expect(authApi.login()).rejects.toThrow()
+  })
+
+  it('补绑手机号：走自助端点，只回上下文、不换发会话', async () => {
+    post.mockResolvedValueOnce({ ...BOUND_RESPONSE.accountContext, phoneBound: true })
+
+    const ctx = await authApi.bindPhoneSelf('PHONE-CODE-2')
+
+    expect(post).toHaveBeenCalledWith('/mini/auth/bind-phone-self', { phoneCode: 'PHONE-CODE-2' })
+    expect(ctx.phoneBound).toBe(true)
+    expect(setToken).not.toHaveBeenCalled()
+    expect(setTokenName).not.toHaveBeenCalled()
+  })
+})
+
 describe('authApi.bindPhone', () => {
   it('绑定手机号成功：以票据+phoneCode 建会话', async () => {
     post.mockResolvedValueOnce(BOUND_RESPONSE)
@@ -176,6 +256,7 @@ describe('会话失效与退出（handleUnauthorized）', () => {
       userId: '1',
       userName: '张三',
       userPhone: '138****5678',
+      phoneBound: true,
       capabilities: ['USER_BASE'],
     })
     expect(store.context).not.toBeNull()

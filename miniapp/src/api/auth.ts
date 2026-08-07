@@ -15,6 +15,7 @@ import { clearToken, post, setToken, setTokenName } from './request'
 
 const LOGIN_ENDPOINT = '/mini/auth/login'
 const BIND_PHONE_ENDPOINT = '/mini/auth/bind-phone'
+const BIND_PHONE_SELF_ENDPOINT = '/mini/auth/bind-phone-self'
 
 const RESULT_BOUND = 'BOUND'
 const RESULT_UNBOUND = 'UNBOUND'
@@ -24,8 +25,11 @@ interface RawAccountContext {
   accountId: unknown
   userId: unknown
   userName: unknown
-  userPhone: unknown
+  userPhone?: unknown
+  phoneBound?: unknown
+  userAvatar?: unknown
   capabilities?: unknown
+  ownerScope?: unknown
 }
 
 /** 后端 MiniAuthResultVo 原样结构；绝不含 openid / session_key。 */
@@ -46,7 +50,7 @@ export type AuthLoginResult
 /** getPhoneNumber 回调判别：有 code=已授权待绑定；无 code=用户拒绝/取消（可恢复，保留票据重试）。 */
 export type PhoneAuthorization
   = | { authorized: true, phoneCode: string }
-    | { authorized: false }
+    | { authorized: false, reason?: string }
 
 /**
  * 解析 getPhoneNumber 回调 detail：仅当返回 phoneCode 才视为已授权可绑定；
@@ -54,7 +58,13 @@ export type PhoneAuthorization
  */
 export function readPhoneAuthorization(detail?: { code?: string, errMsg?: string }): PhoneAuthorization {
   const phoneCode = detail?.code
-  return phoneCode ? { authorized: true, phoneCode } : { authorized: false }
+  if (phoneCode) {
+    return { authorized: true, phoneCode }
+  }
+  // 未拿到 code：把微信原始 errMsg 带出去。用户主动拒绝与平台侧不可用
+  // （未开通手机号验证组件、额度用尽、主体未认证）文案完全不同，
+  // 吞掉 errMsg 会让「点了没反应」和「余额不足」看起来一模一样，无法定位。
+  return { authorized: false, reason: detail?.errMsg }
 }
 
 /** uni.login 取一次性登录 code（Promise 化）；失败抛 WECHAT_LOGIN_FAILED，可重试。 */
@@ -67,7 +77,7 @@ function fetchWechatLoginCode(): Promise<string> {
           resolve(res.code)
         }
         else {
-          reject(new ContractError('WECHAT_LOGIN_FAILED', '微信登录未返回 code，请重试'))
+          reject(new ContractError('WECHAT_LOGIN_FAILED', '微信登录未完成，请重试'))
         }
       },
       fail: () => reject(new ContractError('WECHAT_LOGIN_FAILED', '微信登录失败，请重试')),
@@ -85,26 +95,63 @@ const DECIMAL_ID_PATTERN = /^[1-9]\d*$/
  */
 function requireDecimalStringId(value: unknown, field: string): EntityId {
   if (typeof value !== 'string' || !DECIMAL_ID_PATTERN.test(value)) {
-    throw new ContractError('AUTH_CONTRACT_BROKEN', `账号上下文 ${field} 非法：必须为十进制字符串 ID`)
+    throw new ContractError('AUTH_CONTRACT_BROKEN', `登录信息异常（${field}），请重新登录`)
   }
   return value as EntityId
 }
 
 function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new ContractError('AUTH_CONTRACT_BROKEN', `账号上下文 ${field} 非法：必须为非空字符串`)
+    throw new ContractError('AUTH_CONTRACT_BROKEN', `登录信息异常（${field}），请重新登录`)
+  }
+  return value
+}
+
+/**
+ * 可选字符串：缺省/空串归一为 undefined，其余类型判契约破坏。
+ * 手机号在「仅微信身份建号」下本就可以没有，用 requireString 会把正常登录直接判成契约破坏。
+ */
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined
+  }
+  if (typeof value !== 'string') {
+    throw new ContractError('AUTH_CONTRACT_BROKEN', `登录信息异常（${field}），请重新登录`)
   }
   return value
 }
 
 function normalizeContext(raw: RawAccountContext): AccountContext {
+  // E2E-06：机主授权范围随登录上下文下发（profile 展示用；缺省/畸形一律不带，不构成授权）
+  const scopeRaw = raw.ownerScope as { stationIds?: unknown, deviceNos?: unknown } | undefined
+  const ownerScope = scopeRaw
+    && Array.isArray(scopeRaw.stationIds) && Array.isArray(scopeRaw.deviceNos)
+    ? {
+        stationIds: (scopeRaw.stationIds as unknown[]).map(String),
+        deviceNos: (scopeRaw.deviceNos as unknown[]).map(String),
+      }
+    : undefined
+  const userPhone = optionalString(raw.userPhone, 'userPhone')
   return {
     accountId: requireDecimalStringId(raw.accountId, 'accountId'),
     userId: requireDecimalStringId(raw.userId, 'userId'),
     userName: requireString(raw.userName, 'userName'),
-    userPhone: requireString(raw.userPhone, 'userPhone'),
+    userPhone,
+    // 判据只认号码本身，不认后端的 phoneBound 声明。
+    // 「顶部显示号码」与「我的页显示补绑入口」是同一件事的两面，两者必须同真同假：
+    // 若信了 phoneBound=true 而号码实际缺失（后端脏数据或版本错配），就会出现
+    // 「首页写着未绑手机号、我的页却找不到补绑入口」的死角，用户永远绑不上。
+    // 后端字段保留作契约自文档与将来扩展位，此处不参与判定。
+    phoneBound: Boolean(userPhone),
+    userAvatar: optionalString(raw.userAvatar, 'userAvatar'),
     capabilities: Array.isArray(raw.capabilities) ? [...(raw.capabilities as CapabilityCode[])] : [],
+    ownerScope,
   }
+}
+
+/** 供资料更新等「返回裸 accountContext」的端点复用同一套规范化校验。 */
+export function normalizeAccountContext(raw: RawAccountContext): AccountContext {
+  return normalizeContext(raw)
 }
 
 /**
@@ -113,7 +160,7 @@ function normalizeContext(raw: RawAccountContext): AccountContext {
  */
 function applyBoundSession(raw: RawAuthResult): AccountContext {
   if (!raw.tokenName || !raw.tokenValue || !raw.accountContext) {
-    throw new ContractError('AUTH_CONTRACT_BROKEN', '登录响应缺少会话票据或账号上下文')
+    throw new ContractError('AUTH_CONTRACT_BROKEN', '登录失败，请重试')
   }
   // 先完整校验并规范化上下文；任一字段非法即抛错，绝不先落 token 再留下孤立会话（复审 P1-5）。
   const context = normalizeContext(raw.accountContext)
@@ -172,7 +219,7 @@ export const testLoginAccounts: TestLoginAccount[] = parseTestLoginAccounts(
 export async function loginByTestPhone(phone: string): Promise<AccountContext> {
   const raw = await post<RawAuthResult>('/mini/test-login/by-phone', { phone })
   if (raw.result !== RESULT_BOUND) {
-    throw new ContractError('AUTH_CONTRACT_BROKEN', '测试登录未建立会话')
+    throw new ContractError('AUTH_CONTRACT_BROKEN', '登录失败，请重试')
   }
   return applyBoundSession(raw)
 }
@@ -187,7 +234,7 @@ export const authApi = {
     }
     if (raw.result === RESULT_UNBOUND) {
       if (!raw.bindTicket) {
-        throw new ContractError('AUTH_CONTRACT_BROKEN', '登录响应缺少绑定票据')
+        throw new ContractError('AUTH_CONTRACT_BROKEN', '登录失败，请重试')
       }
       return {
         stage: 'UNBOUND',
@@ -195,7 +242,7 @@ export const authApi = {
         expiresInSeconds: raw.expiresInSeconds ?? 0,
       }
     }
-    throw new ContractError('AUTH_CONTRACT_BROKEN', `未知登录结果类型：${raw.result}`)
+    throw new ContractError('AUTH_CONTRACT_BROKEN', '登录失败，请重试')
   },
 
   /**
@@ -205,9 +252,20 @@ export const authApi = {
   async bindPhone(bindTicket: string, phoneCode: string): Promise<AccountContext> {
     const raw = await post<RawAuthResult>(BIND_PHONE_ENDPOINT, { bindTicket, phoneCode })
     if (raw.result !== RESULT_BOUND) {
-      throw new ContractError('AUTH_CONTRACT_BROKEN', '绑定手机号未建立会话')
+      throw new ContractError('AUTH_CONTRACT_BROKEN', '手机号绑定失败，请重试')
     }
     return applyBoundSession(raw)
+  },
+
+  /**
+   * 登录后自助补绑手机号（仅微信身份建号的账号用）。
+   *
+   * 与 {@link bindPhone} 的区别：由已有会话授权，不需要 bindTicket，也不换发 token——
+   * 后端只回吐刷新后的账号上下文，前端就地替换，用户不会在补绑成功后被踢回登录页。
+   */
+  async bindPhoneSelf(phoneCode: string): Promise<AccountContext> {
+    const raw = await post<RawAccountContext>(BIND_PHONE_SELF_ENDPOINT, { phoneCode })
+    return normalizeContext(raw)
   },
 
   /** 清除本端正式会话（退出登录 / 401 使用）；绝不回退 Mock 账号。 */

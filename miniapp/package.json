@@ -25,7 +25,7 @@
     "postinstall": "pnpm prepare:config",
     "predev:h5": "pnpm prepare:config",
     "dev:h5": "uni",
-    "predev:mp-weixin": "pnpm prepare:config",
+    "predev:mp-weixin": "pnpm prepare:config && node scripts/sync-dev-server-ip.mjs",
     "dev:mp-weixin": "uni -p mp-weixin",
     "prebuild:h5": "pnpm prepare:config",
     "build:h5": "uni build",

@@ -7,7 +7,6 @@ import { useMessage, useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { ContractError } from '@/api/common'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { formatBizTime } from '@/utils/format'
 import { backOr } from '@/utils/navigation'
 
@@ -23,7 +22,7 @@ const message = useMessage()
 
 const REWARD_STATUS_LABELS: Record<FamilyRewardRecord['status'], string> = {
   RULE_ONLY: '规则待确认',
-  EXTERNAL_SNAPSHOT: '快照记录',
+  EXTERNAL_SNAPSHOT: '已记录',
 }
 
 const REWARD_STATUS_TONES: Record<FamilyRewardRecord['status'], TagTone> = {
@@ -31,6 +30,7 @@ const REWARD_STATUS_TONES: Record<FamilyRewardRecord['status'], TagTone> = {
   EXTERNAL_SNAPSHOT: 'primary',
 }
 
+// 2026-08-02 链路落地：家庭资料已接服务端（按账号隔离，自愿填报）。
 const activeTab = ref<'profile' | 'reward'>('profile')
 const loading = ref(true)
 const loadError = ref('')
@@ -111,7 +111,7 @@ function showConsent() {
   message
     .confirm({
       title: '隐私说明',
-      msg: '家庭人数与用水习惯为自愿填报信息，可随时修改或删除；本原型仅在前端演示数据中存储，不上传真实服务端，刷新后重置。',
+      msg: '家庭人数与用水习惯为自愿填报，可随时修改或删除。',
       confirmButtonText: '同意并填写',
       cancelButtonText: '暂不同意',
     })
@@ -156,7 +156,7 @@ async function handleDelete() {
   try {
     await message.confirm({
       title: '删除家庭资料',
-      msg: '删除后家庭人数与用水习惯备注将清空，可随时重新填写；仅删除原型演示数据。',
+      msg: '删除后家庭人数与用水习惯备注将清空，可随时重新填写。',
     })
   }
   catch {
@@ -185,7 +185,6 @@ async function handleDelete() {
     <AppNavbar title="家庭资料" back-to="U03" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice />
 
     <template v-if="loadError">
       <view class="page-section">
@@ -260,10 +259,6 @@ async function handleDelete() {
                 删除家庭资料
               </wd-button>
             </view>
-
-            <view class="muted-text boundary-note">
-              家庭资料为自愿填报，可随时删除；仅存于原型演示数据，不上传真实服务端。
-            </view>
           </view>
         </wd-tab>
         <wd-tab title="奖励记录" name="reward">
@@ -275,7 +270,7 @@ async function handleDelete() {
                   :key="record.recordId"
                   icon="gift"
                   :title="record.ruleName"
-                  :label="record.recordTime ? `记录时间 ${formatBizTime(record.recordTime)}` : '仅规则展示，暂无发放记录'"
+                  :label="record.recordTime ? `记录时间 ${formatBizTime(record.recordTime)}` : '暂无发放记录'"
                 >
                   <wd-tag :type="REWARD_STATUS_TONES[record.status]" plain>
                     {{ REWARD_STATUS_LABELS[record.status] }}
@@ -286,7 +281,7 @@ async function handleDelete() {
             <wd-status-tip v-else image="content" tip="暂无奖励规则与记录" />
 
             <view class="muted-text boundary-note">
-              奖励区只显示规则与外部快照记录；发放能力未接入，不会出现“领取成功”（S05.4）。
+              当前暂不支持领取奖励。
             </view>
           </view>
         </wd-tab>

@@ -43,7 +43,7 @@ const task = ref<DeliveryTask | null>(null)
 const submitting = ref(false)
 const highlightMissing = ref(false)
 
-// 签收草稿：失败（SIGN_PHOTO_INCOMPLETE / TASK_STALE 等）时保留，不推进状态（蓝图 D04 合同）。
+// 签收草稿：失败（SIGN_PHOTO_INCOMPLETE / TASK_STALE 等）时保留，不推进状态。
 const draft = reactive({
   photos: { 1: '', 2: '', 3: '' } as Record<SignPhotoType, string>,
   actualDeliveryCount: 1,
@@ -61,7 +61,7 @@ onLoad(async (query) => {
 
 async function refresh(initializeDraft = false) {
   if (!taskNo.value) {
-    errorMessage.value = '缺少任务参数 taskNo'
+    errorMessage.value = '无法识别该任务，请返回任务列表重新打开'
     status.value = 'error'
     return
   }
@@ -104,9 +104,7 @@ async function handleSubmit() {
   try {
     await message.confirm({
       title: '三照签收',
-      msg: isDeliveryReal
-        ? '确认完成三照签收？签收后任务转为已签收（4→5），订单同步完成；三张照片将上传为受控媒体，签收时间由服务端生成。'
-        : '确认完成三照签收？签收后任务转为已签收（4→5），订单同步完成；照片仅本地记录，时间与定位随三照记录为确定性原型快照。',
+      msg: '确认完成签收？签收后订单即完成，无法撤销。',
     })
   }
   catch {
@@ -165,7 +163,7 @@ async function handleSubmit() {
     <AppNavbar title="三照签收" back-to="D03" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice domain="delivery" />
+    <AppPrototypeNotice text="签收提交后无法撤销。" />
 
     <view v-if="status === 'loading'" class="page-section state-block">
       <wd-loading size="24px" />
@@ -189,7 +187,7 @@ async function handleSubmit() {
     <view v-else-if="status === 'blocked'" class="page-section">
       <wd-status-tip
         image="content"
-        :tip="`当前任务不能签收（需已送达待确认，当前：${task ? TASK_STATUS_LABELS[task.taskStatus] : '未知'}）`"
+        :tip="`当前状态不能签收：${task ? TASK_STATUS_LABELS[task.taskStatus] : '未知'}`"
       >
         <template #bottom>
           <view class="status-actions">
@@ -204,7 +202,7 @@ async function handleSubmit() {
     <template v-else-if="task">
       <view class="page-section">
         <wd-cell-group title="任务摘要" border>
-          <wd-cell title="任务号" :value="`${task.taskNo}（状态版本 v${task.version}）`" />
+          <wd-cell title="任务号" :value="task.taskNo" />
           <wd-cell title="收货地址" :label="task.receiveAddress" />
           <wd-cell title="计划配送 / 预计回收" :value="`${task.plannedDeliveryCount} / ${task.plannedReturnCount}`" />
         </wd-cell-group>
@@ -212,7 +210,7 @@ async function handleSubmit() {
 
       <view class="page-section">
         <view class="block-title">
-          三照证据（门牌 / 水品 / 摆放，缺一不可）
+          三照证据（缺一不可）
         </view>
         <SignPhotoSlot
           v-for="slot in PHOTO_SLOTS"
@@ -220,7 +218,7 @@ async function handleSubmit() {
           v-model="draft.photos[slot.type]"
           :label="slot.label"
           :missing="highlightMissing && !draft.photos[slot.type]"
-          :recorded-tag="isDeliveryReal ? '已选择（提交时上传）' : undefined"
+          recorded-tag="已选择"
         />
       </view>
 
@@ -237,12 +235,6 @@ async function handleSubmit() {
             </view>
           </wd-cell>
         </wd-cell-group>
-      </view>
-
-      <view class="page-section muted-text meta-note">
-        {{ isDeliveryReal
-          ? '提交签收时三照上传为受控媒体（本地受控存储，未接对象存储）；签收时间由服务端生成；定位采集未接入，本次按「未记录」提交，不作虚假定位声明。'
-          : '提交签收时由原型契约统一记录动作时间；定位（固定坐标 30.4586, 114.4276）随三照记录为确定性原型快照。未接对象存储，照片仅本地记录（mock-recorded），不写云端上传成功。' }}
       </view>
 
       <view class="page-section">
@@ -278,9 +270,5 @@ async function handleSubmit() {
 .count-value {
   display: flex;
   justify-content: flex-end;
-}
-
-.meta-note {
-  line-height: 1.6;
 }
 </style>

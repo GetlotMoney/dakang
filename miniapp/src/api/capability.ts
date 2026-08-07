@@ -55,7 +55,3 @@ export function requireCapability(
     throw new ContractError('CAPABILITY_DENIED', `当前账号未开通「${definition?.title ?? '对应'}」能力`)
   }
 }
-
-export function listVisibleCapabilities(context: AccountContext) {
-  return capabilityRegistry.filter(item => hasCapability(context, item.code))
-}

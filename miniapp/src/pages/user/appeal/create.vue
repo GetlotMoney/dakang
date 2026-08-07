@@ -11,7 +11,6 @@ import { orderApi } from '@/api/order'
 import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
 import EvidencePicker from '@/components/evidence-picker.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { formatBizTime, formatFen, TASK_STATUS_LABELS } from '@/utils/format'
 import { backOr, redirectTo } from '@/utils/navigation'
 import { nowBusinessTime } from '@/utils/recharge-pay'
@@ -56,7 +55,7 @@ const model = reactive({
   photos: [] as string[],
 })
 
-/** 申诉截止：优先服务端签收事务落定的权威值（real）；Mock 数据按签收+24h 派生（蓝图 §10 U09）。 */
+/** 申诉截止：优先服务端签收事务落定的权威值（real）；Mock 数据按签收+24h 派生。 */
 const appealDeadline = computed(() => {
   const currentTask = task.value
   return currentTask ? appealDeadlineOf(currentTask) ?? '' : ''
@@ -78,7 +77,7 @@ onLoad(async (query) => {
 
 async function refresh() {
   if (!orderNo.value || !taskNo.value) {
-    errorMessage.value = '缺少订单或任务参数（orderNo / taskNo）'
+    errorMessage.value = '订单信息不完整，请从订单详情重新进入'
     status.value = 'error'
     return
   }
@@ -124,7 +123,7 @@ async function handleSubmit() {
   try {
     await message.confirm({
       title: '提交配送申诉',
-      msg: '提交后任务转入申诉中（5→7），等待运营裁决；申诉只登记诉求与证据，不直接产生退款或补偿。确认提交？',
+      msg: '申诉不直接产生退款或补偿。确认提交？',
     })
   }
   catch {
@@ -144,7 +143,7 @@ async function handleSubmit() {
       receivedCount: model.receivedCount,
       evidenceRefs,
     })
-    // 成功合同：redirect 到 U06?focus=appeal 回看申诉区块（蓝图 §6.6）。
+    // 成功合同：redirect 到 U06?focus=appeal 回看申诉区块。
     redirectTo('U06', { orderNo: orderNo.value, focus: 'appeal' })
   }
   catch (error) {
@@ -162,7 +161,6 @@ async function handleSubmit() {
     <AppNavbar title="配送申诉" back-to="U02" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice domain="delivery" />
 
     <view v-if="status === 'loading'" class="page-section state-block">
       <wd-loading size="24px" />
@@ -218,11 +216,6 @@ async function handleSubmit() {
             </view>
           </wd-cell>
         </wd-cell-group>
-        <view class="muted-text header-note">
-          {{ isDeliveryReal
-            ? '超期提示按本机时间估算；是否超期以服务端提交时校验为准。'
-            : '当前原型时间为 2026-07-16 18:00；是否超期以服务端校验为准。' }}
-        </view>
       </view>
 
       <view class="page-section">
@@ -254,13 +247,10 @@ async function handleSubmit() {
               </view>
             </wd-cell>
             <wd-cell title="申诉凭证" vertical>
-              <EvidencePicker v-model="model.photos" domain="delivery" />
+              <EvidencePicker v-model="model.photos" />
             </wd-cell>
           </wd-cell-group>
 
-          <view class="muted-text form-hint">
-            申诉只登记诉求与证据；成立/驳回与补偿由 PC 运营裁决，小程序只消费结果。
-          </view>
           <view class="submit-row">
             <wd-button block size="large" :loading="submitting" @click="handleSubmit">
               提交申诉
@@ -294,19 +284,9 @@ async function handleSubmit() {
   gap: 8px;
 }
 
-.header-note {
-  margin-top: 8px;
-  padding: 0 4px;
-}
-
 .count-value {
   display: flex;
   justify-content: flex-end;
-}
-
-.form-hint {
-  padding: 8px 4px 0;
-  line-height: 1.6;
 }
 
 .submit-row {

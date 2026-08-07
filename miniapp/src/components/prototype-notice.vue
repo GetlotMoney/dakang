@@ -1,27 +1,22 @@
 <script setup lang="ts">
 import type { ApiDomain } from '@/api/runtime'
 import { computed } from 'vue'
-import { currentMode } from '@/api/runtime'
-import { prototypeNoticeText, resolvePrototypeNoticeKey } from './runtime-notice'
+import { noticeTextOf } from './runtime-notice'
 
 /**
- * 全页面统一的运行边界标识（工作流 D3 + E2E-03 验收 P1-4）。
+ * 页面顶部提示条。
  *
- * - 未传参：保持历史原型口径（mock 页面零改动）；
- * - 传 domain：按该域构建期模式在组件内分流 mock/real 文案（判定收敛在
- *   runtime-notice 纯函数，页面只声明所属域，不各写一份判断）；
- * - 传 text：页面级精确口径优先（既有接真页面的自定义文案不受影响）。
+ * - 传 text：页面自己给的一句话优先；
+ * - 传 domain：取该域登记的文案；
+ * - 两者都没有（或该域未登记）：<b>整条不渲染</b>，不显示空提示条，也不兜一句套话。
  */
 const props = defineProps<{ text?: string, domain?: ApiDomain }>()
 
-const displayText = computed(() =>
-  props.text
-  ?? prototypeNoticeText(resolvePrototypeNoticeKey(props.domain, props.domain ? currentMode(props.domain) : 'mock')),
-)
+const displayText = computed(() => props.text ?? noticeTextOf(props.domain))
 </script>
 
 <template>
-  <view class="prototype-notice">
+  <view v-if="displayText" class="prototype-notice">
     <wd-notice-bar :text="displayText" prefix="warn-bold" type="info" wrapable :scrollable="false" />
   </view>
 </template>

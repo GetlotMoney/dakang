@@ -26,6 +26,9 @@ const {
   sha256File,
 } = require('./e1b-core')
 
+/** E1b 固定样例码：ws_qrcode 种子数据里唯一绑定 DEV0001 一号口的真实码。 */
+const SCAN_CODE = 'DK-QR-DEV0001-O1'
+
 const VERIFY_INDEX = process.argv.indexOf('--verify-evidence')
 const VERIFY_ONLY = VERIFY_INDEX >= 0
 const WS_ENDPOINT = process.env.WX_AUTO_WS || 'ws://127.0.0.1:9420'
@@ -315,8 +318,15 @@ async function runFull(mp) {
   })
 
   await step(FULL_STEPS[1], async () => {
-    await T(mp.mockWxMethod('showActionSheet', { tapIndex: 0, errMsg: 'showActionSheet:ok' }), 'mock actionsheet')
-    check(FULL_STEPS[1], true, 'tapIndex=0 → DK-QR-DEV0001-O1')
+    // 页面入口早已是 uni.scanCode（mock 选择器随 mock 基建一并退役）。
+    // 继续 mock showActionSheet 只会让脚本"绿着"跑过一个真实不存在的动线。
+    await T(mp.mockWxMethod('scanCode', {
+      result: SCAN_CODE,
+      scanType: 'QR_CODE',
+      charSet: 'utf-8',
+      errMsg: 'scanCode:ok',
+    }), 'mock scanCode')
+    check(FULL_STEPS[1], true, `scanCode → ${SCAN_CODE}`)
   })
 
   await step(FULL_STEPS[2], async () => {
@@ -339,10 +349,17 @@ async function runFull(mp) {
     const onConfirm = confirmPage.path.includes('user/water/confirm')
     const hasStation = /光谷/.test(text)
     const hasPrice = /[¥￥]0\.20\/升/.test(text)
+    // 页面必须真的消费了 scanCode 的返回值：确认页的 scanSessionId 由该码解析而来，
+    // 只断言"到了确认页"不够——mock 没生效时页面也可能因其它路径到达。
+    const query = (confirmPage.query && confirmPage.query.scanSessionId) || ''
+    const consumedScan = String(query).length > 0
+    // 报价冻结提示必须在页（S2）：它证明展示的是扫码会话里的那一份价，而不是当前档案价
+    const hasQuoteHint = /本次扫码报价有效至/.test(text)
     check(
       FULL_STEPS[2],
-      onConfirm && hasStation && hasPrice,
-      `path=${confirmPage.path} 站点=${hasStation} 单价¥0.20/升=${hasPrice}`,
+      onConfirm && hasStation && hasPrice && consumedScan && hasQuoteHint,
+      `path=${confirmPage.path} 站点=${hasStation} 单价¥0.20/升=${hasPrice} `
+      + `消费扫码会话=${consumedScan} 报价提示=${hasQuoteHint}`,
     )
   })
 

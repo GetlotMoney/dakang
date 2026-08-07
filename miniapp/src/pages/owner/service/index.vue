@@ -4,7 +4,9 @@ import { onLoad } from '@dcloudio/uni-app'
 import { computed, reactive, ref } from 'vue'
 import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
+import { newDeliveryRequestId, uploadDeliveryMedia } from '@/api/delivery'
 import { deviceApi } from '@/api/device'
+import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
@@ -32,6 +34,9 @@ const MAX_EVIDENCE_COUNT = 3
 const message = useMessage()
 const toast = useToast()
 
+/** device 域接真时：申报生成真实工单、凭证真实上传（文案与行为同步分流，不再是原型请求）。 */
+const isRealDevice = currentMode('device') === 'real'
+
 const loading = ref(true)
 const errorMessage = ref('')
 const devices = ref<DeviceSummary[]>([])
@@ -45,9 +50,13 @@ const model = reactive({
   description: '',
   contactPhone: '',
 })
-/** 凭证只做本地选图记录（9.5 图片状态最多到 mock-recorded），提交映射为 OSR-EV-{n}。 */
+/** mock：本地选图记录（9.5 mock-recorded）；real：提交时逐张上传受控媒体换 mediaKey。 */
 const evidences = ref<{ localPath: string }[]>([])
 const submitting = ref(false)
+/** real 申报幂等键：一次提交意图内持有、失败重试复用、成功后清空（后端 uk_wo_request 收敛重复） */
+const submissionRequestId = ref('')
+/** real 详情展开：requestId → 含轨迹的申请详情 */
+const expandedDetail = ref<{ requestId: string, trace: { eventTime: string, actorLabel: string, detail: string }[] } | null>(null)
 
 const deviceColumns = computed(() =>
   devices.value.map(item => ({
@@ -64,7 +73,7 @@ onLoad(async (options) => {
   highlightRequestId.value = String(options?.requestId ?? '')
   const presetDeviceNo = String(options?.deviceNo ?? '')
   await refresh()
-  // 设备预选只在授权范围内生效，路由参数不授予访问权（蓝图 §1.1）。
+  // 设备预选只在授权范围内生效，路由参数不授予访问权。
   if (presetDeviceNo && devices.value.some(item => item.deviceNo === presetDeviceNo)) {
     model.deviceNo = presetDeviceNo
   }
@@ -111,6 +120,20 @@ function removeEvidence(index: number) {
   evidences.value.splice(index, 1)
 }
 
+async function toggleDetail(requestId: string) {
+  if (expandedDetail.value?.requestId === requestId) {
+    expandedDetail.value = null
+    return
+  }
+  try {
+    const detail = await deviceApi.getOwnerServiceDetail(requestId)
+    expandedDetail.value = { requestId, trace: detail.trace ?? [] }
+  }
+  catch (error) {
+    toast.error(error instanceof Error ? error.message : '轨迹加载失败')
+  }
+}
+
 async function handleSubmit() {
   if (submitting.value) {
     return
@@ -122,7 +145,7 @@ async function handleSubmit() {
   try {
     await message.confirm({
       title: '确认提交',
-      msg: `将创建「${SERVICE_TYPE_LABELS[model.serviceType]}」待受理原型请求（设备 ${model.deviceNo}），不触发真实派单、维修或发货。`,
+      msg: `将提交「${SERVICE_TYPE_LABELS[model.serviceType]}」申报（设备 ${model.deviceNo}）`,
     })
   }
   catch {
@@ -130,15 +153,31 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
+    let evidenceRefs: string[]
+    if (isRealDevice) {
+      // 逐张真实上传换受控 mediaKey；任一失败整体失败，绝不提交半套证据
+      evidenceRefs = []
+      for (const item of evidences.value) {
+        evidenceRefs.push(await uploadDeliveryMedia(item.localPath, 'workorder'))
+      }
+      if (!submissionRequestId.value) {
+        submissionRequestId.value = newDeliveryRequestId()
+      }
+    }
+    else {
+      evidenceRefs = evidences.value.map((_, index) => `OSR-EV-${index + 1}`)
+    }
     const created = await deviceApi.createOwnerServiceRequest({
+      requestId: isRealDevice ? submissionRequestId.value : undefined,
       deviceNo: model.deviceNo,
       serviceType: model.serviceType,
       description: model.description,
-      evidenceRefs: evidences.value.map((_, index) => `OSR-EV-${index + 1}`),
+      evidenceRefs,
       contactPhone: model.contactPhone,
     })
     highlightRequestId.value = created.requestId
-    toast.success('已创建待受理原型请求')
+    submissionRequestId.value = ''
+    toast.success('申报已提交')
     model.description = ''
     model.contactPhone = ''
     evidences.value = []
@@ -159,7 +198,7 @@ async function handleSubmit() {
     <AppNavbar title="报修与配件" back-to="O01" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice />
+    <AppPrototypeNotice domain="device" />
 
     <view v-if="loading" class="page-section muted-text">
       加载中…
@@ -186,6 +225,7 @@ async function handleSubmit() {
               :key="item.requestId"
               class="service-item"
               :class="{ 'service-item--highlight': item.requestId === highlightRequestId }"
+              @click="toggleDetail(item.requestId)"
             >
               <view class="service-item-head">
                 <view class="service-item-tags">
@@ -204,12 +244,37 @@ async function handleSubmit() {
                 {{ item.description }}
               </view>
               <view class="service-meta muted-text">
-                <text>{{ item.requestId }}</text>
+                <text v-if="item.workOrderNo">
+                  工单 {{ item.workOrderNo }}
+                </text>
+                <text v-else>
+                  {{ item.requestId }}
+                </text>
                 <text>联系 {{ item.maskedContactPhone }}</text>
                 <text v-if="item.evidenceRefs.length">
-                  凭证 {{ item.evidenceRefs.length }} 张（mock-recorded 未上传）
+                  凭证 {{ item.evidenceRefs.length }} 张
                 </text>
                 <text>{{ formatBizTimeShort(item.createTime) }}</text>
+              </view>
+              <view v-if="item.rejectReason" class="service-desc muted-text">
+                驳回原因：{{ item.rejectReason }}
+              </view>
+              <view v-if="item.finishResult" class="service-desc muted-text">
+                处理结果：{{ item.finishResult }}
+              </view>
+              <view v-if="expandedDetail?.requestId === item.requestId" class="service-trace">
+                <view
+                  v-for="(traceItem, traceIndex) in expandedDetail.trace"
+                  :key="traceIndex"
+                  class="service-trace-item muted-text"
+                >
+                  <text>{{ formatBizTimeShort(traceItem.eventTime) }}</text>
+                  <text>[{{ traceItem.actorLabel }}]</text>
+                  <text>{{ traceItem.detail }}</text>
+                </view>
+                <view v-if="!expandedDetail.trace.length" class="muted-text">
+                  暂无处理轨迹
+                </view>
               </view>
             </view>
           </template>
@@ -259,7 +324,11 @@ async function handleSubmit() {
                 placeholder="请输入 11 位手机号"
                 :rules="[{ required: true, pattern: /^1\d{10}$/, message: '请输入 11 位手机号' }]"
               />
-              <wd-cell title="凭证图片" label="0~3 张可选，本地选图仅记录为 mock-recorded，不上传" vertical>
+              <wd-cell
+                title="凭证图片"
+                label="最多 3 张，可不上传"
+                vertical
+              >
                 <view class="evidence-strip">
                   <view
                     v-for="(item, index) in evidences"
@@ -269,9 +338,6 @@ async function handleSubmit() {
                     <image :src="item.localPath" mode="aspectFill" class="evidence-image" />
                     <view class="evidence-remove" @click="removeEvidence(index)">
                       <wd-icon name="close" size="12px" color="#fff" />
-                    </view>
-                    <view class="evidence-status">
-                      mock-recorded 未上传
                     </view>
                   </view>
                   <view
@@ -284,9 +350,6 @@ async function handleSubmit() {
                 </view>
               </wd-cell>
             </wd-cell-group>
-            <view class="muted-text form-note">
-              提交仅创建待受理原型请求，联系电话提交后脱敏回显；不模拟派单、维修完成或发货。
-            </view>
             <view class="form-submit">
               <wd-button block :loading="submitting" @click="handleSubmit">
                 提交服务请求
@@ -294,11 +357,6 @@ async function handleSubmit() {
             </view>
           </wd-form>
         </wd-card>
-      </view>
-
-      <view class="page-section readonly-footer">
-        <wd-icon name="lock-on" size="14px" color="#646a73" />
-        <text>报修与配件仅登记原型请求：不模拟派单、维修完成或发货</text>
       </view>
     </template>
   </view>
@@ -310,6 +368,20 @@ async function handleSubmit() {
   justify-content: center;
   margin-top: 16px;
   width: 100%;
+}
+
+.service-trace {
+  margin-top: 8px;
+  padding: 8px;
+  background: #f7f8fa;
+  border-radius: 6px;
+}
+
+.service-trace-item {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.8;
 }
 
 .service-item {
@@ -389,13 +461,6 @@ async function handleSubmit() {
   background: rgba(0, 0, 0, 0.6);
 }
 
-.evidence-status {
-  margin-top: 4px;
-  color: var(--app-text-secondary);
-  font-size: 10px;
-  text-align: center;
-}
-
 .evidence-add {
   display: flex;
   align-items: center;
@@ -406,23 +471,7 @@ async function handleSubmit() {
   border-radius: 8px;
 }
 
-.form-note {
-  margin-top: 12px;
-  padding: 0 4px;
-  line-height: 1.6;
-}
-
 .form-submit {
   margin-top: 12px;
-}
-
-.readonly-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 12px 0;
-  color: var(--app-text-secondary);
-  font-size: 13px;
 }
 </style>

@@ -1,20 +1,18 @@
 <script setup lang="ts">
-import type { ApiDomain } from '@/api/runtime'
 import { computed } from 'vue'
-import { currentMode } from '@/api/runtime'
-import { evidenceNoticeText, resolveEvidenceNoticeKey } from './runtime-notice'
 
 /**
  * 凭证选择（D03 举证 / D05 异常 / U09 申诉共用）：0~max 张本地图片。
- * 组件本身只做本地选图；说明文案按域分流（E2E-03 验收 P1-4）——
- * mock 构建为「仅本地记录（mock-recorded）」，声明 domain 且该域接真时如实写明
- * 「提交时真实上传至受控媒体」（上传动作由调用页在提交时执行）。
+ * 组件只做本地选图，上传动作由调用页在提交时执行。
+ *
+ * <p>说明文案原按业务域分流出两套（mock 说「不会上传」、real 说「真实上传至受控媒体」）。
+ * mock 分支已随 2026-08-02 mock 基建退役而不可达，两个 real 域的文案又完全相同，
+ * 分流因此退化成一句常量——2026-08-06 连同 runtime-notice 的 key 机制一并删除。</p>
  */
 const props = withDefaults(
   defineProps<{
     modelValue: string[]
     max?: number
-    domain?: ApiDomain
   }>(),
   { max: 3 },
 )
@@ -23,10 +21,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string[]): void
 }>()
 
-const noteText = computed(() => evidenceNoticeText(
-  resolveEvidenceNoticeKey(props.domain, props.domain ? currentMode(props.domain) : 'mock'),
-  props.max,
-))
+const noteText = computed(() => `最多 ${props.max} 张照片。`)
 
 function firstTempPath(paths: string | string[]): string {
   return Array.isArray(paths) ? (paths[0] ?? '') : paths

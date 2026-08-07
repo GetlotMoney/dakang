@@ -5,7 +5,6 @@ import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deliveryApi, deliveryTotalText } from '@/api/delivery'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { useAccountStore } from '@/store/account'
 import {
   ADMISSION_STATUS_LABELS,
@@ -24,7 +23,7 @@ definePage({
 })
 
 const VIEW_OPTIONS = [
-  { name: 'available', title: '待接任务', emptyTip: '暂无可接任务（本人下单任务不进入可接列表）' },
+  { name: 'available', title: '待接任务', emptyTip: '暂无可接任务' },
   { name: 'active', title: '进行中', emptyTip: '暂无进行中任务' },
   { name: 'history', title: '已完成', emptyTip: '暂无已完成任务' },
 ] as const
@@ -44,7 +43,7 @@ const status = ref<'loading' | 'ready' | 'error'>('loading')
 const errorMessage = ref('')
 const tasks = ref<DeliveryTask[]>([])
 const exceptionCounts = ref<Record<string, number>>({})
-// 重复请求去重（蓝图 9.5 列表状态）：只采纳最后一次查询结果。
+// 重复请求去重：只采纳最后一次查询结果。
 let requestSequence = 0
 
 const emptyTip = computed(
@@ -135,7 +134,6 @@ function latestNodeText(task: DeliveryTask) {
 <template>
   <view class="page-shell">
     <AppNavbar title="配送任务中心" back-to="U01" />
-    <AppPrototypeNotice domain="delivery" />
 
     <view class="page-section">
       <wd-card custom-class="scope-card">
@@ -157,11 +155,11 @@ function latestNodeText(task: DeliveryTask) {
             <view>{{ courierScope.serviceRegion || '服务区域未配置' }} · {{ courierScope.stationIds.length }} 个水站</view>
           </view>
           <view class="muted-text">
-            本人下单任务不进入可接列表；接单时服务端再次校验范围、归属与任务版本。
+            本人下单的任务不可自接。
           </view>
         </view>
         <view v-else class="muted-text">
-          配送范围未配置，默认不可接单。
+          未配置服务范围，暂不可接单。
         </view>
       </wd-card>
     </view>
@@ -200,9 +198,15 @@ function latestNodeText(task: DeliveryTask) {
             <view class="task-card-no">
               {{ task.taskNo }}
             </view>
-            <wd-tag :type="TASK_STATUS_TONES[task.taskStatus]" plain>
-              {{ TASK_STATUS_LABELS[task.taskStatus] }}
-            </wd-tag>
+            <view class="task-card-tags">
+              <!-- 补送任务标识（E2E-04 包C）：只在服务端标明时出现，不按零金额推断 -->
+              <wd-tag v-if="task.isResend" type="primary" plain>
+                补送
+              </wd-tag>
+              <wd-tag :type="TASK_STATUS_TONES[task.taskStatus]" plain>
+                {{ TASK_STATUS_LABELS[task.taskStatus] }}
+              </wd-tag>
+            </view>
           </view>
           <view class="task-card-line">
             {{ task.waterTypeName }} · {{ task.containerSpec }}×{{ task.plannedDeliveryCount }} · 预计回收 {{ task.plannedReturnCount }}
@@ -284,6 +288,12 @@ function latestNodeText(task: DeliveryTask) {
 .task-card-no {
   font-size: 15px;
   font-weight: 600;
+}
+
+.task-card-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .task-card-line {

@@ -35,7 +35,7 @@ function resolveParamFreeRoute(routeId: RouteId) {
 
 /**
  * 详情页返回：优先返回上级页面栈；直达打开（栈深为 1）时按路由合同的
- * defaultBackTo 落回所属模块（蓝图 §5.1），必填参数路由自动上溯。
+ * defaultBackTo 落回所属模块，必填参数路由自动上溯。
  */
 export function backOr(fallback: RouteId) {
   const pages = getCurrentPages()

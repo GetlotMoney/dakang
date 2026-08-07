@@ -170,7 +170,6 @@ async function refresh() {
       <wd-cell-group border>
         <wd-cell
           title="准入与服务范围"
-          label="查看配送员状态、申请信息与服务水站"
           icon="secured"
           is-link
           @click="goTo('D02')"

@@ -1,9 +1,6 @@
 import type { BusinessTime, EntityId, MoneyFen, VolumeMl } from './common'
-import { cloneContractData, ContractError } from './common'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { selectAdapter } from './runtime'
-import { scenarioStore } from '@/scenario/store'
 
 export type CardStatus = 1 | 2 | 3 | 4
 /** 水卡类型（PC 字典 1331）：1=虚拟卡 2=实体卡。 */
@@ -30,10 +27,34 @@ export interface CardMember {
   enabled: boolean
 }
 
+/** 带到期时间的权益批次摘要（D-415：「合并后显示多久到期」的数据源）。 */
+export interface CardBundle {
+  remainFen: MoneyFen
+  remainMl: VolumeMl
+  expireTime: BusinessTime
+}
+
 export interface CardDetail extends CardSummary {
   packageName?: string
   scopeDescription: string
   members: CardMember[]
+  /** D-415：本人赠卡且名下有正式水卡时 true（展示投影，服务端合并接口另行强制校验）。 */
+  canMergeToPaidCard: boolean
+  /** 尚有剩余且带到期时间的权益批次，按到期升序；空数组=全部权益长期有效。 */
+  expiringBundles: CardBundle[]
+}
+
+/** 赠卡合并结果（/mini/card/merge）。 */
+export interface CardMergeResult {
+  mainCardId?: EntityId
+  mainCardNo?: string
+  movedFen: MoneyFen
+  movedMl: VolumeMl
+  bundleExpireTime?: BusinessTime
+  mainBalanceFen?: MoneyFen
+  mainBalanceMl?: VolumeMl
+  /** true=赠卡已过期，权益作废仅完成清理注销。 */
+  expiredCleared: boolean
 }
 
 /** 访问角色（CARD-MEMBER）：OWNER=本人持卡 MEMBER=成员授权卡。 */
@@ -49,6 +70,8 @@ export interface UsableCard extends CardSummary {
   canManageMembers: boolean
   /** 成员今日剩余限额；仅 MEMBER 且配置了限额时有值（undefined=不限或非成员）。 */
   remainingDailyLimitMl?: VolumeMl
+  /** D-415：OWNER 的赠卡且名下有正式水卡时 true。 */
+  canMergeToPaidCard: boolean
 }
 
 export interface DeliveryAddress {
@@ -107,6 +130,8 @@ export interface CardApi {
   getCardDetail: (cardId: EntityId) => Promise<CardDetail>
   /** 可用卡列表：本人持卡（OWNER）+ 当前有效成员授权卡（MEMBER）；不改 getPrimaryCard 语义。 */
   listUsableCards: () => Promise<UsableCard[]>
+  /** D-415：赠卡合并入正式水卡（目标卡由服务端定位；有效期内转移权益，已过期作废清理）。 */
+  mergeGiftCard: (cardId: EntityId) => Promise<CardMergeResult>
   saveCardMember: (input: SaveCardMemberInput) => Promise<CardMember>
   revokeCardMember: (cardId: EntityId, memberId: EntityId) => Promise<CardMember>
   getFamilyProfile: () => Promise<FamilyProfile | null>
@@ -123,208 +148,17 @@ export const cardEndpoints = {
   primary: '/mini/card/primary',
   detail: '/mini/card/detail',
   usableList: '/mini/card/usable-list',
+  merge: '/mini/card/merge',
   saveMember: '/mini/card/member/save',
   revokeMember: '/mini/card/member/revoke',
-  familyDetail: '/mini/family/detail',
-  familySave: '/mini/family/save',
-  familyDelete: '/mini/family/delete',
-  familyRewards: '/mini/family/reward/list',
-  addresses: '/mini/address/list',
-  addressDetail: '/mini/address/detail',
-  addressSave: '/mini/address/save',
-  addressDelete: '/mini/address/delete',
+  familyGet: '/mini/family/profile/get',
+  familySave: '/mini/family/profile/save',
+  familyDelete: '/mini/family/profile/delete',
+  addresses: '/mini/family/address/list',
+  addressGet: '/mini/family/address/get',
+  addressSave: '/mini/family/address/save',
+  addressDelete: '/mini/family/address/delete',
 } as const
-
-function ownCard(cardId: EntityId) {
-  const userId = scenarioStore.activeAccount().userId
-  const card = scenarioStore.cards.find(
-    item => item.cardId === cardId && item.userId === userId,
-  )
-  if (!card) {
-    throw new ContractError('CARD_NOT_FOUND', '水卡不存在或无权访问')
-  }
-  return card
-}
-
-function maskPhone(phone: string) {
-  if (!/^1\d{10}$/.test(phone)) {
-    throw new ContractError('PHONE_INVALID', '手机号格式不合法')
-  }
-  return `${phone.slice(0, 3)}****${phone.slice(-4)}`
-}
-
-function ownAddress(addressId: EntityId) {
-  const userId = scenarioStore.activeAccount().userId
-  const address = scenarioStore.addresses.find(
-    item => item.addressId === addressId && item.userId === userId,
-  )
-  if (!address) {
-    throw new ContractError('ADDRESS_NOT_FOUND', '水配送地址不存在或无权访问')
-  }
-  return address
-}
-
-const mockCardApi: CardApi = {
-  async getPrimaryCard() {
-    const userId = scenarioStore.activeAccount().userId
-    const card = scenarioStore.cards.find(item => item.userId === userId)
-    return card ? cloneContractData(card) : null
-  },
-  async getCardDetail(cardId) {
-    return cloneContractData(ownCard(cardId))
-  },
-  async listUsableCards() {
-    const userId = scenarioStore.activeAccount().userId
-    const own: UsableCard[] = scenarioStore.cards
-      .filter(item => item.userId === userId)
-      .map(item => ({
-        ...cloneContractData(item),
-        accessRole: 'OWNER' as const,
-        canRecharge: true,
-        canManageMembers: true,
-      }))
-    // 成员授权卡：他人卡上存在 enabled 且指向本账号的成员记录（Mock 无用量台账，剩余=限额全额）
-    const granted: UsableCard[] = scenarioStore.cards
-      .filter(item => item.userId !== userId
-        && item.members.some(member => member.enabled && member.memberUserId === userId))
-      .map((item) => {
-        const grant = item.members.find(member => member.enabled && member.memberUserId === userId)
-        return {
-          ...cloneContractData(item),
-          accessRole: 'MEMBER' as const,
-          canRecharge: false,
-          canManageMembers: false,
-          remainingDailyLimitMl: grant?.dayLimitMl,
-        }
-      })
-    return [...own, ...granted]
-  },
-  async saveCardMember(input) {
-    const card = ownCard(input.cardId)
-    if (!input.memberName.trim()) {
-      throw new ContractError('MEMBER_NAME_REQUIRED', '成员姓名不能为空')
-    }
-    if (input.dayLimitMl !== undefined && input.dayLimitMl <= 0) {
-      throw new ContractError('DAY_LIMIT_INVALID', '单日限额必须大于 0')
-    }
-    const existing = input.memberId
-      ? card.members.find(item => item.memberId === input.memberId)
-      : undefined
-    if (input.memberId && !existing) {
-      throw new ContractError('CARD_MEMBER_NOT_FOUND', '授权成员不存在')
-    }
-    const member: CardMember = existing ?? {
-      memberId: `MM-${card.members.length + 1}`,
-      memberUserId: `PROTOTYPE-${card.members.length + 1}`,
-      memberName: '',
-      maskedPhone: '',
-      enabled: true,
-    }
-    member.memberName = input.memberName.trim()
-    member.maskedPhone = maskPhone(input.phone)
-    member.dayLimitMl = input.dayLimitMl
-    member.effectiveTime = input.effectiveTime
-    member.expireTime = input.expireTime
-    member.enabled = true
-    if (!existing) {
-      card.members.push(member)
-    }
-    return cloneContractData(member)
-  },
-  async revokeCardMember(cardId, memberId) {
-    const card = ownCard(cardId)
-    const member = card.members.find(item => item.memberId === memberId)
-    if (!member) {
-      throw new ContractError('CARD_MEMBER_NOT_FOUND', '授权成员不存在')
-    }
-    member.enabled = false
-    return cloneContractData(member)
-  },
-  async getFamilyProfile() {
-    const userId = scenarioStore.activeAccount().userId
-    const profile = scenarioStore.familyProfiles.find(item => item.userId === userId)
-    return profile ? cloneContractData(profile) : null
-  },
-  async saveFamilyProfile(input) {
-    if (!input.privacyAccepted) {
-      throw new ContractError('PRIVACY_CONSENT_REQUIRED', '保存家庭资料前必须明确同意隐私说明')
-    }
-    if (input.memberCount !== undefined && input.memberCount < 0) {
-      throw new ContractError('MEMBER_COUNT_INVALID', '家庭人数不能小于 0')
-    }
-    const userId = scenarioStore.activeAccount().userId
-    let profile = scenarioStore.familyProfiles.find(item => item.userId === userId)
-    if (!profile) {
-      profile = {
-        userId,
-        profileId: `FAMILY-${userId}`,
-        updatedTime: '20260716180000',
-      }
-      scenarioStore.familyProfiles.push(profile)
-    }
-    profile.privacyConsentTime ??= '20260716180000'
-    profile.memberCount = input.memberCount
-    profile.waterHabitNote = input.waterHabitNote?.trim() || undefined
-    profile.updatedTime = '20260716180000'
-    return cloneContractData(profile)
-  },
-  async deleteFamilyProfile() {
-    const userId = scenarioStore.activeAccount().userId
-    const index = scenarioStore.familyProfiles.findIndex(item => item.userId === userId)
-    if (index >= 0) {
-      scenarioStore.familyProfiles.splice(index, 1)
-    }
-  },
-  async listFamilyRewards() {
-    return cloneContractData(scenarioStore.familyRewardRecords)
-  },
-  async listDeliveryAddresses() {
-    const userId = scenarioStore.activeAccount().userId
-    return cloneContractData(
-      scenarioStore.addresses.filter(item => item.userId === userId),
-    )
-  },
-  async getDeliveryAddress(addressId) {
-    return cloneContractData(ownAddress(addressId))
-  },
-  async saveDeliveryAddress(input) {
-    if (!input.contactName.trim() || !input.region.trim() || !input.detail.trim()) {
-      throw new ContractError('ADDRESS_REQUIRED', '联系人、区域和详细地址不能为空')
-    }
-    const userId = scenarioStore.activeAccount().userId
-    const existing = input.addressId ? ownAddress(input.addressId) : undefined
-    const address = existing ?? {
-      userId,
-      addressId: `ADDR-${scenarioStore.addresses.length + 1}`,
-      contactName: '',
-      maskedPhone: '',
-      region: '',
-      detail: '',
-      isDefault: false,
-      locationAuthorized: false,
-    }
-    if (input.isDefault) {
-      scenarioStore.addresses
-        .filter(item => item.userId === userId)
-        .forEach(item => (item.isDefault = false))
-    }
-    address.contactName = input.contactName.trim()
-    address.maskedPhone = maskPhone(input.phone)
-    address.region = input.region.trim()
-    address.detail = input.detail.trim()
-    address.isDefault = input.isDefault
-    address.locationAuthorized = input.locationAuthorized
-    if (!existing) {
-      scenarioStore.addresses.push(address)
-    }
-    return cloneContractData(address)
-  },
-  async deleteDeliveryAddress(addressId) {
-    const address = ownAddress(addressId)
-    const index = scenarioStore.addresses.indexOf(address)
-    scenarioStore.addresses.splice(index, 1)
-  },
-}
 
 /**
  * 后端主水卡原始返回：后端全局 Jackson 将 Long 序列化为字符串（防 JS 精度丢失），
@@ -356,11 +190,32 @@ interface CardMemberRaw {
   enabled?: boolean
 }
 
+/** 后端 MiniCardBundleVo 原样结构（Long 已按字符串下发）。 */
+interface CardBundleRaw {
+  remainFen?: string | number | null
+  remainMl?: string | number | null
+  expireTime?: string | null
+}
+
 /** 后端 MiniCardDetailVo 原样结构。 */
 interface CardDetailRaw extends CardSummaryRaw {
   packageName?: string | null
   scopeDescription?: string | null
   members?: CardMemberRaw[] | null
+  canMergeToPaidCard?: boolean | null
+  expiringBundles?: CardBundleRaw[] | null
+}
+
+/** 后端 MiniCardMergeVo 原样结构。 */
+interface CardMergeResultRaw {
+  mainCardId?: string | number | null
+  mainCardNo?: string | null
+  movedFen?: string | number | null
+  movedMl?: string | number | null
+  bundleExpireTime?: string | null
+  mainBalanceFen?: string | number | null
+  mainBalanceMl?: string | number | null
+  expiredCleared?: boolean | null
 }
 
 /** 后端 MiniUsableCardVo 原样结构（usable-list）。 */
@@ -369,6 +224,7 @@ interface UsableCardRaw extends CardSummaryRaw {
   canRecharge?: boolean | null
   canManageMembers?: boolean | null
   remainingDailyLimitMl?: string | number | null
+  canMergeToPaidCard?: boolean | null
 }
 
 /** 后端成员记录 → 契约 CardMember（save/revoke/detail 共用；脱敏号只透传绝不拼造）。 */
@@ -396,6 +252,29 @@ export function normalizeCardDetail(raw: CardDetailRaw): CardDetail {
     packageName: raw.packageName == null ? undefined : raw.packageName,
     scopeDescription: raw.scopeDescription == null ? '未配置（默认拒绝）' : raw.scopeDescription,
     members: (raw.members ?? []).map(normalizeCardMember),
+    // fail-closed：仅显式 true 才展示合并入口（服务端合并接口仍强制校验）
+    canMergeToPaidCard: raw.canMergeToPaidCard === true,
+    expiringBundles: (raw.expiringBundles ?? [])
+      .filter(b => typeof b.expireTime === 'string' && b.expireTime.length > 0)
+      .map(b => ({
+        remainFen: Number(b.remainFen ?? 0),
+        remainMl: Number(b.remainMl ?? 0),
+        expireTime: b.expireTime as string,
+      })),
+  }
+}
+
+/** 后端合并结果 → 契约 CardMergeResult（Long→number 归一化；expiredCleared 仅显式 true）。 */
+export function normalizeCardMergeResult(raw: CardMergeResultRaw): CardMergeResult {
+  return {
+    mainCardId: raw.mainCardId == null ? undefined : String(raw.mainCardId),
+    mainCardNo: raw.mainCardNo == null ? undefined : raw.mainCardNo,
+    movedFen: Number(raw.movedFen ?? 0),
+    movedMl: Number(raw.movedMl ?? 0),
+    bundleExpireTime: raw.bundleExpireTime == null ? undefined : raw.bundleExpireTime,
+    mainBalanceFen: raw.mainBalanceFen == null ? undefined : Number(raw.mainBalanceFen),
+    mainBalanceMl: raw.mainBalanceMl == null ? undefined : Number(raw.mainBalanceMl),
+    expiredCleared: raw.expiredCleared === true,
   }
 }
 
@@ -425,6 +304,7 @@ export function normalizeUsableCard(raw: UsableCardRaw): UsableCard {
     canRecharge: owner && raw.canRecharge === true,
     canManageMembers: owner && raw.canManageMembers === true,
     remainingDailyLimitMl: owner ? undefined : strictNonNegativeInt(raw.remainingDailyLimitMl),
+    canMergeToPaidCard: owner && raw.canMergeToPaidCard === true,
   }
 }
 
@@ -448,6 +328,49 @@ function normalizeCardSummary(raw: CardSummaryRaw): CardSummary {
  * 其余方法（家庭/地址）后端 /mini/family|address 未建，暂委托 mock，
  * 待后续切片逐个替换（不引入 realAdapterPending 以免打断已封板演示）。
  */
+
+// ---- 家庭/地址真实契约归一化（Long ID 恒 string；电话只收服务端脱敏值） ----
+
+interface FamilyProfileRaw {
+  profileId?: unknown
+  privacyConsentTime?: unknown
+  memberCount?: unknown
+  waterHabitNote?: unknown
+  updatedTime?: unknown
+}
+
+interface DeliveryAddressRaw {
+  addressId?: unknown
+  contactName?: unknown
+  maskedPhone?: unknown
+  region?: unknown
+  detail?: unknown
+  isDefault?: unknown
+  locationAuthorized?: unknown
+}
+
+function normalizeFamilyProfile(raw: FamilyProfileRaw): FamilyProfile {
+  return {
+    profileId: String(raw.profileId ?? '') as EntityId,
+    privacyConsentTime: raw.privacyConsentTime ? String(raw.privacyConsentTime) : undefined,
+    memberCount: typeof raw.memberCount === 'number' ? raw.memberCount : undefined,
+    waterHabitNote: raw.waterHabitNote ? String(raw.waterHabitNote) : undefined,
+    updatedTime: String(raw.updatedTime ?? ''),
+  }
+}
+
+function normalizeDeliveryAddress(raw: DeliveryAddressRaw): DeliveryAddress {
+  return {
+    addressId: String(raw.addressId ?? '') as EntityId,
+    contactName: String(raw.contactName ?? ''),
+    maskedPhone: String(raw.maskedPhone ?? ''),
+    region: String(raw.region ?? ''),
+    detail: String(raw.detail ?? ''),
+    isDefault: raw.isDefault === true,
+    locationAuthorized: raw.locationAuthorized === true,
+  }
+}
+
 const realCardApi: CardApi = {
   async getPrimaryCard() {
     return withRealSession(async () => {
@@ -471,6 +394,13 @@ const realCardApi: CardApi = {
       return (raw ?? []).map(normalizeUsableCard)
     })
   },
+  // D-415：赠卡合并入正式水卡。仅上送赠卡 cardId，目标卡由服务端锁内定位。
+  async mergeGiftCard(cardId) {
+    return withRealSession(async () => {
+      const raw = await post<CardMergeResultRaw>(cardEndpoints.merge, { cardId })
+      return normalizeCardMergeResult(raw)
+    })
+  },
   // CARD-MEMBER：成员授权保存/撤销接真。卡主身份由服务端会话强制，手机号仅上送匹配、响应只回脱敏。
   async saveCardMember(input) {
     return withRealSession(async () => {
@@ -492,14 +422,63 @@ const realCardApi: CardApi = {
       return normalizeCardMember(raw)
     })
   },
-  getFamilyProfile: () => mockCardApi.getFamilyProfile(),
-  saveFamilyProfile: input => mockCardApi.saveFamilyProfile(input),
-  deleteFamilyProfile: () => mockCardApi.deleteFamilyProfile(),
-  listFamilyRewards: () => mockCardApi.listFamilyRewards(),
-  listDeliveryAddresses: () => mockCardApi.listDeliveryAddresses(),
-  getDeliveryAddress: addressId => mockCardApi.getDeliveryAddress(addressId),
-  saveDeliveryAddress: input => mockCardApi.saveDeliveryAddress(input),
-  deleteDeliveryAddress: addressId => mockCardApi.deleteDeliveryAddress(addressId),
+  // 家庭资料与地址簿（2026-08-02 链路落地 /mini/family/**）：电话恒服务端脱敏，原号不回流
+  async getFamilyProfile() {
+    return withRealSession(async () => {
+      const raw = await post<FamilyProfileRaw | null>(cardEndpoints.familyGet, {})
+      return raw ? normalizeFamilyProfile(raw) : null
+    })
+  },
+  async saveFamilyProfile(input) {
+    return withRealSession(async () => {
+      const raw = await post<FamilyProfileRaw>(cardEndpoints.familySave, {
+        privacyAccepted: input.privacyAccepted,
+        memberCount: input.memberCount,
+        waterHabitNote: input.waterHabitNote,
+      })
+      return normalizeFamilyProfile(raw)
+    })
+  },
+  async deleteFamilyProfile() {
+    return withRealSession(async () => {
+      await post<null>(cardEndpoints.familyDelete, {})
+    })
+  },
+  /** 家庭奖励规则记录：无真实规则引擎，恒空列表（页面空态），不造演示行。 */
+  async listFamilyRewards() {
+    return []
+  },
+  async listDeliveryAddresses() {
+    return withRealSession(async () => {
+      const raw = await post<DeliveryAddressRaw[]>(cardEndpoints.addresses, {})
+      return (raw ?? []).map(normalizeDeliveryAddress)
+    })
+  },
+  async getDeliveryAddress(addressId) {
+    return withRealSession(async () => {
+      const raw = await post<DeliveryAddressRaw>(cardEndpoints.addressGet, { addressId })
+      return normalizeDeliveryAddress(raw)
+    })
+  },
+  async saveDeliveryAddress(input) {
+    return withRealSession(async () => {
+      const raw = await post<DeliveryAddressRaw>(cardEndpoints.addressSave, {
+        addressId: input.addressId,
+        contactName: input.contactName,
+        phone: input.phone,
+        region: input.region,
+        detail: input.detail,
+        isDefault: input.isDefault,
+        locationAuthorized: input.locationAuthorized,
+      })
+      return normalizeDeliveryAddress(raw)
+    })
+  },
+  async deleteDeliveryAddress(addressId) {
+    return withRealSession(async () => {
+      await post<null>(cardEndpoints.addressDelete, { addressId })
+    })
+  },
 }
 
 /**
@@ -527,4 +506,4 @@ export function canShowRechargeEntry(card: Pick<UsableCard, 'accessRole' | 'canR
   return card.accessRole === 'OWNER' && card.canRecharge
 }
 
-export const cardApi = selectAdapter(mockCardApi, realCardApi, 'card')
+export const cardApi = realCardApi

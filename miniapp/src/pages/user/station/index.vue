@@ -6,10 +6,8 @@ import { computed, ref } from 'vue'
 import { useToast } from 'wot-design-uni'
 import { catalogApi } from '@/api/catalog'
 import { ContractError } from '@/api/common'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
-import { stationCatalogNoticeText } from '@/components/runtime-notice'
 import { setDraftStation } from '@/store/delivery-draft'
 import { backOr } from '@/utils/navigation'
 
@@ -21,7 +19,7 @@ definePage({
 })
 
 const toast = useToast()
-const stationNotice = stationCatalogNoticeText(currentMode('delivery'))
+const stationNotice = '暂不获取定位，无法显示距离。'
 
 /** 水站营业状态中文口径（utils/format 暂无该映射，页面内先行冻结）。 */
 const STATION_STATUS_LABELS: Record<StationSummary['status'], string> = {
@@ -87,7 +85,7 @@ function handleStationTap(station: StationSummary) {
     return
   }
   if (station.status !== 'OPEN') {
-    toast.show(`该水站${STATION_STATUS_LABELS[station.status]}，暂不可为配送订单选择`)
+    toast.show(`该水站${STATION_STATUS_LABELS[station.status]}，暂不可选`)
     return
   }
   setDraftStation(station.id)
@@ -102,16 +100,6 @@ function handleStationTap(station: StationSummary) {
     <AppNavbar title="附近水站" back-to="U01" />
     <wd-toast />
     <AppPrototypeNotice :text="stationNotice" />
-
-    <view v-if="selectMode" class="page-section">
-      <wd-notice-bar
-        type="info"
-        prefix="check-outline"
-        wrapable
-        :scrollable="false"
-        text="为配送订单选择水站：点选营业中的水站后将自动返回下单页。"
-      />
-    </view>
 
     <view v-if="pageState === 'loading'" class="page-section loading-box">
       <wd-loading />
@@ -204,7 +192,7 @@ function handleStationTap(station: StationSummary) {
       </view>
 
       <view v-if="!selectMode && sortedStations.length" class="page-section muted-text browse-note">
-        浏览模式：卡片已展示水站全部快照字段，设备明细请通过扫码或机主端查看。
+        设备明细请扫码查看。
       </view>
     </template>
   </view>

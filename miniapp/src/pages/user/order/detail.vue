@@ -8,13 +8,25 @@ import { onLoad } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
+import {
+  AFTER_SALE_ACTION_TYPE_LABELS,
+  AFTER_SALE_READONLY_NOTE,
+  AFTER_SALE_SOURCE_LABELS,
+  AFTER_SALE_STATUS_LABELS,
+  afterSaleAmountRows,
+  afterSaleApi,
+  afterSaleResultText,
+  canShowCancelEntry,
+  isResendOrderNo,
+  isResendTaskNo,
+  refundSourceText,
+} from '@/api/after-sale'
 import { cardApi } from '@/api/card'
 import { appealDeadlineOf, canCreateDeliveryAppeal } from '@/api/delivery-normalize'
 import { orderApi } from '@/api/order'
-import { findLocalRechargeOrderForRoute, rechargeApi } from '@/api/recharge'
+import { rechargeApi } from '@/api/recharge'
 import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   APPEAL_STATUS_LABELS,
   APPEAL_STATUS_TONES,
@@ -48,7 +60,6 @@ definePage({
 
 const toast = useToast()
 const message = useMessage()
-const isOrderReal = currentMode('order') === 'real'
 
 /** 申诉原因中文口径（utils/format 暂无该映射，页面内先行冻结）。 */
 const APPEAL_REASON_LABELS: Record<DeliveryAppeal['reason'], string> = {
@@ -57,12 +68,6 @@ const APPEAL_REASON_LABELS: Record<DeliveryAppeal['reason'], string> = {
   DAMAGE: '容器破损',
   PLACEMENT: '摆放不当',
   OTHER: '其他',
-}
-
-const EVIDENCE_MODE_LABELS: Record<string, string> = {
-  'prototype': '原型记录',
-  'external-snapshot': '快照记录',
-  'real': '受控媒体',
 }
 
 type FocusBlock = '' | 'command' | 'delivery' | 'appeal'
@@ -132,7 +137,7 @@ const rechargeRows = computed<{ label: string, value: string }[] | null>(() => {
   })
   const processingStatus = rechargeProcessingStatusLabel(block.processingStatus)
   if (processingStatus) {
-    rows.push({ label: '事实处理状态', value: processingStatus })
+    rows.push({ label: '处理状态', value: processingStatus })
   }
   // 只有完成态且双维流水与快照权益完全一致，才展示到账结果。
   if (rechargeSettled.value) {
@@ -199,35 +204,10 @@ const rechargeNoticeState = computed(() => {
     ? rechargeNotice(order.orderStatus, isRechargeReal, rechargeSettled.value)
     : null
 })
-const isMockRecharge = ref(false)
 const task = ref<DeliveryTask | null>(null)
 const appeal = ref<DeliveryAppeal | null>(null)
 const appealError = ref('')
 const focusBlock = ref<FocusBlock>('')
-
-const mockBoundaryText = computed(() => {
-  const meta = detail.value?.order.mockMeta
-  if (!meta) {
-    return ''
-  }
-  return meta.evidenceMode === 'prototype'
-    ? '原型订单：未发生真实结算'
-    : '固定快照：与 PC Demo 共用键'
-})
-
-const detailNoticeText = computed(() => {
-  if (isMockRecharge.value) {
-    return '充值订单来自本地 Mock/固定快照：不代表本次发生真实支付、到账、赠送或退款。'
-  }
-  if (detail.value?.order.orderType === 1) {
-    return isOrderReal
-      ? '扫码取水订单详情来自真实 order 接口；扣款、设备指令和实际水量以本页证据字段为准。'
-      : '扫码取水订单详情为 Mock/固定快照：页面流转可演示，不代表本次发生真实扣款、指令下发或出水。'
-  }
-  return isOrderReal
-    ? '订单详情来自真实 order 接口；具体结算与履约状态以订单证据字段为准。'
-    : '订单详情为 Mock/固定快照；具体结算与履约状态不构成真实业务结果。'
-})
 
 const flowCountText = computed(() => {
   const data = detail.value
@@ -280,6 +260,51 @@ const showAppealBlock = computed(() =>
   !!detail.value?.appealId || task.value?.taskStatus === 7 || !!appealError.value,
 )
 
+// ==================== 售后与退款（E2E-04 包E：只读） ====================
+
+/**
+ * 售后进度只来自服务端下发的区块。缺省即「服务端未下发」，页面不按订单状态、金额
+ * 或申诉裁决倒推一份售后结论——钱有没有回到卡里，只有服务端的返还事务知道。
+ */
+const afterSale = computed(() => detail.value?.afterSale ?? null)
+const afterSaleRows = computed(() => (afterSale.value ? afterSaleAmountRows(afterSale.value) : []))
+/** 结局文案：未到 actionStatus=3 一律「处理中/待补送」，补送以回签为完成条件。 */
+const afterSaleResult = computed(() => (afterSale.value ? afterSaleResultText(afterSale.value) : null))
+const afterSaleRefundSource = computed(() =>
+  (afterSale.value ? refundSourceText(afterSale.value) : undefined),
+)
+
+/** 本单即补送子单：服务端两个值相等才成立，不按零金额等特征猜。 */
+const isResendOrder = computed(() =>
+  isResendOrderNo(afterSale.value ?? undefined, detail.value?.order.orderNo ?? ''),
+)
+/** 本单配送任务是补送任务：服务端显式标识或售后动作回填的补送任务号命中。 */
+const isResendDelivery = computed(() =>
+  task.value?.isResend === true
+  || isResendTaskNo(afterSale.value ?? undefined, task.value?.taskNo ?? ''),
+)
+
+/** 售后区块显示条件：有售后证据、有取消资格下发，或订单已进入（部分）退款态。 */
+const showAfterSaleBlock = computed(() => {
+  const order = detail.value?.order
+  if (!order) {
+    return false
+  }
+  return !!afterSale.value
+    || !!detail.value?.cancelEligibility
+    || order.orderStatus === 7
+    || order.orderStatus === 8
+})
+
+/**
+ * 取消入口资格：**唯一来源是服务端下发**。未下发即隐藏——
+ * 「什么状态可以取消」在服务端事务里（任务仍待接单 + 归属本人 + 无在途售后），
+ * 页面复制一份只会在边界上多给入口，而多出来的那次点击直接对着资金。
+ */
+const cancelEligibility = computed(() => detail.value?.cancelEligibility)
+const showCancelEntry = computed(() => canShowCancelEntry(cancelEligibility.value))
+const cancelling = ref(false)
+
 /** trace 色调 → wd-steps 状态映射（steps 仅支持 finished/process/error）。 */
 function stepStatus(node: OrderTraceNode): 'finished' | 'error' | undefined {
   if (node.tone === 'danger' || node.tone === 'warning') {
@@ -298,39 +323,26 @@ function blockClass(block: Exclude<FocusBlock, ''>) {
 onLoad((query?: Record<string, string | undefined>) => {
   const orderNo = query?.orderNo
   const focus = query?.focus
-  const source = query?.source
   if (focus === 'command' || focus === 'delivery' || focus === 'appeal') {
     focusBlock.value = focus
   }
   if (!orderNo) {
     pageState.value = 'error'
     errorImage.value = 'content'
-    errorMessage.value = '缺少订单号参数，请从订单列表进入'
+    errorMessage.value = '请从订单列表进入'
     return
   }
-  void load(orderNo, source)
+  void load(orderNo)
 })
 
-async function load(orderNo: string, source?: string) {
+async function load(orderNo: string) {
   pageState.value = 'loading'
   issuedCard.value = null
   issuedCardError.value = ''
   try {
-    let loaded: OrderDetail
-    if (source === 'local-mock') {
-      const local = findLocalRechargeOrderForRoute(orderNo, source)
-      if (!local) {
-        throw new ContractError('ORDER_NOT_FOUND', '本地充值订单不存在、无权访问或已被重置')
-      }
-      loaded = local
-      isMockRecharge.value = true
-    }
-    else {
-      loaded = await orderApi.getOrderDetail(orderNo)
-      isMockRecharge.value = false
-    }
+    const loaded = await orderApi.getOrderDetail(orderNo)
     detail.value = loaded
-    if (loaded.order.orderType === 2 && !isMockRecharge.value && isRechargeReal) {
+    if (loaded.order.orderType === 2 && isRechargeReal) {
       await refreshPayStatus(loaded.order.orderNo)
       if (loaded.order.orderStatus === 4 && loaded.order.recharge?.purchaseMode === 'FIRST_CARD') {
         await loadIssuedCard(loaded)
@@ -362,19 +374,19 @@ async function loadIssuedCard(loaded: OrderDetail) {
   const block = loaded.order.recharge
   try {
     if (!isCardReal) {
-      throw new ContractError('PURCHASE_CARD_SOURCE_INVALID', '新卡详情未接真实数据源')
+      throw new ContractError('PURCHASE_CARD_SOURCE_INVALID', '新卡信息暂时无法查看')
     }
     if (!block?.snapshotValid || !block.cardId || !block.cardNo
       || loaded.order.cardId !== block.cardId) {
-      throw new ContractError('PURCHASE_CARD_EVIDENCE_INVALID', '订单缺少完整的新卡发放证据')
+      throw new ContractError('PURCHASE_CARD_EVIDENCE_INVALID', '新卡信息不完整，请联系客服')
     }
     if (!rechargeSettled.value) {
-      throw new ContractError('PURCHASE_SETTLEMENT_EVIDENCE_INVALID', '订单缺少完整的购卡入账证据')
+      throw new ContractError('PURCHASE_SETTLEMENT_EVIDENCE_INVALID', '购卡入账信息不完整，请联系客服')
     }
     const card = await cardApi.getCardDetail(block.cardId)
     if (card.cardId !== block.cardId || card.cardNo !== block.cardNo || card.cardType !== 1
       || !card.scopeDescription || card.scopeDescription === '未配置（默认拒绝）') {
-      throw new ContractError('PURCHASE_CARD_EVIDENCE_MISMATCH', '新卡结果与订单发放证据不一致')
+      throw new ContractError('PURCHASE_CARD_EVIDENCE_MISMATCH', '新卡信息核对不一致，请联系客服')
     }
     issuedCard.value = card
   }
@@ -444,6 +456,41 @@ function goAppeal() {
     goTo('U09', { orderNo: detail.value.order.orderNo, taskNo: task.value.taskNo })
   }
 }
+
+/**
+ * 待接单取消：确认 → 服务端事务裁决 → **原样展示服务端结论文案** → 重新拉详情。
+ *
+ * 结论文案不做任何归并：「已退还至水卡」与「退款处理中」是两种结局，订单状态先于资金
+ * 独占，资金段仍在途时把它显示成"已退款"就是替服务端谎报到账。
+ */
+async function handleCancelOrder() {
+  const order = detail.value?.order
+  if (cancelling.value || !order || !showCancelEntry.value) {
+    return
+  }
+  const confirmed = await message
+    .confirm({
+      title: '取消配送订单',
+      msg: '取消后本单不再配送，且无法恢复。确认取消？',
+    })
+    .then(() => true)
+    .catch(() => false)
+  if (!confirmed) {
+    return
+  }
+  cancelling.value = true
+  try {
+    const resultText = await afterSaleApi.cancelPendingDeliveryOrder(order.orderNo)
+    await message.alert({ title: '取消结果', msg: resultText }).catch(() => undefined)
+    await load(order.orderNo)
+  }
+  catch (error) {
+    toast.error(error instanceof ContractError ? error.message : '取消失败，请刷新后重试')
+  }
+  finally {
+    cancelling.value = false
+  }
+}
 </script>
 
 <template>
@@ -451,9 +498,6 @@ function goAppeal() {
     <AppNavbar title="订单详情" back-to="U02" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice
-      :text="detailNoticeText"
-    />
 
     <view v-if="pageState === 'loading'" class="page-section loading-box">
       <wd-loading />
@@ -506,9 +550,6 @@ function goAppeal() {
             <wd-cell title="创建时间" :value="formatBizTime(detail.order.createTime)" />
             <wd-cell title="完成时间" :value="formatBizTime(detail.order.finishTime)" />
           </wd-cell-group>
-          <view v-if="mockBoundaryText" class="muted-text boundary-note">
-            {{ mockBoundaryText }}
-          </view>
           <view class="e2e-order-evidence" aria-hidden="true">
             ORDER_STATUS={{ detail.order.orderStatus }};ACTUAL_ML={{ detail.order.actualMl ?? 'null' }}
           </view>
@@ -551,7 +592,7 @@ function goAppeal() {
             <wd-cell title="命令号" :value="detail.commandNo ?? '—'" />
             <wd-cell
               title="命令状态"
-              :value="detail.commandStatus !== undefined ? (COMMAND_STATUS_LABELS[detail.commandStatus] ?? `状态码 ${detail.commandStatus}`) : '—'"
+              :value="detail.commandStatus !== undefined ? (COMMAND_STATUS_LABELS[detail.commandStatus] ?? '—') : '—'"
             />
             <wd-cell
               title="计划水量"
@@ -595,7 +636,7 @@ function goAppeal() {
               继续支付
             </wd-button>
             <view class="muted-text">
-              到账与否只以服务端返回的状态为准，不以点击成功为准；超过付款截止时间后本单不可再支付。
+              超过付款截止时间后本单不可再支付。
             </view>
           </view>
           <view v-else-if="continuePay.reason" class="muted-text boundary-note">
@@ -631,6 +672,10 @@ function goAppeal() {
             <view class="card-title-row">
               <view>配送任务</view>
               <view class="tag-row">
+                <!-- 补送标识（E2E-04 包C）：只在服务端标明补送任务时出现 -->
+                <wd-tag v-if="isResendDelivery" type="primary" plain>
+                  补送
+                </wd-tag>
                 <wd-tag v-if="focusBlock === 'delivery'" type="primary" plain>
                   当前关注
                 </wd-tag>
@@ -646,7 +691,7 @@ function goAppeal() {
                 v-for="node in deliveryTimeline"
                 :key="node.key"
                 :title="node.label"
-                :description="node.time ? formatBizTime(node.time) : '未到达该节点'"
+                :description="node.time ? formatBizTime(node.time) : '未开始'"
               />
             </wd-steps>
             <wd-cell-group>
@@ -689,9 +734,6 @@ function goAppeal() {
                 <view class="muted-text">
                   {{ formatBizTimeShort(photo.time) }}
                 </view>
-                <wd-tag plain>
-                  {{ EVIDENCE_MODE_LABELS[photo.evidenceMode] ?? photo.evidenceMode }}
-                </wd-tag>
               </view>
             </view>
             <view v-else class="muted-text">
@@ -699,7 +741,7 @@ function goAppeal() {
             </view>
             <view v-if="canCreateDeliveryAppeal(task)" class="appeal-entry">
               <view class="muted-text">
-                对签收结果有异议？可在 {{ appealDeadlineText }} 前发起申诉（以提交时校验为准）。
+                申诉截止 {{ appealDeadlineText }}
               </view>
               <wd-button block plain type="error" @click="goAppeal">
                 发起申诉
@@ -708,6 +750,73 @@ function goAppeal() {
           </template>
           <view v-else class="muted-text">
             未查询到关联配送任务记录。
+          </view>
+        </wd-card>
+      </view>
+
+      <!--
+        售后与退款（E2E-04 包E）：**只读**。
+        小程序不提供退款发起、Refund-Sim 回放、补送生成或返还执行的任何入口——
+        这些动作全部在管理端且需 order:aftersale:handle 权限。
+      -->
+      <view v-if="showAfterSaleBlock" class="page-section">
+        <wd-card custom-class="block-card">
+          <template #title>
+            <view class="card-title-row">
+              <view>售后与退款</view>
+              <view class="tag-row">
+                <wd-tag v-if="isResendOrder" type="primary" plain>
+                  补送单
+                </wd-tag>
+                <wd-tag v-if="afterSale && afterSaleResult" :type="afterSaleResult.tone" plain>
+                  {{ AFTER_SALE_STATUS_LABELS[afterSale.actionStatus] }}
+                </wd-tag>
+              </view>
+            </view>
+          </template>
+          <template v-if="afterSale">
+            <wd-cell-group>
+              <wd-cell title="售后号" :value="afterSale.afterSaleNo" />
+              <wd-cell title="售后来源" :value="AFTER_SALE_SOURCE_LABELS[afterSale.sourceType]" />
+              <wd-cell title="处理方式" :value="AFTER_SALE_ACTION_TYPE_LABELS[afterSale.actionType]" />
+              <wd-cell
+                v-if="afterSale.approvedCount !== undefined"
+                title="受影响数量"
+                :value="`${afterSale.approvedCount} 件`"
+              />
+              <!-- 金额/水量逐项取服务端原值，页面不求和、不折算（合计亦为服务端字段） -->
+              <wd-cell
+                v-for="row in afterSaleRows"
+                :key="row.label"
+                :title="row.label"
+                :value="row.value"
+              />
+              <!-- R0-8：退款来源照实展示，当前机构退款链路为 Refund-Sim，不写成微信退款 -->
+              <wd-cell v-if="afterSaleRefundSource" title="退款来源" :value="afterSaleRefundSource" />
+              <wd-cell v-if="afterSale.resendOrderNo" title="补送单号" :value="afterSale.resendOrderNo" />
+              <wd-cell v-if="afterSale.resendTaskNo" title="补送任务号" :value="afterSale.resendTaskNo" />
+              <wd-cell title="完成时间" :value="formatBizTime(afterSale.finishTime)" />
+            </wd-cell-group>
+            <view v-if="afterSaleResult" class="muted-text boundary-note">
+              {{ afterSaleResult.text }}
+            </view>
+          </template>
+          <view v-else class="muted-text">
+            暂无售后记录；如需核对退款进度请联系客服。
+          </view>
+
+          <!-- 取消入口：服务端下发资格才出现（当前未下发即整块不显示） -->
+          <view v-if="showCancelEntry" class="appeal-entry">
+            <wd-button block plain type="error" :loading="cancelling" @click="handleCancelOrder">
+              取消配送订单
+            </wd-button>
+          </view>
+          <view v-else-if="cancelEligibility?.reason" class="muted-text boundary-note">
+            {{ cancelEligibility.reason }}
+          </view>
+
+          <view class="muted-text boundary-note">
+            {{ AFTER_SALE_READONLY_NOTE }}
           </view>
         </wd-card>
       </view>
@@ -733,7 +842,7 @@ function goAppeal() {
               <wd-cell title="原因" :value="APPEAL_REASON_LABELS[appeal.reason]" />
               <wd-cell title="说明" :label="appeal.description" />
               <wd-cell title="实收数量" :value="`${appeal.receivedCount} 件`" />
-              <wd-cell title="用户凭证" :value="`${appeal.evidenceRefs.length} 件（快照记录）`" />
+              <wd-cell title="用户凭证" :value="`${appeal.evidenceRefs.length} 件`" />
               <wd-cell title="登记时间" :value="formatBizTime(appeal.createTime)" />
               <wd-cell v-if="appeal.decisionSummary" title="裁决结果" :label="appeal.decisionSummary" />
             </wd-cell-group>
@@ -750,9 +859,6 @@ function goAppeal() {
             </view>
             <view v-else class="muted-text">
               配送员暂未追加举证。
-            </view>
-            <view class="muted-text boundary-note">
-              裁决由 PC 运营端完成，小程序只消费结果，不伪造补送、退款或补偿。
             </view>
           </template>
           <view v-else class="muted-text">

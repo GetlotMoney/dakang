@@ -11,7 +11,7 @@
  */
 
 /** 与 entry/index.vue 的 e2eApiModes 拼接顺序严格一致。 */
-const DOMAIN_ORDER = ['GLOBAL', 'DEVICE', 'ORDER', 'CARD', 'RECHARGE', 'AUTH', 'DELIVERY']
+const DOMAIN_ORDER = ['GLOBAL', 'DEVICE', 'ORDER', 'CARD', 'RECHARGE', 'AUTH', 'DELIVERY', 'MESSAGE']
 
 /** 由期望映射还原为规范模式串（供日志与对照展示）。 */
 function formatRuntimeModes(expected) {

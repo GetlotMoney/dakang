@@ -5,18 +5,18 @@ import { computed, ref } from 'vue'
 import { deliveryApi } from '@/api/delivery'
 import { deviceApi } from '@/api/device'
 import { messageApi } from '@/api/message'
-import { buildRuntimeModes, currentMode } from '@/api/runtime'
+import { buildRuntimeModes } from '@/api/runtime'
 import HomeFaceConsumer from '@/components/home-face-consumer.vue'
 import HomeFaceCourier from '@/components/home-face-courier.vue'
 import HomeFaceOwner from '@/components/home-face-owner.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
-import { homeCourierNoticeText } from '@/components/runtime-notice'
 import { useAccountStore } from '@/store/account'
 import {
   availableHomeFaces,
   deriveDefaultHomeFace,
   HOME_FACE_LABELS,
 } from '@/utils/home-face'
+import { maskPhone } from '@/utils/format'
 import { goTo } from '@/utils/navigation'
 import { getWxSafeHeader } from '@/utils/safe-area'
 
@@ -35,26 +35,34 @@ const unreadCount = ref(0)
 const face = ref<HomeFace>('life')
 const refreshTick = ref(0)
 const buildFingerprint = __DAKANG_BUILD_FINGERPRINT__
-const waterModes = [currentMode('device'), currentMode('order'), currentMode('card')]
-const isRealWaterFlow = waterModes.every(mode => mode === 'real')
 // 统一走 buildRuntimeModes()：与入口页同一发射点，杜绝两页各写一份导致段数不一致（E1b 安全闸曾因此恒失败）。
 const runtimeContract = buildRuntimeModes()
 
 const faces = computed(() => availableHomeFaces(context.value))
 
+/** 副标题：已绑号显示脱敏号码，未绑号（仅微信身份建号）提示去补绑，绝不对空号码取子串。 */
+const identityLine = computed(() => {
+  const ctx = context.value
+  if (!ctx) {
+    return ''
+  }
+  const masked = maskPhone(ctx.userPhone)
+  return masked ? `${ctx.userName} · ${masked}` : `${ctx.userName} · 未绑手机号`
+})
+
 /**
- * 按面提示（D3）：生活（消费者）面卡余额、订单已接真且持久，去除“刷新后重置”失真描述；
- * 配送面按 delivery 构建期模式分流（条目在 runtime-notice，real 下接单/履约/申诉真实生效）；
- * 机主面 owner 域未接真，保留原型演示提示，不误标成真。
+ * 按面提示：每面只留「用户不知道就会做错决定」的那一句，不做模式分流。
+ *
+ * <p>生活面没有这类事实，返回空串——模板 v-if 据此整条不渲染，不留空提示条；
+ * 配送面的接单与送达是不可撤销的写操作；机主面的经营数字是订单成交总额，
+ * 与可提现分润不是一个口径，不说清会被当成到手金额。</p>
  */
 const noticeText = computed(() =>
   face.value === 'life'
-    ? isRealWaterFlow
-      ? '扫码取水、订单与水卡余额来自真实接口；真实操作必须建立正式微信会话，商城/健康等入口仍为后续演示。'
-      : '扫码取水、订单与水卡余额均为 Mock/固定快照；页面用于业务流转定型，不发生真实扣款或设备出水。'
+    ? ''
     : face.value === 'courier'
-      ? homeCourierNoticeText(currentMode('delivery'))
-      : '原型演示数据：不触发真实支付、设备指令或微信消息，刷新后重置。',
+      ? '接单、送达后无法撤销。'
+      : '经营数字为订单成交总额，非可提现金额。',
 )
 
 function storageKey() {
@@ -129,8 +137,8 @@ function selectFace(next: HomeFace) {
         <view class="home-title">
           六维达康智慧水站
         </view>
-        <view v-if="context" class="muted-text">
-          {{ context.userName }} · {{ context.userPhone.slice(0, 3) }}****{{ context.userPhone.slice(-4) }}
+        <view v-if="identityLine" class="muted-text">
+          {{ identityLine }}
         </view>
       </view>
       <view class="home-header-actions" :style="{ marginRight: safeHeader.capsuleAvoidWidth }">
@@ -153,7 +161,7 @@ function selectFace(next: HomeFace) {
       </view>
     </view>
 
-    <AppPrototypeNotice :text="noticeText" />
+    <AppPrototypeNotice v-if="noticeText" :text="noticeText" />
 
     <template v-if="context">
       <HomeFaceCourier v-if="face === 'courier'" :refresh-tick="refreshTick" @switch-face="selectFace" />

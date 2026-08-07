@@ -16,7 +16,7 @@ export function evaluateRouteAccess(
   const location = parseRouteUrl(url)
   const route = findRouteByPath(location.path)
   if (!route) {
-    return { allowed: false, code: 'ROUTE_NOT_REGISTERED', message: '目标页面未登记路由合同' }
+    return { allowed: false, code: 'ROUTE_NOT_REGISTERED', message: '页面不存在' }
   }
 
   const validation = validateRouteParams(route, location.params)
@@ -32,13 +32,13 @@ export function evaluateRouteAccess(
     return { allowed: true }
   }
   if (!context) {
-    return { allowed: false, code: 'SESSION_REQUIRED', message: '账号会话尚未建立' }
+    return { allowed: false, code: 'SESSION_REQUIRED', message: '请先登录' }
   }
   if (route.requiredCapability && !hasCapability(context, route.requiredCapability)) {
     return {
       allowed: false,
       code: 'CAPABILITY_DENIED',
-      message: '当前账号未开通该页面所需能力',
+      message: '当前账号没有该功能权限',
     }
   }
   return { allowed: true }

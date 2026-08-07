@@ -50,13 +50,6 @@ export const useAccountStore = defineStore('account', {
         restorePromise = null
       }
     },
-    async selectMockAccount(accountId: string) {
-      // 原型账号切换只允许全域 Mock 构建；仍清理任何遗留真实 token，防止后续误用旧会话。
-      clearToken()
-      this.context = await accountApi.selectMockAccount(accountId)
-      this.restored = true
-      this.errorMessage = null
-    },
     /**
      * 正式微信会话落地：登录/绑手机成功后由入口页调用，写入服务端返回的 AccountContext。
      * 会话 token 已由 authApi 写入 storage，这里只记录账号上下文快照。

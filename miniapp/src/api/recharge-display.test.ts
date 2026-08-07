@@ -243,15 +243,12 @@ describe('充值展示归一化', () => {
   })
 
   it.each([
-    [1, false, '本地原型订单停留在待支付'],
-    [1, true, '本订单仍待支付'],
-    [2, true, '支付成功，权益处理中'],
-    [4, false, '固定历史快照显示订单已完成'],
-    [4, true, '订单标记为已完成'],
-    [5, true, '订单已取消'],
+    [1, false, '付款截止时间'],
+    [1, true, '付款截止时间'],
+    [2, true, '权益处理中'],
+    [4, false, '请联系客服核对'],
+    [4, true, '请联系客服核对'],
     [6, true, '权益待人工处理'],
-    [7, false, '订单已退款'],
-    [8, false, '订单已部分退款'],
   ] as const)('状态%s在real=%s时使用准确文案', (status, isReal, text) => {
     expect(rechargeNotice(status, isReal, false)?.text).toContain(text)
   })
@@ -261,9 +258,15 @@ describe('充值展示归一化', () => {
     expect(rechargeNotice(4, false, true)).toBeNull()
   })
 
+  // 取消/退款/部分退款：订单状态本身已说明结果，不再叠加提示条
+  it.each([[5], [7], [8]] as const)('状态%s不显示额外提示', (status) => {
+    expect(rechargeNotice(status, true, false)).toBeNull()
+    expect(rechargeNotice(status, false, false)).toBeNull()
+  })
+
   it('支付来源与事实处理态按本单证据展示', () => {
     expect(rechargePaySourceLabel(1, 1, true)).toBe('微信支付')
-    expect(rechargePaySourceLabel(2, 1, true)).toBe('Pay-Sim 模拟支付')
+    expect(rechargePaySourceLabel(2, 1, true)).toBe('模拟支付')
     expect(rechargePaySourceLabel(undefined, 1, true)).toBe('支付来源待核对')
     expect(rechargeProcessingStatusLabel('PROCESSED')).toBe('已处理')
     expect(rechargeProcessingStatusLabel('RECONCILIATION_REQUIRED')).toBe('待人工对账')

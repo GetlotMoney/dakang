@@ -31,6 +31,7 @@ export type RouteId
     | 'O03'
     | 'O04'
     | 'O05'
+    | 'O06'
 
 export type RouteGroup = 'common' | 'user' | 'courier' | 'owner'
 
@@ -88,6 +89,12 @@ export const appRoutes = [
   { id: 'O03', path: '/pages/owner/device/detail', title: '设备详情', group: 'owner', requiredCapability: 'OWNER_VIEW', params: [required('deviceNo')], defaultBackTo: 'O02' },
   { id: 'O04', path: '/pages/owner/transaction/index', title: '交易快照', group: 'owner', requiredCapability: 'OWNER_VIEW', params: [optional('period', ['7d']), optional('deviceNo')], defaultBackTo: 'O01' },
   { id: 'O05', path: '/pages/owner/service/index', title: '报修与配件', group: 'owner', requiredCapability: 'OWNER_SERVICE', params: [optional('serviceType', ['REPAIR', 'PART']), optional('deviceNo'), optional('requestId')], defaultBackTo: 'O01' },
+  // 收益钱包按 USER_BASE 开放：分账收款方不止机主（配送线 30% 归配送员，推荐人/区域服务商
+  // 为预留收款方），绑 OWNER_VIEW 会让拿了分润的配送员看不到自己的钱（主环境实点抓获）。
+  // 后端 /mini/owner/wallet 本就只校验登录会话并按会话 userId 过滤，此处与之对齐；
+  // 无分润账户呈现零余额空态，不泄露他人数据。回退目标取「我的」而非机主概览——
+  // 非机主进不去 O01，回退到进不去的页面等于把用户困在钱包页。
+  { id: 'O06', path: '/pages/owner/wallet/index', title: '收益钱包', group: 'owner', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U03' },
 ] as const satisfies readonly AppRouteContract[]
 
 export interface ParsedRouteLocation {
@@ -134,16 +141,16 @@ export function validateRouteParams(
   const knownNames = new Set(route.params.map(item => item.name))
   const unknownName = Object.keys(params).find(name => !knownNames.has(name))
   if (unknownName) {
-    return { valid: false, message: `路由 ${route.id} 不接受参数 ${unknownName}` }
+    return { valid: false, message: '页面参数不合法' }
   }
 
   for (const contract of route.params) {
     const value = params[contract.name]
     if (contract.required && !value) {
-      return { valid: false, message: `路由 ${route.id} 缺少参数 ${contract.name}` }
+      return { valid: false, message: '页面参数不完整' }
     }
     if (value && contract.values && !contract.values.includes(value)) {
-      return { valid: false, message: `路由 ${route.id} 的参数 ${contract.name} 不合法` }
+      return { valid: false, message: '页面参数不合法' }
     }
   }
   return { valid: true }
@@ -161,7 +168,7 @@ export function buildRouteUrl(
   )
   const validation = validateRouteParams(route, normalizedParams)
   if (!validation.valid) {
-    throw new ContractError('ROUTE_PARAMS_INVALID', validation.message ?? '路由参数不合法')
+    throw new ContractError('ROUTE_PARAMS_INVALID', validation.message ?? '页面参数不合法')
   }
   const query = Object.entries(normalizedParams)
     .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)

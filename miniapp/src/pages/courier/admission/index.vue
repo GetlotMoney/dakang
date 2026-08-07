@@ -9,8 +9,6 @@ import { ContractError } from '@/api/common'
 import { deliveryApi } from '@/api/delivery'
 import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
-import { courierAdmissionNoticeText } from '@/components/runtime-notice'
 import { useAccountStore } from '@/store/account'
 import {
   ADMISSION_STATUS_LABELS,
@@ -29,9 +27,6 @@ const accountStore = useAccountStore()
 const toast = useToast()
 const message = useMessage()
 
-/** 顶栏边界口径取自 runtime-notice 场景条目：本页提交走真实准入接口，delivery=real 时不得再显示原型口径。 */
-const admissionNotice = courierAdmissionNoticeText(currentMode('delivery'))
-
 const status = ref<'loading' | 'ready' | 'error'>('loading')
 const errorMessage = ref('')
 const admission = ref<CourierAdmission | null>(null)
@@ -47,9 +42,16 @@ const model = reactive({
   declaration: false,
 })
 
-/** 只有未提交(0)与驳回(4)允许（重新）提交，与契约 COURIER_ADMISSION_NOT_ALLOWED 口径一致。 */
+/**
+ * 只有未提交(0)与驳回(4)允许（重新）提交，与契约 COURIER_ADMISSION_NOT_ALLOWED 口径一致。
+ *
+ * <p>delivery 接真时另加一道闸：服务端没有自助提交端点（仅 /detail，建档走 PC 人工链路），
+ * 提交必定 fail-closed。让用户填完整张表再撞报错是最差的交互，故 real 下直接不渲染表单，
+ * 改以下方提示说明正确路径。</p>
+ */
+const selfSubmitSupported = currentMode('delivery') !== 'real'
 const showForm = computed(
-  () => admission.value !== null && [0, 4].includes(admission.value.status),
+  () => selfSubmitSupported && admission.value !== null && [0, 4].includes(admission.value.status),
 )
 
 const stationNameById = computed(
@@ -131,7 +133,7 @@ async function handleSubmit() {
   try {
     await message.confirm({
       title: '提交准入申请',
-      msg: '提交后进入待审核，由 PC 后台人工审核，不自动通过；提交成功不会立即获得配送工作能力。确认提交？',
+      msg: '提交后需审核通过才能接单。确认提交？',
     })
   }
   catch {
@@ -163,7 +165,6 @@ async function handleSubmit() {
     <AppNavbar title="配送准入" back-to="U03" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice :text="admissionNotice" />
 
     <view v-if="status === 'loading'" class="page-section state-block">
       <wd-loading size="24px" />
@@ -189,7 +190,12 @@ async function handleSubmit() {
           </template>
 
           <view v-if="admission.status === 0" class="muted-text">
-            尚未提交配送准入申请；提交后由 PC 后台审核，审核通过前不具备配送工作能力。
+            <template v-if="selfSubmitSupported">
+              尚未提交申请，审核通过后才能接单。
+            </template>
+            <template v-else>
+              暂不支持自助申请，请联系运营开通。
+            </template>
           </view>
 
           <template v-else-if="admission.status === 1">
@@ -202,9 +208,6 @@ async function handleSubmit() {
             <view class="admission-line">
               申请范围：{{ requestedScopeText }}
             </view>
-            <view class="muted-text">
-              等待 PC 后台审核，不自动通过。
-            </view>
           </template>
 
           <template v-else-if="admission.status === 2">
@@ -212,20 +215,20 @@ async function handleSubmit() {
               服务范围：{{ grantedScopeText }}
             </view>
             <view class="muted-text">
-              配送工作入口已在首页展示。
+              配送任务入口在首页。
             </view>
           </template>
 
           <view v-else-if="admission.status === 3" class="muted-text">
-            工作能力已撤销，任务入口不可见；恢复启用由 PC 后台操作。
+            已撤销接单资格，恢复请联系运营。
           </view>
 
           <template v-else>
             <view class="admission-reject">
               驳回原因：{{ admission.rejectReason || '运营未填写原因' }}
             </view>
-            <view class="muted-text">
-              可修改下方信息后重新提交申请。
+            <view v-if="!selfSubmitSupported" class="muted-text">
+              重新申请请联系运营。
             </view>
           </template>
         </wd-card>
@@ -233,7 +236,7 @@ async function handleSubmit() {
 
       <view v-if="showForm" class="page-section">
         <wd-form ref="form" :model="model">
-          <wd-cell-group title="准入申请（最小字段）" border>
+          <wd-cell-group title="准入申请" border>
             <wd-input
               v-model="model.applicantName"
               label="姓名"
@@ -279,9 +282,6 @@ async function handleSubmit() {
               我承诺信息真实并遵守配送规范
             </wd-checkbox>
           </view>
-          <view class="muted-text form-hint">
-            证件/保险等资质字段待运营规则确认，仅保留最小字段；记录仅保存脱敏手机号，重新提交时需填写完整号码；提交成功不授予配送工作能力。
-          </view>
           <view class="submit-row">
             <wd-button block size="large" :loading="submitting" @click="handleSubmit">
               提交准入申请
@@ -322,11 +322,6 @@ async function handleSubmit() {
 
 .declaration-row {
   padding: 12px 4px 0;
-}
-
-.form-hint {
-  padding: 8px 4px 0;
-  line-height: 1.6;
 }
 
 .submit-row {

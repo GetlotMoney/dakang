@@ -7,13 +7,9 @@ import type {
   VolumeMl,
 } from './common'
 import type { OrderStatus, OrderType } from './order'
-import type { AccountContext, CapabilityCode } from './account'
-import { requireCapability } from './capability'
-import { cloneContractData, ContractError } from './common'
+import { ContractError } from './common'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { selectAdapter } from './runtime'
-import { scenarioStore } from '@/scenario/store'
 
 export type DeviceOnlineStatus = 'ONLINE' | 'OFFLINE'
 export type DeviceRunStatus = 'IDLE' | 'DISPENSING' | 'FAULT' | 'MAINTENANCE' | 'LOCKED'
@@ -52,6 +48,9 @@ export interface DeviceDetail extends DeviceSummary {
   filterPercent?: number
   signalDbm?: number
   reportTime?: BusinessTime
+  /** 真实模式为运营档案值；1正常 2未激活 3欠费 4停用，未配置为 undefined。 */
+  simStatus?: number
+  simExpireTime?: BusinessTime
   outlets: OutletSummary[]
 }
 
@@ -63,7 +62,7 @@ export interface ScanSession {
 }
 
 /**
- * 卡/权益侧阻断原因，与设备可用性分组返回（蓝图 §9.4：两组均通过才允许下单）。
+ * 卡/权益侧阻断原因，与设备可用性分组返回：两组均通过才允许下单。
  * CARD-SCOPE：预检指定 cardId，他人卡与不存在卡统一 CARD_NOT_ACCESSIBLE（不泄露存在性）；
  * 范围非法/未配置为 CARD_SCOPE_INVALID，范围未命中当前设备为 CARD_SCOPE_DENIED。
  */
@@ -94,7 +93,13 @@ export interface WaterDeviceContext {
   deviceName: string
   onlineStatus: DeviceOnlineStatus
   runStatus: DeviceRunStatus
+  /**
+   * 出水口摘要。S2 起 waterTypeId 与 unitPriceFenPerLiter 是扫码时点的<b>冻结报价</b>，
+   * 不是当前档案值——服务端在报价漂移时直接返回 SCAN_QUOTE_CHANGED，不会给出混合体。
+   */
   outlet: OutletSummary
+  /** 报价生成时间（S2）。 */
+  quotedAt?: BusinessTime
   expiresAt: BusinessTime
 }
 
@@ -109,7 +114,14 @@ export interface OwnerOverview {
   orderCount: number
   actualVolumeMl: VolumeMl
   orderAmountFen: MoneyFen
-  evidenceMode: 'prototype' | 'external-snapshot'
+  /**
+   * 本期出水中由水卡水量支付的部分（毫升）。这部分水费在用户充值环节就已结算，
+   * 而充值单不归属任何机主，故它对 orderAmountFen 的贡献恒为 0——单列出来，
+   * 机主才不会把「出水多、金额少」误读成漏记。
+   */
+  prepaidVolumeMl: VolumeMl
+  /** 证据模式：real=真实库聚合（E2E-06 冻结契约变更：原仅 prototype/external-snapshot 两值） */
+  evidenceMode: 'prototype' | 'external-snapshot' | 'real'
 }
 
 export interface OwnerTransactionItem {
@@ -132,8 +144,38 @@ export interface OwnerTransactionQuery {
   size?: PageQuery['size']
 }
 
+/**
+ * 交易快照周期必须复用服务端概览返回的同一时钟窗口。
+ *
+ * 客户端自行按本地时区计算“近 7 日”会与服务端 Asia/Shanghai 的自然日边界漂移；
+ * 只传起点还会把未来时间的异常订单纳入。全部档不传任何时间条件，近 7 日档则同时
+ * 传入权威起止时间，保持 O01 概览与 O04 明细口径一致。
+ */
+export function ownerTransactionPeriodQuery(
+  period: string,
+  overview?: Pick<OwnerOverview, 'periodStart' | 'periodEnd'>,
+): Pick<OwnerTransactionQuery, 'periodStart' | 'periodEnd'> {
+  if (period !== '7d') {
+    return {}
+  }
+  if (!overview?.periodStart || !overview.periodEnd) {
+    throw new ContractError('OWNER_PERIOD_MISSING', '经营统计周期缺失，请刷新后重试')
+  }
+  return {
+    periodStart: overview.periodStart,
+    periodEnd: overview.periodEnd,
+  }
+}
+
 export type OwnerServiceType = 'REPAIR' | 'PART'
 export type OwnerServiceStatus = 'PENDING_ACCEPTANCE' | 'PROCESSING' | 'COMPLETED' | 'REJECTED'
+
+/** 处理轨迹条目（real 模式来自领域事件；操作端只区分 平台/机主/系统）。 */
+export interface OwnerServiceTraceItem {
+  eventTime: BusinessTime
+  actorLabel: string
+  detail: string
+}
 
 export interface OwnerServiceRequest {
   requestId: EntityId
@@ -146,14 +188,44 @@ export interface OwnerServiceRequest {
   status: OwnerServiceStatus
   createTime: BusinessTime
   evidenceMode: 'prototype' | 'external-snapshot'
+  /** 三端贯穿的真实工单号（real 模式返回；mock 原型请求无工单） */
+  workOrderNo?: string
+  /** 驳回原因（已驳回时返回） */
+  rejectReason?: string
+  /** 处理结果（完成后返回） */
+  finishResult?: string
+  /** 处理轨迹（仅详情返回） */
+  trace?: OwnerServiceTraceItem[]
 }
 
 export interface CreateOwnerServiceInput {
+  /** 申报幂等键：页面在一次提交意图内持有并于重试间复用（real 模式必填，mock 忽略） */
+  requestId?: string
   deviceNo: string
   serviceType: OwnerServiceType
   description: string
   evidenceRefs: string[]
   contactPhone: string
+}
+
+export interface OwnerWalletFlow {
+  flowType: number
+  amountFen: number
+  afterFen: number
+  orderNo?: string
+  createTime?: BusinessTime
+}
+
+/** 机主收益钱包（E2E-08 / REQ-072）：分润净额账务口径，与经营毛额（OwnerOverview）并存不互改。 */
+export interface OwnerWallet {
+  balanceFen: number
+  frozenFen: number
+  /** D-421 在途分润(分)：已产生、尚在冻结期未入账的分账合计；0=无在途。 */
+  pendingSplitFen: number
+  /** 最早一笔在途分润的预计解冻时间；无在途时缺省。 */
+  earliestUnfreezeTime?: BusinessTime
+  flows: OwnerWalletFlow[]
+  evidenceMode: 'prototype' | 'real'
 }
 
 export interface DeviceApi {
@@ -168,9 +240,11 @@ export interface DeviceApi {
     query?: OwnerTransactionQuery,
   ) => Promise<PageResult<OwnerTransactionItem>>
   listOwnerServiceRequests: () => Promise<OwnerServiceRequest[]>
+  getOwnerServiceDetail: (requestId: string) => Promise<OwnerServiceRequest>
   createOwnerServiceRequest: (
     input: CreateOwnerServiceInput,
   ) => Promise<OwnerServiceRequest>
+  getOwnerWallet: () => Promise<OwnerWallet>
 }
 
 export const deviceEndpoints = {
@@ -182,284 +256,43 @@ export const deviceEndpoints = {
   ownerOverview: '/mini/owner/overview',
   ownerTransactions: '/mini/owner/transaction/page',
   ownerServiceList: '/mini/owner/service/list',
+  ownerServiceDetail: '/mini/owner/service/detail',
   ownerServiceCreate: '/mini/owner/service/create',
+  ownerWallet: '/mini/owner/wallet',
 } as const
-
-function ownerContext(capability: CapabilityCode): AccountContext {
-  const context = scenarioStore.activeAccount()
-  requireCapability(context, capability)
-  const scope = context.ownerScope
-  if (!scope || scope.stationIds.length === 0 || scope.deviceNos.length === 0) {
-    throw new ContractError('OWNER_SCOPE_DENIED', '机主授权范围为空，默认不可访问经营数据')
-  }
-  return context
-}
-
-function ownerDevice(deviceNo: string) {
-  const context = ownerContext('OWNER_VIEW')
-  if (!context.ownerScope!.deviceNos.includes(deviceNo)) {
-    throw new ContractError('DEVICE_ACCESS_DENIED', '设备不在当前机主授权范围')
-  }
-  const device = scenarioStore.devices.find(item => item.deviceNo === deviceNo)
-  if (!device) {
-    throw new ContractError('DEVICE_NOT_FOUND', '设备不存在')
-  }
-  return device
-}
-
-function maskPhone(phone: string) {
-  if (!/^1\d{10}$/.test(phone)) {
-    throw new ContractError('PHONE_INVALID', '手机号格式不合法')
-  }
-  return `${phone.slice(0, 3)}****${phone.slice(-4)}`
-}
-
-/**
- * 扫码码值对齐 PC 事实源 `ws_qrcode.QRCODE_CONTENT`（2026-07-16 对表）：
- * DK-QR-DEV0001-O1/O2 为种子真实码；DK-QR-DEV0002-O1 为演示扩展码（PC 种子暂缺设备 2 的码，已上报补种子建议）。
- * 原始二维码只在适配器内解析为短期会话，不进入路由或日志。
- */
-const SCAN_SAMPLE_CODES: Record<string, { deviceNo: string, outletId: EntityId }> = {
-  'DK-QR-DEV0001-O1': { deviceNo: 'DK-DEV-0001', outletId: '1' },
-  'DK-QR-DEV0001-O2': { deviceNo: 'DK-DEV-0001', outletId: '2' },
-  'DK-QR-DEV0002-O1': { deviceNo: 'DK-DEV-0002', outletId: '3' },
-}
-
-function requireActiveScanSession(scanSessionId: string): ScanSession {
-  const session = scenarioStore.findActiveScanSession(scanSessionId)
-  if (!session) {
-    throw new ContractError('SCAN_SESSION_EXPIRED', '扫码会话已失效，请重新扫码')
-  }
-  return session
-}
-
-function deviceBySession(session: ScanSession) {
-  const device = scenarioStore.devices.find(item => item.deviceNo === session.deviceNo)
-  if (!device) {
-    throw new ContractError('DEVICE_NOT_FOUND', '设备不存在')
-  }
-  return device
-}
-
-/** 按设备在线/运行状态派生可用性，故障码映射到统一枚举。 */
-function deriveDeviceAvailability(device: DeviceDetail, outletId: EntityId): {
-  availability: DeviceAvailability
-  reason?: string
-} {
-  if (device.onlineStatus === 'OFFLINE') {
-    return { availability: 'DEVICE_OFFLINE', reason: '设备离线（最后心跳超过 90 秒），已阻断下单' }
-  }
-  if (device.runStatus === 'FAULT') {
-    const faultCode = device.lastFaultCode ?? ''
-    const known: Record<string, DeviceAvailability> = {
-      E001: 'FAULT_E001',
-      E003: 'FAULT_E003',
-      E004: 'FAULT_E004',
-    }
-    return {
-      availability: known[faultCode] ?? 'DEVICE_UNAVAILABLE',
-      reason: `设备故障${faultCode ? `（${faultCode}）` : ''}，已阻断下单`,
-    }
-  }
-  if (device.runStatus === 'MAINTENANCE' || device.runStatus === 'LOCKED') {
-    return {
-      availability: 'DEVICE_UNAVAILABLE',
-      reason: device.runStatus === 'MAINTENANCE' ? '设备维护中，暂不可取水' : '设备已锁定，暂不可取水',
-    }
-  }
-  const outlet = device.outlets.find(item => item.outletId === outletId)
-  if (!outlet || !outlet.available) {
-    return { availability: 'NO_AVAILABLE_OUTLET', reason: '出水口不可用，请更换出水口' }
-  }
-  return { availability: 'AVAILABLE' }
-}
-
-/**
- * 指定卡状态映射为卡侧阻断原因；正常卡返回 undefined。
- * CARD-SCOPE：传入 cardId 时只检查该卡（与后端「预检卡=下单卡」口径一致）；
- * 他人卡与不存在卡统一 CARD_NOT_ACCESSIBLE，不泄露存在性。
- * 未传 cardId 时沿用主卡回退，保持既有 Mock 场景可用。
- */
-function deriveCardBlock(cardId?: EntityId): WaterEligibility['cardBlock'] {
-  const userId = scenarioStore.activeAccount().userId
-  const card = cardId
-    ? scenarioStore.cards.find(item => item.cardId === cardId)
-    : scenarioStore.cards.find(item => item.userId === userId)
-  if (!card) {
-    return cardId
-      ? { code: 'CARD_NOT_ACCESSIBLE', message: '水卡不存在或无权使用' }
-      : { code: 'CARD_MISSING', message: '当前账号没有可用水卡，请先购卡或充值' }
-  }
-  if (cardId && card.userId !== userId) {
-    // 与「不存在」同文案同码：可区分即成为探测他人 cardId 的信道
-    return { code: 'CARD_NOT_ACCESSIBLE', message: '水卡不存在或无权使用' }
-  }
-  const blocked: Partial<Record<number, WaterEligibility['cardBlock']>> = {
-    2: { code: 'CARD_FROZEN', message: '水卡已冻结，请联系客服处理后再取水' },
-    3: { code: 'CARD_EXPIRED', message: '水卡已过期，请续费后再取水' },
-    4: { code: 'CARD_CANCELLED', message: '水卡已注销，无法继续使用' },
-  }
-  return blocked[card.cardStatus]
-}
-
-const mockDeviceApi: DeviceApi = {
-  async resolveScanCode(rawCode) {
-    if (rawCode === 'DK-QR-EXPIRED') {
-      throw new ContractError('QR_EXPIRED', '二维码已过期或已停用，请按设备屏幕提示重新获取')
-    }
-    // 万能码（ws_qrcode type=3 种子 DK-QR-UNIVERSAL-001）：扫后选设备/出水口的流程待定型，先给明确契约状态。
-    if (rawCode === 'DK-QR-UNIVERSAL-001') {
-      throw new ContractError('UNIVERSAL_CODE_PENDING', '万能码需现场选择设备与出水口，该流程待后续定型')
-    }
-    const target = SCAN_SAMPLE_CODES[rawCode]
-    if (!target) {
-      throw new ContractError('INVALID_QR_CODE', '二维码无效，请扫描设备出水口上的取水码')
-    }
-    return cloneContractData(scenarioStore.registerScanSession(target.deviceNo, target.outletId))
-  },
-  async getWaterDeviceContext(scanSessionId) {
-    const session = requireActiveScanSession(scanSessionId)
-    const device = deviceBySession(session)
-    const outlet = device.outlets.find(item => item.outletId === session.outletId)
-    if (!outlet) {
-      throw new ContractError('OUTLET_NOT_FOUND', '出水口不存在')
-    }
-    return cloneContractData({
-      scanSessionId,
-      stationId: device.stationId,
-      stationName: device.stationName,
-      deviceNo: device.deviceNo,
-      deviceName: device.deviceName,
-      onlineStatus: device.onlineStatus,
-      runStatus: device.runStatus,
-      outlet,
-      expiresAt: session.expiresAt,
-    })
-  },
-  async checkWaterEligibility(scanSessionId, cardId) {
-    const session = requireActiveScanSession(scanSessionId)
-    const device = deviceBySession(session)
-    const derived = deriveDeviceAvailability(device, session.outletId)
-    return cloneContractData({
-      availability: derived.availability,
-      reason: derived.reason,
-      maxAllowedMl: scenarioStore.waterEligibility.maxAllowedMl,
-      cardBlock: deriveCardBlock(cardId),
-    })
-  },
-  async listOwnerDevices() {
-    const context = ownerContext('OWNER_VIEW')
-    const deviceNos = context.ownerScope!.deviceNos
-    return cloneContractData(
-      scenarioStore.devices.filter(item => deviceNos.includes(item.deviceNo)),
-    )
-  },
-  async getOwnerDeviceDetail(deviceNo) {
-    return cloneContractData(ownerDevice(deviceNo))
-  },
-  async getOwnerOverview() {
-    const context = ownerContext('OWNER_VIEW')
-    const scope = context.ownerScope!
-    const devices = scenarioStore.devices.filter(item => scope.deviceNos.includes(item.deviceNo))
-    // 统计口径与 periodStart 标注保持一致：只聚合周期内订单。
-    const periodStart = '20260712000000'
-    const orders = scenarioStore.orderDetails
-      .map(item => item.order)
-      .filter(item => item.stationId && scope.stationIds.includes(item.stationId))
-      .filter(item => item.createTime >= periodStart)
-    return cloneContractData({
-      periodStart,
-      periodEnd: scenarioStore.now,
-      stationCount: scope.stationIds.length,
-      deviceCount: devices.length,
-      onlineCount: devices.filter(item => item.onlineStatus === 'ONLINE').length,
-      offlineCount: devices.filter(item => item.onlineStatus === 'OFFLINE').length,
-      faultCount: devices.filter(item => item.runStatus === 'FAULT').length,
-      orderCount: orders.length,
-      actualVolumeMl: orders.reduce((sum, item) => sum + (item.actualMl ?? 0), 0),
-      orderAmountFen: orders.reduce((sum, item) => sum + item.orderAmountFen, 0),
-      evidenceMode: 'prototype',
-    })
-  },
-  async listOwnerTransactions(query = {}) {
-    const context = ownerContext('OWNER_VIEW')
-    const scope = context.ownerScope!
-    if (query.deviceNo && !scope.deviceNos.includes(query.deviceNo)) {
-      throw new ContractError('DEVICE_ACCESS_DENIED', '设备不在当前机主授权范围')
-    }
-    const current = query.current ?? 1
-    const size = query.size ?? 20
-    if (current <= 0 || size <= 0) {
-      throw new ContractError('PAGE_QUERY_INVALID', '分页参数必须大于 0')
-    }
-    const matched = scenarioStore.orderDetails
-      .map(item => item.order)
-      .filter(item => item.stationId && scope.stationIds.includes(item.stationId))
-      .filter(item => !query.deviceNo || item.deviceNo === query.deviceNo)
-      .filter(item => !query.periodStart || item.createTime >= query.periodStart)
-      .filter(item => !query.periodEnd || item.createTime <= query.periodEnd)
-      .map<OwnerTransactionItem>(item => ({
-        orderNo: item.orderNo,
-        orderType: item.orderType,
-        orderStatus: item.orderStatus,
-        stationId: item.stationId!,
-        stationName: item.stationName ?? '未命名水站',
-        deviceNo: item.deviceNo,
-        actualVolumeMl: item.actualMl,
-        orderAmountFen: item.orderAmountFen,
-        createTime: item.createTime,
-      }))
-    const start = (current - 1) * size
-    return cloneContractData({
-      list: matched.slice(start, start + size),
-      total: matched.length,
-    })
-  },
-  async listOwnerServiceRequests() {
-    const context = ownerContext('OWNER_SERVICE')
-    return cloneContractData(
-      scenarioStore.ownerServiceRequests.filter(item => item.accountId === context.accountId),
-    )
-  },
-  async createOwnerServiceRequest(input) {
-    const context = ownerContext('OWNER_SERVICE')
-    if (!context.ownerScope!.deviceNos.includes(input.deviceNo)) {
-      throw new ContractError('DEVICE_ACCESS_DENIED', '设备不在当前机主授权范围')
-    }
-    if (!input.description.trim()) {
-      throw new ContractError('SERVICE_DESCRIPTION_REQUIRED', '问题说明不能为空')
-    }
-    // 动作发生时间由统一逻辑时钟取得，记录与审计同源（第五轮审计整改）。
-    const createTime = scenarioStore.takeBusinessTime()
-    const request: OwnerServiceRequest = {
-      requestId: `OSR-${scenarioStore.ownerServiceRequests.length + 1}`,
-      accountId: context.accountId,
-      deviceNo: input.deviceNo,
-      serviceType: input.serviceType,
-      description: input.description.trim(),
-      evidenceRefs: [...input.evidenceRefs],
-      maskedContactPhone: maskPhone(input.contactPhone),
-      status: 'PENDING_ACCEPTANCE',
-      createTime,
-      evidenceMode: 'prototype',
-    }
-    scenarioStore.ownerServiceRequests.push(request)
-    scenarioStore.recordAudit(
-      'OWNER_SERVICE',
-      'owner.service.create',
-      'service-request',
-      request.requestId,
-      'success',
-      createTime,
-    )
-    return cloneContractData(request)
-  },
-}
 
 /**
  * eligibility 后端原始返回：后端全局 Jackson 将 Long 序列化为字符串（防 JS 精度丢失），
  * 故 maxAllowedMl/remainingDailyLimitMl 到达前端是数值字符串；其余字段与前端类型一致。
  */
+/** 机主经营后端原始返回（Long→字符串序列化：金额/水量/total 为数值字符串）。 */
+interface OwnerOverviewRaw {
+  periodStart: string
+  periodEnd: string
+  stationCount?: number
+  deviceCount?: number
+  onlineCount?: number
+  offlineCount?: number
+  faultCount?: number
+  orderCount?: number
+  actualVolumeMl?: string | number | null
+  orderAmountFen?: string | number | null
+  prepaidVolumeMl?: string | number | null
+  evidenceMode?: string
+}
+
+interface OwnerTransactionRaw {
+  orderNo: string
+  orderType: number
+  orderStatus: number
+  stationId?: string | number | null
+  stationName?: string | null
+  deviceNo?: string | null
+  actualVolumeMl?: string | number | null
+  orderAmountFen?: string | number | null
+  createTime: string
+}
+
 interface WaterEligibilityRaw {
   availability: DeviceAvailability
   reason?: string | null
@@ -487,11 +320,12 @@ function strictVolume(value: string | number | null | undefined): number | undef
 }
 
 /**
- * device 域真实适配器（L1a 扫码取水链）。
+ * device 域真实适配器。
  *
- * 仅 scan/resolve、water/context、water/eligibility 三接口接真（后端 /mini/device/* 已就绪）；
- * owner 系列后端 /mini/owner/* 尚未建，暂委托 mock 保持机主经营页面在 device 域接真后仍可用，
- * 待 owner 接真切片再逐个替换（不引入 realAdapterPending 以免打断已封板演示）。
+ * 取水三接口（scan/resolve、water/context、water/eligibility）E2E-01 接真；
+ * 机主设备与报修（/mini/owner/device|service/*）E2E-05 接真；
+ * 机主经营（/mini/owner/overview、/mini/owner/transaction/page）E2E-06 接真——
+ * 订单口径毛额，数据范围由服务端按会话 OWNER_USER_ID 双轨过滤，前端不传 userId。
  */
 const realDeviceApi: DeviceApi = {
   async resolveScanCode(rawCode) {
@@ -519,13 +353,128 @@ const realDeviceApi: DeviceApi = {
       }
     })
   },
-  // owner 端点尚未接入真实接口：继续使用 Mock，避免 device 域接真后影响机主页面。
-  listOwnerDevices: () => mockDeviceApi.listOwnerDevices(),
-  getOwnerDeviceDetail: deviceNo => mockDeviceApi.getOwnerDeviceDetail(deviceNo),
-  getOwnerOverview: () => mockDeviceApi.getOwnerOverview(),
-  listOwnerTransactions: query => mockDeviceApi.listOwnerTransactions(query),
-  listOwnerServiceRequests: () => mockDeviceApi.listOwnerServiceRequests(),
-  createOwnerServiceRequest: input => mockDeviceApi.createOwnerServiceRequest(input),
+  // owner 域接真（E2E-05 包E）：数据范围由服务端按会话 OWNER_USER_ID 过滤，前端不传 userId。
+  async listOwnerDevices() {
+    return withRealSession(() => post<DeviceSummary[]>(deviceEndpoints.ownerList, {}))
+  },
+  async getOwnerDeviceDetail(deviceNo) {
+    return withRealSession(() => post<DeviceDetail>(deviceEndpoints.ownerDetail, { deviceNo }))
+  },
+  // 机主经营（E2E-06）：订单口径毛额只读聚合；金额/水量经全局 Long→字符串序列化，按 strictNumber 手法归一
+  async getOwnerOverview() {
+    return withRealSession(async () => {
+      const raw = await post<OwnerOverviewRaw>(deviceEndpoints.ownerOverview, {})
+      return {
+        periodStart: String(raw.periodStart),
+        periodEnd: String(raw.periodEnd),
+        stationCount: raw.stationCount ?? 0,
+        deviceCount: raw.deviceCount ?? 0,
+        onlineCount: raw.onlineCount ?? 0,
+        offlineCount: raw.offlineCount ?? 0,
+        faultCount: raw.faultCount ?? 0,
+        orderCount: raw.orderCount ?? 0,
+        actualVolumeMl: strictVolume(raw.actualVolumeMl) ?? 0,
+        orderAmountFen: strictVolume(raw.orderAmountFen) ?? 0,
+        prepaidVolumeMl: strictVolume(raw.prepaidVolumeMl) ?? 0,
+        evidenceMode: 'real' as const,
+      }
+    })
+  },
+  async listOwnerTransactions(query = {}) {
+    return withRealSession(async () => {
+      const raw = await post<{ total?: string | number, list?: OwnerTransactionRaw[] }>(
+        deviceEndpoints.ownerTransactions,
+        {
+          periodStart: query.periodStart,
+          periodEnd: query.periodEnd,
+          deviceNo: query.deviceNo,
+          current: query.current,
+          size: query.size,
+        },
+      )
+      const list = (raw.list ?? []).map<OwnerTransactionItem>(item => ({
+        orderNo: String(item.orderNo),
+        orderType: item.orderType as OrderType,
+        orderStatus: item.orderStatus as OrderStatus,
+        stationId: String(item.stationId ?? ''),
+        stationName: item.stationName ?? '未命名水站',
+        deviceNo: item.deviceNo ?? undefined,
+        actualVolumeMl: strictVolume(item.actualVolumeMl),
+        orderAmountFen: strictVolume(item.orderAmountFen) ?? 0,
+        createTime: String(item.createTime),
+      }))
+      return { list, total: strictVolume(raw.total) ?? list.length }
+    })
+  },
+  async listOwnerServiceRequests() {
+    return withRealSession(() => post<OwnerServiceRequest[]>(deviceEndpoints.ownerServiceList, {}))
+  },
+  async getOwnerServiceDetail(requestId) {
+    return withRealSession(() => post<OwnerServiceRequest>(deviceEndpoints.ownerServiceDetail, { requestId }))
+  },
+  async createOwnerServiceRequest(input) {
+    if (!input.requestId) {
+      // 幂等键由页面在提交意图内持有；缺失说明调用方式错误，拒绝而不是替它生成（重试会翻倍建单）
+      throw new ContractError('SERVICE_REQUEST_ID_REQUIRED', '申报提交异常，请重试')
+    }
+    return withRealSession(() => post<OwnerServiceRequest>(deviceEndpoints.ownerServiceCreate, {
+      requestId: input.requestId,
+      deviceNo: input.deviceNo,
+      serviceType: input.serviceType,
+      description: input.description,
+      evidenceRefs: input.evidenceRefs,
+      contactPhone: input.contactPhone,
+    }))
+  },
+
+  async getOwnerWallet() {
+    return withRealSession(async () => {
+      const raw = await post<{
+        balanceFen: unknown
+        frozenFen: unknown
+        pendingSplitFen?: unknown
+        earliestUnfreezeTime?: unknown
+        flows?: Array<Record<string, unknown>>
+      }>(
+        deviceEndpoints.ownerWallet,
+        {},
+      )
+      // 全局 Long→字符串序列化：安全整数归一化（R1 复验 P2 整改）——只认 number 安全
+      // 整数或规范十进制整数字符串；小数/科学计数法/非法串/超安全范围一律收敛 0，
+      // 绝不把 NaN 或舍入值放进渲染层。缺省（旧后端无字段）同样收敛 0。
+      const toSafeInt = (value: unknown): number => {
+        if (typeof value === 'number') {
+          return Number.isSafeInteger(value) ? value : 0
+        }
+        if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+          const parsed = Number(value)
+          return Number.isSafeInteger(parsed) ? parsed : 0
+        }
+        return 0
+      }
+      // 余额语义恒非负，负值只能是脏数据；流水金额不走本函数（提现冻结流水合法为负）
+      const toNonNegativeFen = (value: unknown): number => {
+        const fen = toSafeInt(value)
+        return fen >= 0 ? fen : 0
+      }
+      return {
+        balanceFen: toNonNegativeFen(raw.balanceFen),
+        frozenFen: toNonNegativeFen(raw.frozenFen),
+        pendingSplitFen: toNonNegativeFen(raw.pendingSplitFen),
+        earliestUnfreezeTime: typeof raw.earliestUnfreezeTime === 'string'
+          ? raw.earliestUnfreezeTime as BusinessTime
+          : undefined,
+        flows: (raw.flows ?? []).map(row => ({
+          flowType: toNonNegativeFen(row.flowType),
+          amountFen: toSafeInt(row.amountFen),
+          afterFen: toSafeInt(row.afterFen),
+          orderNo: typeof row.orderNo === 'string' ? row.orderNo : undefined,
+          createTime: typeof row.createTime === 'string' ? row.createTime as BusinessTime : undefined,
+        })),
+        evidenceMode: 'real' as const,
+      }
+    })
+  },
 }
 
-export const deviceApi = selectAdapter(mockDeviceApi, realDeviceApi, 'device')
+export const deviceApi = realDeviceApi

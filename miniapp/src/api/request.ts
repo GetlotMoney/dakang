@@ -20,8 +20,17 @@ const TOKEN_NAME_STORAGE_KEY = 'dakang-mini-token-name'
 
 const BASE_URL = import.meta.env.VITE_SERVER_BASEURL
 
-/** 后端未登录业务码（sa-token 经 R 包装后返回）。 */
-export const UNAUTHORIZED_CODE = 1401
+/**
+ * 把服务端返回的相对资源路径（如头像 /mini/profile/avatar/AVxx.jpg）拼成 image 标签可用的完整地址。
+ * 已是完整 http(s) 地址则原样返回；空值返回空串，调用方据此回落占位图标。
+ */
+export function resolveServerPath(path?: string): string {
+  if (!path) {
+    return ''
+  }
+  return /^https?:\/\//.test(path) ? path : `${BASE_URL}${path}`
+}
+
 /**
  * 会话失效业务码集合（与后端 ErrorMsg.java 一致）：
  * 1401 登录状态异常、1402 登录超时、1403 被顶下线、1404 被踢下线、1405 账户冻结。
@@ -45,7 +54,11 @@ const REJECT_CODE_MAP: Record<number, string> = {
   5401: 'INVALID_QR_CODE',
   5402: 'QR_EXPIRED',
   5403: 'UNIVERSAL_CODE_PENDING',
-  5410: 'QR_EXPIRED',
+  // 5410/5411 各有独立语义，不得合并成 QR_EXPIRED：
+  // 前者是扫码会话到期（重扫即可），后者是价格/水种在确认期间被改（要告诉用户报价变了）。
+  // 此前 5410 被映射成 QR_EXPIRED，而页面按 SCAN_SESSION_EXPIRED 判断，三处契约对不上。
+  5410: 'SCAN_SESSION_EXPIRED',
+  5411: 'SCAN_QUOTE_CHANGED',
 }
 
 export function getToken(): string {
