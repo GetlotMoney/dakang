@@ -121,9 +121,21 @@ services:
       # 开启后 /mini/pay-sim/** 才注册，且支付单被永久打上 PAY_SOURCE=2，
       # 模拟收款不可能混进真实微信对账口径。生产环境 .env 必须保持 false。
       MINI_PAYSIM_ENABLED: ${MINI_PAYSIM_ENABLED:-false}
+      # Refund-Sim 模拟退款：默认 false（安全默认），演示环境在 .env 里置 true 才开。
+      # 关闭时生效的是 fail-closed 的 WechatRefundSourceAdapter（拒绝发起退款）；
+      # 开启才注册 RefundSimSourceAdapter 与 /mini/refund-sim/**。生产环境 .env 必须保持 false。
+      MINI_REFUNDSIM_ENABLED: ${MINI_REFUNDSIM_ENABLED:-false}
+      # 仅微信身份建号：默认 false（手机号是唯一的人工找回凭据）。小程序主体未过微信认证时
+      # getPhoneNumber 组件被平台禁用、新用户注册不了，此时才在 .env 里置 true——新 openid
+      # 直接建号、手机号留空，登录后在小程序内自助补绑。完成微信认证后撤回 false。
+      MINI_PHONELESS_REGISTER_ENABLED: ${MINI_PHONELESS_REGISTER_ENABLED:-false}
     volumes:
       - ./dist/server/dakang-server.jar:/app/app.jar:ro
       - ./logs:/app/logs
+      # 受控媒体持久卷：头像（data/avatar）与配送媒体（data/delivery-media）都按
+      # ${user.dir}/data 默认落盘（user.dir=/app）。不挂卷则 force-recreate 后文件全丢，
+      # 库里的路径/媒体键变成悬空引用。
+      - ./data/backend:/app/data
     working_dir: /app
     command:
       - java
