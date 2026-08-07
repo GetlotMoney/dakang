@@ -227,3 +227,21 @@ export function fetchAuditCourier(id: number, targetStatus: number, auditRemark?
     data: { id, targetStatus, auditRemark }
   })
 }
+
+export interface GiftIssueParams {
+  /** 规范 UUID：幂等锚，卡号由它确定性派生 */
+  requestId: string
+  userId: number
+  /** 赠送余额(分)，与水量至少其一为正 */
+  grantFen?: number
+  /** 赠送水量(毫升) */
+  grantMl?: number
+  /** 1~3650 天（D-213 赠卡必带有效期） */
+  expireDays: number
+  remark?: string
+}
+
+/** 运营赠卡发放（高风险三件套端点；请求号幂等，重放返回同一张卡） */
+export function fetchGiftIssue(data: GiftIssueParams) {
+  return request.post<string>({ url: '/user/card/issueGift', data })
+}

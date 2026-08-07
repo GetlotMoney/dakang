@@ -8,13 +8,14 @@
   },
   "scripts": {
     "dev": "vite --open",
-    "build": "vue-tsc --noEmit && vite build",
-    "build:demo": "vue-tsc --noEmit && vite build --mode demo",
+    "build": "node scripts/check-module-nav.mjs && vue-tsc --noEmit && vite build",
+    "build:demo": "node scripts/check-module-nav.mjs && vue-tsc --noEmit && vite build --mode demo",
     "serve": "vite preview",
     "lint": "eslint",
     "fix": "eslint --fix",
     "lint:prettier": "prettier --write \"**/*.{js,cjs,ts,json,tsx,css,less,scss,vue,html,md}\"",
-    "lint:stylelint": "stylelint  \"**/*.{css,scss,vue}\" --fix"
+    "lint:stylelint": "stylelint  \"**/*.{css,scss,vue}\" --fix",
+    "check:nav": "node scripts/check-module-nav.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

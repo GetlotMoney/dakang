@@ -101,7 +101,7 @@ class StorageCompatibilityManager {
       type: 'error',
       offset: 40,
       duration: 5000,
-      message: '系统检测到本地数据异常，请重新登录系统恢复使用！'
+      message: '本地数据异常，请重新登录'
     })
   }
 

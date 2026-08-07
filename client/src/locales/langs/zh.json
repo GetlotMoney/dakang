@@ -87,7 +87,7 @@
     "actions": {
       "resetConfig": "重置配置",
       "copyConfig": "复制配置",
-      "copySuccess": "配置已复制到剪贴板，可粘贴到 src/config/setting.ts 文件中",
+      "copySuccess": "配置已复制到剪贴板",
       "copyFailed": "复制失败，请重试",
       "resetFailed": "重置失败，请刷新页面后重试"
     }
@@ -152,6 +152,9 @@
     "login": {
       "title": "登录"
     },
+    "changePassword": {
+      "title": "修改密码"
+    },
     "outside": {
       "title": "内嵌页面"
     },
@@ -168,7 +171,10 @@
       "list": "设备档案",
       "command": "指令记录",
       "operations": "设备运营配置",
-      "detail": "设备详情"
+      "detail": "设备详情",
+      "alarm": "告警中心",
+      "workorder": "运维工单",
+      "batch": "批量控制"
     },
     "product": {
       "title": "水种套餐",
@@ -179,13 +185,17 @@
       "title": "用户管理",
       "list": "C端用户",
       "card": "水卡管理",
-      "courier": "配送员准入"
+      "courier": "配送员准入",
+      "message": "消息记录"
     },
     "order": {
       "title": "订单中心",
       "list": "订单查询",
       "delivery": "配送任务",
-      "appeal": "申诉处理"
+      "appeal": "申诉处理",
+      "split": "分账明细",
+      "reconcile": "日对账",
+      "splitconfig": "分账比例配置"
     },
     "system": {
       "title": "系统管理",

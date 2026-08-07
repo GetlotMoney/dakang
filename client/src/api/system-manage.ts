@@ -9,10 +9,21 @@ export function fetchGetUserList(data: Api.SystemManage.UserSearchParams) {
   })
 }
 
-// 保存用户（新增/编辑）
+// 保存用户（新增）：响应携带一次性初始密码，页面必须立即展示并提示转交员工
 export function fetchSaveUser(data: Api.SystemManage.UserFormData) {
-  return request.post<boolean>({
+  return request.post<Api.SystemManage.EmployeeInitPwd>({
     url: '/api/employee/saveData',
+    data
+  })
+}
+
+/**
+ * 修改当前登录员工本人的密码（服务端锚定会话身份，不接受指定他人）
+ * @param data loginPwd/newLoginPwd 均为 RSA 加密后的密文（公钥 VITE_ACCESS_LOGIN_KEY）
+ */
+export function fetchUpdateEmployeePassword(data: { loginPwd: string; newLoginPwd: string }) {
+  return request.post<boolean>({
+    url: '/api/employee/updatePassword',
     data
   })
 }

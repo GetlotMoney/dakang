@@ -1,14 +1,6 @@
 <!-- 设备中控——设备详情（档案 + 出水口管理 + 遥测/告警/二维码只读，REQ-020/038/039/062/064 骨架） -->
 <template>
   <div class="device-detail art-full-height" v-loading="pageLoading">
-    <ElAlert
-      class="mb-3"
-      type="info"
-      :closable="false"
-      show-icon
-      title="状态事实与控制意图分离"
-      description="心跳、TDS、滤芯、故障、ACK 和 result 以设备上报为准；PC 下发只创建指令记录，未收到终态回执不得显示执行成功。"
-    />
     <!-- 档案卡 -->
     <ElCard class="mb-3" shadow="never">
       <div class="flex items-center justify-between mb-4">
@@ -51,22 +43,21 @@
         <ElDescriptionsItem label="SIM">
           {{ device.simCarrier || '-' }} {{ device.simIccid || '' }}
         </ElDescriptionsItem>
+        <ElDescriptionsItem label="SIM 状态">
+          {{ device.simStatus != null ? simStatusLabel(device.simStatus) : '未配置' }}
+        </ElDescriptionsItem>
+        <ElDescriptionsItem label="SIM 到期">
+          {{ formatTime(device.simExpireTime) }}
+        </ElDescriptionsItem>
       </ElDescriptions>
       <div class="order-eligibility">
         <ElAlert
           :type="orderEligibility.allowed ? 'success' : 'error'"
           :closable="false"
           show-icon
-          :title="
-            orderEligibility.allowed
-              ? '用户侧下单资格：允许'
-              : `用户侧下单资格：阻断（${orderEligibility.reasonCode}）`
-          "
+          :title="orderEligibility.allowed ? '用户侧下单资格：允许' : '用户侧下单资格：阻断'"
           :description="orderEligibility.description"
         />
-        <ElTag effect="plain" :type="orderEligibility.allowed ? 'success' : 'danger'">
-          判定输入：在线状态 + 运行状态 + 故障码 + 可用出水口
-        </ElTag>
       </div>
     </ElCard>
 
@@ -141,7 +132,7 @@
 
         <!-- 遥测（最近一条） -->
         <ElTabPane label="水质遥测" name="telemetry">
-          <ElEmpty v-if="!telemetry" description="暂无遥测数据（设备上报后展示）" />
+          <ElEmpty v-if="!telemetry" description="暂无遥测数据" />
           <template v-else>
             <ElDescriptions :column="4" border>
               <ElDescriptionsItem label="出水 TDS">
@@ -189,7 +180,7 @@
                     row.alarmLevel === 3 ? 'danger' : row.alarmLevel === 2 ? 'warning' : 'info'
                   "
                 >
-                  {{ ['', '提示', '一般', '严重'][row.alarmLevel] || row.alarmLevel }}
+                  {{ alarmLevelLabel(row.alarmLevel) }}
                 </ElTag>
               </template>
             </ElTableColumn>
@@ -278,7 +269,7 @@
             :precision="2"
             :step="0.1"
           />
-          <span class="ml-2 text-secondary">元/升（入库单位为分）</span>
+          <span class="ml-2 text-secondary">元/升</span>
         </ElFormItem>
         <ElFormItem label="状态" prop="outletStatus">
           <ElRadioGroup v-model="outletForm.outletStatus">
@@ -360,7 +351,9 @@
   const cmdStatusOptions = ref<{ label: string; value: number }[]>([])
   const alarmTypeOptions = ref<{ label: string; value: number }[]>([])
   const alarmStatusOptions = ref<{ label: string; value: number }[]>([])
+  const alarmLevelOptions = ref<{ label: string; value: number }[]>([])
   const filterStatusOptions = ref<{ label: string; value: number }[]>([])
+  const simStatusOptions = ref<{ label: string; value: number }[]>([])
 
   const cmdTypeLabel = (v: number) =>
     cmdTypeOptions.value.find((o) => o.value === v)?.label || String(v)
@@ -370,8 +363,12 @@
     alarmTypeOptions.value.find((o) => o.value === v)?.label || String(v)
   const alarmStatusLabel = (v: number) =>
     alarmStatusOptions.value.find((o) => o.value === v)?.label || String(v)
+  const alarmLevelLabel = (v: number) =>
+    alarmLevelOptions.value.find((o) => o.value === v)?.label || String(v)
   const filterStatusLabel = (v: number) =>
     filterStatusOptions.value.find((o) => o.value === v)?.label || String(v)
+  const simStatusLabel = (v: number) =>
+    simStatusOptions.value.find((o) => o.value === v)?.label || String(v)
 
   const cmdStatusTagType = (v: number) =>
     v === 4 ? 'success' : v === 5 || v === 6 ? 'danger' : v === 7 ? 'warning' : 'primary'
@@ -382,40 +379,11 @@
   const runLabel = (v?: number) =>
     ({ 1: '空闲', 2: '出水中', 3: '故障', 4: '维护中', 5: '锁机' })[v ?? 0] || '-'
 
-  /** REQ-028/063：PC 只展示同一判定契约，真正下单仍由用户端调用后端预检。 */
+  /** REQ-028/063：PC 只展示后端 DeviceAvailability 结论，不复制安全判定。 */
   const orderEligibility = computed(() => {
-    if (device.value.onlineStatus !== 1) {
-      return {
-        allowed: false,
-        reasonCode: 'DEVICE_OFFLINE',
-        description: '设备离线或尚未激活；用户端应禁用下单并展示最近心跳时间。'
-      }
-    }
-    if (['E001', 'E003', 'E004'].includes(device.value.lastFaultCode || '')) {
-      return {
-        allowed: false,
-        reasonCode: `FAULT_${device.value.lastFaultCode}`,
-        description: `故障码 ${device.value.lastFaultCode} 配置为阻断下单，须先完成故障恢复。`
-      }
-    }
-    if ([3, 4, 5].includes(device.value.runStatus || 0)) {
-      return {
-        allowed: false,
-        reasonCode: 'DEVICE_UNAVAILABLE',
-        description: `设备当前为“${runLabel(device.value.runStatus)}”；恢复为空闲后才可重新预检。`
-      }
-    }
-    if (!outlets.value.some((item) => item.outletStatus === 1)) {
-      return {
-        allowed: false,
-        reasonCode: 'NO_AVAILABLE_OUTLET',
-        description: '当前没有状态正常的出水口；用户端不得创建取水订单。'
-      }
-    }
     return {
-      allowed: true,
-      reasonCode: 'AVAILABLE',
-      description: '设备当前具备下单条件；用户提交时仍须由后端再次校验卡、价格与设备实时状态。'
+      allowed: device.value.orderAvailable === true,
+      description: device.value.orderAvailabilityReason || ''
     }
   })
 
@@ -534,11 +502,9 @@
   }
 
   function handleDeleteOutlet(row: OutletItem) {
-    ElMessageBox.confirm(
-      `确认删除 ${row.outletNo} 号出水口（${row.waterType}）？被二维码绑定时不可删除。`,
-      '删除确认',
-      { type: 'warning' }
-    ).then(async () => {
+    ElMessageBox.confirm(`确认删除 ${row.outletNo} 号出水口（${row.waterType}）？`, '删除确认', {
+      type: 'warning'
+    }).then(async () => {
       await fetchDeleteOutlet(row.id)
       ElMessage.success('删除成功')
       loadOutlets()
@@ -590,7 +556,9 @@
           fetchDictOptions(DictTypeEnum.指令状态),
           fetchDictOptions(DictTypeEnum.告警类型),
           fetchDictOptions(DictTypeEnum.告警状态),
-          fetchDictOptions(DictTypeEnum.滤芯状态)
+          fetchDictOptions(DictTypeEnum.故障等级),
+          fetchDictOptions(DictTypeEnum.滤芯状态),
+          fetchDictOptions(DictTypeEnum.SIM状态)
         ])
       ])
       device.value = detail
@@ -598,7 +566,9 @@
       cmdStatusOptions.value = toDictOptions(dicts[1])
       alarmTypeOptions.value = toDictOptions(dicts[2])
       alarmStatusOptions.value = toDictOptions(dicts[3])
-      filterStatusOptions.value = toDictOptions(dicts[4])
+      alarmLevelOptions.value = toDictOptions(dicts[4])
+      filterStatusOptions.value = toDictOptions(dicts[5])
+      simStatusOptions.value = toDictOptions(dicts[6])
       // 并行加载各 tab 数据（量小，一次性拉齐避免切 tab 闪加载）
       await Promise.all([
         loadOutlets(),
@@ -634,20 +604,6 @@
   }
 
   .order-eligibility {
-    display: flex;
-    align-items: center;
-    gap: 12px;
     margin-top: 16px;
-  }
-
-  .order-eligibility :deep(.el-alert) {
-    flex: 1;
-  }
-
-  @media (max-width: 900px) {
-    .order-eligibility {
-      align-items: stretch;
-      flex-direction: column;
-    }
   }
 </style>

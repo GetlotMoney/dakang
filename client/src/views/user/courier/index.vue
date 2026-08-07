@@ -3,15 +3,6 @@
   <div class="courier-page art-full-height">
     <BusinessModuleNav module-key="user" />
 
-    <ElAlert
-      class="mb-3"
-      type="info"
-      :closable="false"
-      show-icon
-      title="配送员准入状态契约"
-      description="配送员端提交资料后进入待审核；PC 可审核通过、驳回或停用。只有启用态可在配送员端接单，PC 不模拟注册和接单。"
-    />
-
     <CourierSearch v-model="searchForm" @search="handleSearch" @reset="handleReset"></CourierSearch>
 
     <ElCard class="art-table-card">
@@ -135,7 +126,7 @@
           label: '服务水站',
           minWidth: 160,
           showOverflowTooltip: true,
-          formatter: (row: CourierItem) => row.stationNames || '未配置（默认不可接单）'
+          formatter: (row: CourierItem) => row.stationNames || '未配置，不可接单'
         },
         {
           prop: 'serviceRegion',
@@ -263,7 +254,7 @@
       })
     } else {
       ElMessageBox.confirm(
-        `确认${action}配送员「${row.courierName}」？通过后该用户可进入配送端接单。`,
+        `确认${action}配送员「${row.courierName}」？通过后可接单。`,
         `${action}确认`,
         {
           confirmButtonText: `确认${action}`,

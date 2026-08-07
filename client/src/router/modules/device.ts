@@ -46,6 +46,36 @@ export const deviceRoutes: AppRouteRecord = {
       }
     },
     {
+      path: 'alarm',
+      name: 'DeviceAlarm',
+      component: '/device/alarm',
+      meta: {
+        title: 'menus.device.alarm',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
+    },
+    {
+      path: 'workorder',
+      name: 'DeviceWorkOrder',
+      component: '/device/workorder',
+      meta: {
+        title: 'menus.device.workorder',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
+    },
+    {
+      path: 'batch',
+      name: 'DeviceBatch',
+      component: '/device/batch',
+      meta: {
+        title: 'menus.device.batch',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
+    },
+    {
       path: 'detail',
       name: 'DeviceDetail',
       component: '/device/detail',

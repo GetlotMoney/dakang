@@ -75,7 +75,12 @@ export class ComponentLoader {
     return () =>
       Promise.resolve({
         render() {
-          return h('div', { class: 'route-error' }, `组件未找到: ${componentPath}`)
+          // 组件路径只留在 DOM 属性里供排查，不再渲染给用户
+          return h(
+            'div',
+            { class: 'route-error', 'data-component-path': componentPath },
+            '页面不存在'
+          )
         }
       })
   }

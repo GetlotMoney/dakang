@@ -16,6 +16,7 @@
 
 import axios, { AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import { useUserStore } from '@/store/modules/user'
+import { router } from '@/router'
 import { ApiStatus } from './status'
 import { HttpError, handleError, showError, showSuccess } from './error'
 import { $t } from '@/locales'
@@ -94,6 +95,9 @@ axiosInstance.interceptors.response.use(
     if (code === ApiStatus.tokenExpired) {
       handleUnauthorizedError(msg)
     }
+    if (code === ApiStatus.pwdChangeRequired) {
+      handlePwdChangeRequired()
+    }
     throw createHttpError(msg || $t('httpMsg.requestFailed'), code)
   },
   (error) => {
@@ -121,6 +125,23 @@ function handleUnauthorizedError(message?: string): never {
   }
 
   throw error
+}
+
+/**
+ * 处理待改初始密码（626）：把会话标记补回并送去改密页。
+ *
+ * 正常动线由路由守卫拦住，走不到这里；本分支是兜底——刷新、深链或标记丢失时，
+ * 页面挂载会并发打出一批业务请求而全被服务端拒绝。若逐条弹提示，用户会被同一句话
+ * 刷屏且不知该去哪儿，故这里只跳转一次，toast 交由 shouldSuppressErrorToast 抑制。
+ */
+function handlePwdChangeRequired(): void {
+  const userStore = useUserStore()
+  if (!userStore.info?.pwdChangeRequired) {
+    userStore.setUserInfo({ ...userStore.info, pwdChangeRequired: true } as Api.Auth.UserInfo)
+  }
+  if (router.currentRoute.value.path !== '/auth/change-password') {
+    void router.replace('/auth/change-password')
+  }
 }
 
 /** 重置1401防抖状态 */
@@ -181,7 +202,11 @@ async function request<T = any>(config: ExtendedAxiosRequestConfig): Promise<T> 
 
     return res.data.data as T
   } catch (error) {
-    if (error instanceof HttpError && error.code !== ApiStatus.tokenExpired) {
+    if (
+      error instanceof HttpError &&
+      error.code !== ApiStatus.tokenExpired &&
+      error.code !== ApiStatus.pwdChangeRequired
+    ) {
       const showMsg = config.showErrorMessage !== false
       showError(error, showMsg)
     }

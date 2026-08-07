@@ -48,9 +48,8 @@
         <div
           v-if="isDevPreview"
           class="px-2 py-1 text-xs font-medium text-orange-600 bg-orange-50 border border-orange-200 rounded max-md:!hidden"
-          title="当前是 Vite 开发预览；Demo 验收请使用 localhost:8081"
         >
-          开发预览 · 13321
+          开发预览
         </div>
 
         <!-- 搜索 -->

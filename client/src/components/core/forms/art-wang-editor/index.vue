@@ -154,7 +154,7 @@
         const { url, alt, href } = response
 
         if (!url) {
-          throw new Error('上传失败，请检查服务端配置')
+          throw new Error('上传失败，请稍后重试')
         }
 
         insertFn(url, alt, href)

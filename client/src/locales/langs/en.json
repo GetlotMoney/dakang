@@ -87,7 +87,7 @@
     "actions": {
       "resetConfig": "Reset Config",
       "copyConfig": "Copy Config",
-      "copySuccess": "Configuration copied to clipboard, paste it into src/config/setting.ts file",
+      "copySuccess": "Configuration copied to clipboard",
       "copyFailed": "Copy failed, please try again",
       "resetFailed": "Reset failed, please refresh the page and try again"
     }
@@ -152,6 +152,9 @@
     "login": {
       "title": "Login"
     },
+    "changePassword": {
+      "title": "Change Password"
+    },
     "outside": {
       "title": "Outside"
     },
@@ -168,7 +171,10 @@
       "list": "Device Records",
       "command": "Command Log",
       "operations": "Operations Configuration",
-      "detail": "Device Detail"
+      "detail": "Device Detail",
+      "alarm": "Alarm Center",
+      "workorder": "Work Orders",
+      "batch": "Batch Control"
     },
     "product": {
       "title": "Water & Package",
@@ -179,13 +185,17 @@
       "title": "User Management",
       "list": "End Users",
       "card": "Water Card",
-      "courier": "Courier Access"
+      "courier": "Courier Access",
+      "message": "Message Records"
     },
     "order": {
       "title": "Order Center",
       "list": "Order Search",
       "delivery": "Delivery Task",
-      "appeal": "Appeal Handle"
+      "appeal": "Appeal Handle",
+      "split": "Split Records",
+      "reconcile": "Daily Reconcile",
+      "splitconfig": "Split Config"
     },
     "system": {
       "title": "System Settings",

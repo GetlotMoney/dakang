@@ -32,7 +32,7 @@
           >新增套餐</ElButton
         >
         <div class="ml-auto flex items-center gap-2">
-          <ElTag type="warning" effect="plain">历史订单按下单时套餐快照结算，不受修改影响</ElTag>
+          <ElTag type="warning" effect="plain">修改套餐不影响历史订单</ElTag>
         </div>
       </div>
 
@@ -134,9 +134,7 @@
             <ElInputNumber v-model="formData.bonusYuan" :min="0" :precision="2" :step="5" />
           </ElFormItem>
           <ElFormItem label="折算单价">
-            <span class="text-xs text-secondary">
-              {{ unitPricePreview }}（保存时由服务端按 售价÷水量 生成快照）
-            </span>
+            <span class="text-xs text-secondary">{{ unitPricePreview }}</span>
           </ElFormItem>
           <ElFormItem label="有效期(天)" prop="expireDays">
             <ElInputNumber v-model="formData.expireDays" :min="0" :step="30" />
@@ -150,7 +148,7 @@
                 <ElRadio value="specified">指定范围</ElRadio>
               </ElRadioGroup>
               <div class="text-xs text-secondary">
-                不配置 = 首次购卡不可选此套餐（充值不加限制）；指定范围至少选择一项
+                不配置则首次购卡不可选此套餐；指定范围至少选一项
               </div>
               <template v-if="formData.scopeMode === 'specified'">
                 <ElSelect
@@ -207,9 +205,7 @@
                     :value="opt.value"
                   />
                 </ElSelect>
-                <div class="text-xs text-secondary">
-                  多维同时配置时需同时满足（水站∩设备∩出水口）；某一维不选表示该维不设限
-                </div>
+                <div class="text-xs text-secondary"> 多项同时配置需同时满足；不选的项不设限 </div>
               </template>
               <ElAlert
                 v-if="editingInvalidScope"
@@ -217,7 +213,7 @@
                 :closable="false"
                 show-icon
                 class="mt-2"
-                title="该套餐当前范围未配置或配置非法（首次购卡不可选），保存后将按本次选择覆盖"
+                title="当前范围未配置或非法，保存后按本次选择覆盖"
               />
             </div>
           </ElFormItem>
@@ -230,7 +226,7 @@
           </ElFormItem>
           <ElFormItem v-else label="状态">
             <span class="text-xs text-secondary">
-              {{ statusLabel(formData.packageStatus) }}（上下架请使用列表操作，编辑不改状态）
+              {{ statusLabel(formData.packageStatus) }}（上下架请在列表操作）
             </span>
           </ElFormItem>
           <ElFormItem label="备注" prop="packageRemark">
@@ -475,7 +471,7 @@
         }
         if (formData.id) {
           await fetchUpdatePackage(payload)
-          ElMessage.success('套餐信息已更新（历史订单仍按下单快照结算）')
+          ElMessage.success('套餐信息已更新')
         } else {
           await fetchAddPackage(payload)
           ElMessage.success('套餐已新增')
@@ -496,11 +492,11 @@
     }
 
     const action = row.packageStatus === 1 ? '下架' : '上架'
-    ElMessageBox.confirm(
-      `${action}套餐「${row.packageName}」？历史订单仍按下单快照价结算。`,
-      `${action}确认`,
-      { confirmButtonText: `确认${action}`, cancelButtonText: '取消', type: 'warning' }
-    ).then(async () => {
+    ElMessageBox.confirm(`${action}套餐「${row.packageName}」？`, `${action}确认`, {
+      confirmButtonText: `确认${action}`,
+      cancelButtonText: '取消',
+      type: 'warning'
+    }).then(async () => {
       try {
         await fetchShelfPackage(row.id, row.packageStatus === 1 ? 2 : 1)
         ElMessage.success(`套餐已${action}`)

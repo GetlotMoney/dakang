@@ -1,24 +1,14 @@
 <!-- 订单全链路追溯抽屉（REQ-050，MVP 验收核心）
-     七区块：①基本信息 ②支付事实 ③指令与回执 ④共享审计 ⑤支付/扣减流水 ⑥配送轨迹与三照 ⑦申诉记录 -->
+     八区块：①基本信息 ②支付事实 ③指令与回执 ④共享审计 ⑤原扣款与返还流水
+             ⑥售后处理（售后动作／退款事实／补送任务） ⑦配送轨迹与三照 ⑧申诉记录
+
+     E2E-04 包E：售后区块的每一列都取自 /order/after-sale/page 的台账行，按 orderId 精确匹配
+     （不用模糊关键字命中，否则订单号互为子串的两单会串行）。台账接口没下发的字段一律不显示，
+     更不在前端凑数——本抽屉是对账证据，凑出来的一列比缺一列危险得多。 -->
 <template>
-  <ElDrawer
-    v-model="drawerVisible"
-    :title="source === 'mock' ? '订单全链路追溯（Mock 演示）' : '订单全链路追溯'"
-    size="760px"
-    destroy-on-close
-  >
+  <ElDrawer v-model="drawerVisible" title="订单全链路追溯" size="760px" destroy-on-close>
     <div ref="traceContentRef" v-loading="loading">
       <template v-if="trace">
-        <!-- Mock 数据源整体标识（2026-07-20 最终收口轮）：与真实追溯明确视觉区分，不只在审计区块标注 -->
-        <ElAlert
-          v-if="source === 'mock'"
-          class="mb-3"
-          type="warning"
-          :closable="false"
-          show-icon
-          title="Mock 演示追溯"
-          description="本抽屉全部区块均来自前端演示数据源（配送/申诉 Mock 域），不来自数据库真实记录；真实订单追溯请从订单列表打开。"
-        />
         <!-- 区块一：基本信息 -->
         <ElDescriptions :column="2" border label-width="88px">
           <ElDescriptionsItem label="订单号" :span="2">
@@ -125,7 +115,7 @@
               （快照价 ￥{{ fenToYuan(trace.order.packageSnapshot.payAmountFen)
               }}<template v-if="trace.order.packageSnapshot.waterMl">
                 / {{ mlToLiter(trace.order.packageSnapshot.waterMl) }}</template
-              >， 调价不溯及历史订单）
+              >）
             </span>
           </ElDescriptionsItem>
           <ElDescriptionsItem
@@ -136,18 +126,13 @@
             <ElTag type="danger" size="small" effect="plain">
               {{
                 trace.order.packageSnapshotState === 'invalid'
-                  ? '快照数据异常，禁止按页面推算权益'
+                  ? '套餐快照数据异常'
                   : '未记录套餐快照'
               }}
             </ElTag>
           </ElDescriptionsItem>
           <ElDescriptionsItem v-if="trace.order.cancelReason" label="异常/取消说明" :span="2">
             {{ trace.order.cancelReason }}
-          </ElDescriptionsItem>
-          <ElDescriptionsItem v-if="trace.order.scenarioLabel" label="ACK 验收" :span="2">
-            <ElTag type="warning" size="small" effect="plain">
-              {{ trace.order.scenarioLabel }}
-            </ElTag>
           </ElDescriptionsItem>
         </ElDescriptions>
 
@@ -158,8 +143,8 @@
             type="error"
             :closable="false"
             show-icon
-            title="充值关联证据异常"
-            :description="`${rechargeMismatchReason}。已隐藏支付成功、发卡和权益到账等正向证据，请核对订单、支付、事件、流水与水卡共键。`"
+            title="充值关联数据异常"
+            :description="`${rechargeMismatchReason}。请人工核查。`"
           />
           <template v-else-if="rechargeDetail">
             <div class="section-title">
@@ -214,7 +199,6 @@
             :closable="false"
             show-icon
             title="支付记录异常"
-            description="关联支付记录处于非正常数据状态，已按异常证据呈现，不能据此认定收款或权益到账。"
           />
           <ElAlert
             v-else-if="paymentEvidenceState === 'missing'"
@@ -222,7 +206,6 @@
             :closable="false"
             show-icon
             title="无支付记录"
-            description="当前订单未查询到关联支付记录，不能仅凭订单支付方式推断支付来源或支付结果。"
           />
           <template v-else>
             <ElDescriptions :column="2" border label-width="96px">
@@ -249,8 +232,7 @@
               type="warning"
               :closable="false"
               show-icon
-              title="支付事实不等于权益到账"
-              description="支付成功仅证明收款事实；充值权益到账仍须同时核对订单完成状态和资金／水量流水。"
+              title="支付成功不等于权益已到账"
             />
           </template>
         </template>
@@ -264,7 +246,7 @@
               type="error"
               :closable="false"
               title="订单-指令关联数据异常"
-              :description="`${trace.command.linkReason || '指令与订单共键不一致'}（指令号 ${trace.command.cmdNo}）。已按数据异常呈现，不作为本单履约证据。`"
+              :description="`${trace.command.linkReason || '指令与订单的数据不一致'}（指令号 ${trace.command.cmdNo}）`"
             />
           </template>
           <template v-else>
@@ -298,12 +280,7 @@
         </template>
 
         <!-- 区块四：关联审计事件（订单/指令/设备任一业务键可反查） -->
-        <div class="section-title">
-          状态审计
-          <ElTag class="ml-2" type="info" size="small" effect="plain">
-            {{ source === 'mock' ? '共享 Mock' : trace.auditEvents.length ? '真实接口' : '待接入' }}
-          </ElTag>
-        </div>
+        <div class="section-title">状态审计</div>
         <ElTable v-if="trace.auditEvents.length" :data="trace.auditEvents" border size="small">
           <ElTableColumn prop="eventTypeLabel" label="事件" min-width="120" />
           <ElTableColumn prop="eventKey" label="业务键" min-width="180" show-overflow-tooltip />
@@ -318,14 +295,12 @@
             show-overflow-tooltip
           />
         </ElTable>
-        <ElEmpty
-          v-else
-          :description="source === 'mock' ? '暂无关联审计事件' : '真实后端暂未返回关联审计事件'"
-          :image-size="50"
-        />
+        <ElEmpty v-else description="暂无关联审计事件" :image-size="50" />
 
-        <!-- 区块五：充值单展示后端已核验的双维权益；其他订单和 Mock 保持原流水列表。 -->
-        <div class="section-title">资金 / 水量流水</div>
+        <!-- 区块五：充值单展示后端已核验的双维权益；其他订单和 Mock 保持原流水列表。
+             本区块同时是「原扣款」与「售后返还流水」的证据面：两者都以 ORDER_ID 挂在本单上，
+             由服务端按流水ID升序整体下发，页面不做拆分也不做正负归类。 -->
+        <div class="section-title">原扣款 / 返还流水</div>
         <template v-if="isRealRecharge">
           <ElDescriptions
             v-if="rechargeEvidenceOk && rechargeDetail && hasRechargeFlowEvidence"
@@ -359,11 +334,7 @@
           </ElDescriptions>
           <ElEmpty
             v-else
-            :description="
-              rechargeEvidenceOk
-                ? '当前订单尚未产生完整入账流水'
-                : '充值关联校验未通过，不展示权益到账证据'
-            "
+            :description="rechargeEvidenceOk ? '当前订单尚未产生完整入账流水' : '充值关联数据异常'"
             :image-size="50"
           />
         </template>
@@ -392,69 +363,103 @@
           />
         </template>
 
-        <!-- 区块六：配送轨迹与三照签收（配送单专属；Mock 演示形状） -->
-        <template v-if="trace.delivery">
+        <!--
+          区块六：售后处理（E2E-04 包E）。三条来源共用一份返还内核，因此售后动作、退款事实与
+          补送任务是同一张台账的三种 actionType，而不是三份互不相干的记录。
+        -->
+        <template>
           <div class="section-title">
-            配送履约
-            <span class="ml-2 text-xs text-secondary"
-              >任务 {{ trace.delivery.taskNo }} · 配送员
-              {{ trace.delivery.courierName || '待接单' }}</span
+            售后处理
+            <ElButton
+              v-if="afterSaleActions.length"
+              class="ml-auto"
+              type="primary"
+              size="small"
+              link
+              @click="goAfterSale"
             >
-            <ElButton class="ml-auto" type="primary" size="small" link @click="goDelivery">
-              查看配送任务
+              进入售后台账
             </ElButton>
           </div>
-          <ElSteps
-            :active="deliveryActiveStep"
-            finish-status="success"
-            process-status="process"
-            align-center
-            class="mb-3"
-          >
-            <ElStep
-              v-for="node in trace.delivery.nodes"
-              :key="node.node"
-              :title="node.node"
-              :description="node.time ? formatTime(node.time) : ''"
-            />
-          </ElSteps>
-          <template v-if="trace.delivery.signPhotos.length">
-            <div class="mb-2 text-xs text-secondary"
-              >三照签收（门牌/水品/摆放缺一不可，照片带时间戳与 GPS，REQ-016）</div
-            >
-            <div class="flex gap-3">
-              <div v-for="photo in trace.delivery.signPhotos" :key="photo.type" class="sign-photo">
-                <ElImage
-                  :src="photo.url"
-                  :preview-src-list="trace.delivery.signPhotos.map((p) => p.url)"
-                  fit="cover"
-                  style="width: 120px; height: 90px; border-radius: 6px"
-                />
-                <div class="text-xs text-center mt-1">{{ photo.label }}</div>
-              </div>
+          <ElAlert
+            v-if="!canQueryAfterSale"
+            type="info"
+            :closable="false"
+            show-icon
+            title="当前账号没有售后台账查询权限"
+          />
+          <template v-else>
+            <div v-loading="afterSaleLoading">
+              <ElTable v-if="afterSaleActions.length" :data="afterSaleActions" border size="small">
+                <ElTableColumn label="售后号 / 来源" min-width="185">
+                  <template #default="{ row }">
+                    <div>{{ row.afterSaleNo || '-' }}</div>
+                    <div class="text-xs text-secondary">
+                      {{ afterSaleSourceLabel(row.sourceType) }}
+                    </div>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="动作 / 策略" min-width="150">
+                  <template #default="{ row }">
+                    <div>{{ afterSaleActionTypeLabel(row.actionType) }}</div>
+                    <div class="text-xs text-secondary">
+                      {{ afterSaleStrategyLabel(row.strategyCode)
+                      }}<template v-if="row.approvedCount != null">
+                        · 批准 {{ row.approvedCount }} 桶</template
+                      >
+                    </div>
+                  </template>
+                </ElTableColumn>
+                <!-- 四元额度分列：合计相同而分项不同的两笔，运营口径完全不同 -->
+                <ElTableColumn label="返还额度" min-width="180">
+                  <template #default="{ row }">
+                    <div>合计 {{ afterSaleFenText(row.refundAmount) }}</div>
+                    <div class="text-xs text-secondary">
+                      水品 {{ afterSaleFenText(row.refundProductFen) }} · 配送费
+                      {{ afterSaleFenText(row.refundServiceFen) }}
+                    </div>
+                    <div v-if="row.refundProductMl" class="text-xs text-secondary">
+                      水品水量 {{ mlToLiter(row.refundProductMl) }}
+                    </div>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="状态" min-width="160">
+                  <template #default="{ row }">
+                    <ElTag size="small" :type="afterSaleStatusTagType(row.actionStatus)">
+                      {{ afterSaleStatusLabel(row.actionStatus) }}
+                    </ElTag>
+                    <div v-if="row.lastError" class="text-xs flow-minus mt-1">
+                      {{ row.lastError }}
+                    </div>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="批准 / 终态" width="150">
+                  <template #default="{ row }">
+                    <div class="text-xs">{{ row.approveByName || '-' }}</div>
+                    <div class="text-xs text-secondary">批准 {{ formatTime(row.approveTime) }}</div>
+                    <div class="text-xs text-secondary">终态 {{ formatTime(row.finishTime) }}</div>
+                  </template>
+                </ElTableColumn>
+              </ElTable>
+              <ElEmpty v-else description="该订单没有售后动作" :image-size="50" />
+            </div>
+            <!--
+              两条口径必须写在证据旁边，否则运营会把「已受理」读成「已退款」、
+              把「已生成补送」读成「已补送到户」。
+            -->
+            <div v-if="hasGatewayRefundAction" class="mt-2 text-xs text-secondary">
+              状态转为「已完成」前，不能认定已退款。
+            </div>
+            <div v-if="hasResendAction" class="mt-2 text-xs text-secondary">
+              补送签收后才转「已完成」，履约进度见配送任务页。
             </div>
           </template>
-          <div class="mt-3 mb-2 text-xs text-secondary">配送通知证据（REQ-059）</div>
-          <ElTable
-            v-if="trace.delivery.notifications.length"
-            :data="trace.delivery.notifications"
-            border
-            size="small"
-          >
-            <ElTableColumn prop="channel" label="渠道" width="110" />
-            <ElTableColumn prop="content" label="内容" min-width="220" show-overflow-tooltip />
-            <ElTableColumn label="状态" width="90">
-              <template #default="{ row }">
-                {{ row.sendStatus === 2 ? '成功' : row.sendStatus === 4 ? '已降级' : '待处理' }}
-              </template>
-            </ElTableColumn>
-          </ElTable>
         </template>
 
-        <!-- 区块六（真实）：配送单真实聚合区块（E2E-03 包C）。
+        <!-- 区块七（真实）：配送单真实聚合区块（E2E-03 包C）。
              履约链 linkStatus 与资金链 payment.flowStatus 独立核验；
              mismatch 只呈现数据异常，不把断链数据拼成履约/资金证据。 -->
-        <template v-else-if="trace.deliveryTrace">
+        <template v-if="trace.deliveryTrace">
           <div class="section-title">
             配送履约
             <span v-if="trace.deliveryTrace.taskNo" class="ml-2 text-xs text-secondary">
@@ -476,7 +481,7 @@
             :closable="false"
             show-icon
             title="配送履约链数据异常"
-            :description="`${trace.deliveryTrace.linkReason || '任务与订单共键核验未通过'}。已隐藏配送员、费用、时间线与三照等正向证据，请人工核查数据。`"
+            :description="`${trace.deliveryTrace.linkReason || '任务与订单的数据不一致'}。请人工核查。`"
           />
           <template v-else>
             <ElDescriptions :column="2" border label-width="92px" class="mb-3">
@@ -539,9 +544,7 @@
               />
             </ElSteps>
             <template v-if="trace.deliveryTrace.signPhotos?.length">
-              <div class="mb-2 text-xs text-secondary"
-                >三照签收元数据（门牌/水品/摆放，REQ-016；一期无媒体下载出口，仅呈现核验元数据）</div
-              >
+              <div class="mb-2 text-xs text-secondary">签收三照（门牌 / 水品 / 摆放）</div>
               <div class="trace-media-grid">
                 <div
                   v-for="photo in trace.deliveryTrace.signPhotos"
@@ -579,16 +582,14 @@
               </div>
             </template>
 
-            <div class="mt-3 mb-2 text-xs text-secondary">
-              卡扣款流水核验（幂等键 DELIVERY:订单号）
-            </div>
+            <div class="mt-3 mb-2 text-xs text-secondary">卡扣款流水</div>
             <ElAlert
               v-if="trace.deliveryTrace.payment?.flowStatus === 'mismatch'"
               type="error"
               :closable="false"
               show-icon
               title="配送资金链数据异常"
-              :description="`${trace.deliveryTrace.payment?.flowReason || '扣款流水核验未通过'}。已隐藏流水证据，不能据此认定扣款成立。`"
+              :description="trace.deliveryTrace.payment?.flowReason || '扣款流水核对不一致'"
             />
             <ElDescriptions
               v-else-if="trace.deliveryTrace.payment"
@@ -625,7 +626,7 @@
               }}</ElDescriptionsItem>
             </ElDescriptions>
 
-            <div class="mt-3 mb-2 text-xs text-secondary">配送站内消息证据（REQ-059）</div>
+            <div class="mt-3 mb-2 text-xs text-secondary">配送站内消息</div>
             <ElTable
               v-if="trace.deliveryTrace.notifications?.length"
               :data="trace.deliveryTrace.notifications"
@@ -636,7 +637,7 @@
               <ElTableColumn prop="content" label="内容" min-width="220" show-overflow-tooltip />
               <ElTableColumn label="状态" width="110">
                 <template #default="{ row }">
-                  {{ row.sendStatus === 4 ? '已送达(站内)' : `状态${row.sendStatus ?? '-'}` }}
+                  {{ row.sendStatus === 4 ? '已送达' : '-' }}
                 </template>
               </ElTableColumn>
               <ElTableColumn label="时间" width="150">
@@ -647,7 +648,7 @@
           </template>
         </template>
 
-        <!-- 区块七：申诉记录 -->
+        <!-- 区块八：申诉记录 -->
         <div class="section-title">
           申诉记录
           <ElButton
@@ -670,7 +671,7 @@
                 <span class="text-xs text-secondary">申诉 #{{ appeal.appealId }}</span>
               </div>
               <div class="mt-2 text-sm">
-                {{ appeal.linkReason || '申诉共键核验未通过，已隐藏内容' }}
+                {{ appeal.linkReason || '申诉数据核对不一致' }}
               </div>
             </template>
             <template v-else>
@@ -709,23 +710,26 @@
   import { ElMessage } from 'element-plus'
   import {
     fetchOrderTrace,
-    fetchOrderTraceMock,
     paymentEvidenceStateOf,
     type OrderTraceVo,
     type FlowTrace
   } from '@/api/order'
+  import {
+    afterSaleStrategyLabel,
+    AfterSaleActionStatus,
+    AfterSaleActionType,
+    AfterSalePerms,
+    fetchAfterSaleActionPage,
+    type AfterSaleActionItem
+  } from '@/api/after-sale'
   import { fetchDictOptions, toDictOptions } from '@/utils/dict'
   import { fenToYuan, mlToLiter } from '@/utils/format'
   import { DictTypeEnum } from '@/constants/dict'
+  import { useUserStore } from '@/store/modules/user'
 
   interface Props {
     visible: boolean
     orderId?: string
-    /**
-     * 追溯数据源（2026-07-20 收口轮复审）：real=管理端真实接口（默认）；
-     * mock=配送/申诉等 Mock 模块的演示数据源。两者严格分流，互不回退。
-     */
-    source?: 'real' | 'mock'
   }
 
   const props = defineProps<Props>()
@@ -745,16 +749,32 @@
   const orderStatusOptions = ref<{ label: string; value: number }[]>([])
   const cmdStatusOptions = ref<{ label: string; value: number }[]>([])
   const appealStatusOptions = ref<{ label: string; value: number }[]>([])
+  const afterSaleSourceOptions = ref<{ label: string; value: number }[]>([])
+  const afterSaleTypeOptions = ref<{ label: string; value: number }[]>([])
+  const afterSaleStatusOptions = ref<{ label: string; value: number }[]>([])
 
   onMounted(async () => {
-    const [orderStatuses, cmdStatuses, appealStatuses] = await Promise.all([
+    const [
+      orderStatuses,
+      cmdStatuses,
+      appealStatuses,
+      afterSaleSources,
+      afterSaleTypes,
+      afterSaleStatuses
+    ] = await Promise.all([
       fetchDictOptions(DictTypeEnum.订单状态),
       fetchDictOptions(DictTypeEnum.指令状态),
-      fetchDictOptions(DictTypeEnum.申诉状态)
+      fetchDictOptions(DictTypeEnum.申诉状态),
+      fetchDictOptions(DictTypeEnum.售后来源),
+      fetchDictOptions(DictTypeEnum.售后动作类型),
+      fetchDictOptions(DictTypeEnum.售后执行状态)
     ])
     orderStatusOptions.value = toDictOptions(orderStatuses)
     cmdStatusOptions.value = toDictOptions(cmdStatuses)
     appealStatusOptions.value = toDictOptions(appealStatuses)
+    afterSaleSourceOptions.value = toDictOptions(afterSaleSources)
+    afterSaleTypeOptions.value = toDictOptions(afterSaleTypes)
+    afterSaleStatusOptions.value = toDictOptions(afterSaleStatuses)
   })
 
   const orderStatusLabel = (v: number) =>
@@ -779,9 +799,82 @@
   const appealStatusTagType = (v: number) =>
     v === 1 ? 'warning' : v === 2 ? 'success' : v === 3 ? 'danger' : 'info'
 
-  const isRealRecharge = computed(
-    () => props.source !== 'mock' && trace.value?.order.orderType === 2
+  // ============ 售后区块（E2E-04 包E） ============
+
+  const userStore = useUserStore()
+  const canQueryAfterSale = computed(() =>
+    userStore.rbacMenuList.some((item) => item.menuWebPerms === AfterSalePerms.query)
   )
+  const afterSaleActions = ref<AfterSaleActionItem[]>([])
+  const afterSaleLoading = ref(false)
+
+  const afterSaleDictLabel = (options: { label: string; value: number }[], value?: number) =>
+    options.find((item) => item.value === value)?.label || (value == null ? '-' : String(value))
+  const afterSaleSourceLabel = (value?: number) =>
+    afterSaleDictLabel(afterSaleSourceOptions.value, value)
+  const afterSaleActionTypeLabel = (value?: number) =>
+    afterSaleDictLabel(afterSaleTypeOptions.value, value)
+  const afterSaleStatusLabel = (value?: number) =>
+    afterSaleDictLabel(afterSaleStatusOptions.value, value)
+  const afterSaleFenText = (fen?: number) => (fen == null ? '-' : `￥${fenToYuan(fen)}`)
+  const afterSaleStatusTagType = (value?: number) =>
+    value === AfterSaleActionStatus.SUCCESS
+      ? 'success'
+      : value === AfterSaleActionStatus.RECONCILIATION_REQUIRED ||
+          value === AfterSaleActionStatus.TERMINATED
+        ? 'danger'
+        : value === AfterSaleActionStatus.RETRY_WAIT
+          ? 'warning'
+          : value === AfterSaleActionStatus.PROCESSING
+            ? 'primary'
+            : 'info'
+
+  const hasGatewayRefundAction = computed(() =>
+    afterSaleActions.value.some((item) => item.actionType === AfterSaleActionType.GATEWAY_REFUND)
+  )
+  const hasResendAction = computed(() =>
+    afterSaleActions.value.some((item) => item.actionType === AfterSaleActionType.RESEND)
+  )
+
+  /**
+   * 按订单号做关键字检索后，再按 orderId 精确过滤。
+   *
+   * 台账接口的 keyword 是 LIKE 模糊匹配（售后号/订单号/姓名/手机号四选一命中），订单号互为
+   * 子串时会带回别单的售后动作 —— 在对账证据面上混入他单返还，比不显示严重得多。
+   * 这里的过滤是服务端字段的等值比较，不是前端推导。
+   */
+  async function loadAfterSaleActions(
+    orderId: string,
+    orderNo: string | undefined,
+    sequence: number
+  ) {
+    afterSaleActions.value = []
+    if (!canQueryAfterSale.value || !orderNo) return
+    afterSaleLoading.value = true
+    try {
+      const result = await fetchAfterSaleActionPage({ current: 1, size: 50, keyword: orderNo })
+      // 竞态守卫，与主流程同一把 loadSequence：本请求是抽屉里的**第二跳**，
+      // 快速切换订单时它可能比新订单的请求更晚返回。不比对序号就会出现
+      // 「原扣款/返还流水是 B 单、售后处理是 A 单」——正是本函数上面那段注释
+      // 声明「比不显示严重得多」的他单返还混入，只不过来源从 LIKE 变成了乱序回包。
+      if (sequence !== loadSequence) return
+      afterSaleActions.value = result.list.filter((item) => item.orderId === orderId)
+    } catch {
+      // 售后台账不可用不应连累主追溯：主区块已渲染，此处保持空态即可。
+      if (sequence === loadSequence) afterSaleActions.value = []
+    } finally {
+      if (sequence === loadSequence) afterSaleLoading.value = false
+    }
+  }
+
+  function goAfterSale() {
+    const orderNo = trace.value?.order.orderNo
+    if (!orderNo) return
+    drawerVisible.value = false
+    router.push({ path: '/order/index', query: { view: 'aftersale', afterSaleKeyword: orderNo } })
+  }
+
+  const isRealRecharge = computed(() => trace.value?.order.orderType === 2)
   const rechargeDetail = computed(() => trace.value?.recharge?.detail)
   const rechargeEvidenceOk = computed(
     () => trace.value?.recharge?.linkStatus === 'ok' && !!rechargeDetail.value
@@ -798,7 +891,7 @@
     )
   })
   const rechargeMismatchReason = computed(
-    () => trace.value?.recharge?.linkReason || '服务端未返回充值共键核验结果'
+    () => trace.value?.recharge?.linkReason || '充值关联数据核对不一致'
   )
 
   const paymentEvidenceState = computed(() => {
@@ -827,7 +920,7 @@
             : '状态缺失'
 
   const paymentSourceLabel = (source?: number) =>
-    source === 1 ? '微信支付' : source === 2 ? 'Pay-Sim' : '来源缺失'
+    source === 1 ? '微信支付' : source === 2 ? '模拟支付' : '来源缺失'
 
   const maskedTransactionId = (transactionId?: string) => {
     if (!transactionId) return '-'
@@ -870,12 +963,10 @@
       : mlToLiter(Math.abs(row.amount))
 
   /**
-   * 实际使用人展示号码（UI-TRACE）：真实数据只用服务端脱敏结果，
-   * 空串表示号码异常整体屏蔽，不回落 userPhone 明文；Mock 演示域无脱敏字段，沿用演示数据。
+   * 实际使用人展示号码（UI-TRACE）：只用服务端脱敏结果，
+   * 空串表示号码异常整体屏蔽，不回落 userPhone 明文。
    */
-  const displayActorPhone = computed(() =>
-    props.source === 'mock' ? trace.value?.order.userPhone : trace.value?.order.actorMaskedPhone
-  )
+  const displayActorPhone = computed(() => trace.value?.order.actorMaskedPhone)
 
   /** 持卡人行展示条件：持卡人任一身份信息存在即展示；卡删除/查不到时整行隐藏（后端字段置空）。 */
   const hasCardOwnerIdentity = computed(() => {
@@ -903,11 +994,6 @@
       trace.value.order.planMl != null &&
       trace.value.order.actualMl < trace.value.order.planMl
   )
-
-  const deliveryActiveStep = computed(() => {
-    const nodes = trace.value?.delivery?.nodes || []
-    return nodes.filter((n) => n.done).length
-  })
 
   /** 真实配送区块节点完成数：done 由服务端按落库时间判定，页面不推导状态。 */
   const realDeliveryActiveStep = computed(() => {
@@ -940,21 +1026,21 @@
   }
 
   watch(
-    () => [props.visible, props.orderId, props.source] as const,
-    async ([visible, orderId, source]) => {
+    () => [props.visible, props.orderId] as const,
+    async ([visible, orderId]) => {
       if (!visible || !orderId) return
 
       const currentSequence = ++loadSequence
       trace.value = null
+      afterSaleActions.value = []
       loading.value = true
       await resetDrawerScroll()
       try {
-        const result =
-          source === 'mock' ? await fetchOrderTraceMock(orderId) : await fetchOrderTrace(orderId)
+        const result = await fetchOrderTrace(orderId)
         if (currentSequence === loadSequence) {
           trace.value = result
-          if (!result) {
-            ElMessage.warning(`订单 #${orderId} 不在 Mock 演示数据源中，无法展示追溯`)
+          if (result) {
+            await loadAfterSaleActions(orderId, result.order.orderNo, currentSequence)
           }
         }
       } catch (error) {

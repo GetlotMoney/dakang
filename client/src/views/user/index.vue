@@ -6,13 +6,7 @@
     <UserSearch v-model="searchForm" @search="handleSearch" @reset="handleReset"></UserSearch>
 
     <ElCard class="art-table-card">
-      <ArtTableHeader v-model:columns="columnChecks" :loading="loading" @refresh="refreshData">
-        <template #left>
-          <ElText type="info" size="small"
-            >一期口径：C 端用户由小程序注册产生，后台只读查询（REQ-018）</ElText
-          >
-        </template>
-      </ArtTableHeader>
+      <ArtTableHeader v-model:columns="columnChecks" :loading="loading" @refresh="refreshData" />
 
       <ArtTable
         row-key="id"

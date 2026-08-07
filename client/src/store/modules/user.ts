@@ -110,10 +110,15 @@ export const useUserStore = defineStore(
     const ensureSessionCompatibility = (): boolean => {
       if (!isLogin.value) return true
 
+      // 待强改密码的会话豁免菜单检查：新建员工尚未分配角色时菜单必然为空，
+      // 若按"异常缓存"清掉登录态，改密页会因失去 token 立即弹回登录页——
+      // 而服务端在改密前拒绝一切业务接口，该账号将永远无法完成首改（R-201）
+      const pwdChangePending = Boolean((info.value as Api.Auth.UserInfo)?.pwdChangeRequired)
+
       const isCompatible =
         sessionSchemaVersion.value === DEMO_SESSION_SCHEMA_VERSION &&
         Boolean(accessToken.value) &&
-        rbacMenuList.value.length > 0
+        (pwdChangePending || rbacMenuList.value.length > 0)
 
       if (isCompatible) return true
 
@@ -189,9 +194,12 @@ export const useUserStore = defineStore(
       useMenuStore().setHomePath('')
       // 重置路由状态
       resetRouterState(500)
-      // 跳转到登录页，携带当前路由作为 redirect 参数
+      // 跳转到登录页，携带当前路由作为 redirect 参数。
+      // 认证页自身不作为回跳目标：登录路由实为 /auth/login（原先比对 '/login' 永不命中），
+      // 而从改密页登出若把 /auth/change-password 记为 redirect，用新密码登录后会被直接
+      // 送回改密表单，用户会以为改密没生效
       const currentRoute = router.currentRoute.value
-      const redirect = currentRoute.path !== '/login' ? currentRoute.fullPath : undefined
+      const redirect = currentRoute.path.startsWith('/auth/') ? undefined : currentRoute.fullPath
       router.push({
         name: 'Login',
         query: redirect ? { redirect } : undefined

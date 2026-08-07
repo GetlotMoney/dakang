@@ -159,6 +159,8 @@
         },
         yAxis: {
           type: 'value',
+          // 未传时不写入该键，保持与历史行为逐字节一致
+          ...(props.yAxisMinInterval === undefined ? {} : { minInterval: props.yAxisMinInterval }),
           axisLabel: getAxisLabelStyle(props.showAxisLabel),
           axisLine: getAxisLineStyle(props.showAxisLine),
           splitLine: getSplitLineStyle(props.showSplitLine)

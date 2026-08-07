@@ -70,27 +70,12 @@
 
         <ElCol v-if="form.menuType !== 3" :xs="24" :sm="12">
           <ElFormItem label="路由地址" prop="menuPath">
-            <ElInput v-model="form.menuPath" placeholder="如：user">
-              <template #prefix>
-                <ElTooltip content="访问的路由地址，如：`user`" placement="top">
-                  <ElIcon class="cursor-help"><QuestionFilled /></ElIcon>
-                </ElTooltip>
-              </template>
-            </ElInput>
+            <ElInput v-model="form.menuPath" placeholder="如：user" />
           </ElFormItem>
         </ElCol>
         <ElCol v-if="form.menuType === 2" :xs="24" :sm="12">
           <ElFormItem label="组件路径">
-            <ElInput v-model="form.menuComponent" placeholder="如：/system/user/index 或留空">
-              <template #prefix>
-                <ElTooltip
-                  content="具体页面填写组件路径（如 /system/user）&#10;目录菜单可留空"
-                  placement="top"
-                >
-                  <ElIcon class="cursor-help"><QuestionFilled /></ElIcon>
-                </ElTooltip>
-              </template>
-            </ElInput>
+            <ElInput v-model="form.menuComponent" placeholder="如：/system/user/index 或留空" />
           </ElFormItem>
         </ElCol>
 
@@ -157,7 +142,6 @@
 
 <script setup lang="ts">
   import type { FormInstance, FormRules } from 'element-plus'
-  import { QuestionFilled } from '@element-plus/icons-vue'
   import ArtIconPicker from '@/components/core/widget/art-icon-picker/index.vue'
   import { useWindowSize } from '@vueuse/core'
 
