@@ -12,9 +12,9 @@ import com.jbk.tool.data.api.bo.AuthBo;
 import com.jbk.tool.data.api.po.ApiEmployee;
 import com.jbk.tool.data.api.po.ApiLogLogin;
 import com.jbk.tool.data.api.vo.ApiEmployeeLoginVo;
-import com.jbk.tool.data.api.vo.ApiEmployeeVo;
 import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.utils.OptionalUtils;
+import com.jbk.tool.utils.PwdUtils;
 import com.jbk.tool.utils.RSAUtils;
 import com.jbk.tool.utils.auth.LogLoginUtils;
 import com.jbk.tool.utils.satoken.StpKit;
@@ -53,36 +53,31 @@ public class AuthServiceImpl implements IAuthService {
         if (employee.getDisabledFlag().intValue() == ApiEnum.Flag.YES.value()) {
             throw new JbkException("该账号已被禁用");
         }
-        // 比较密码
+        // 比较密码：传输层 RSA 解密后与库内 BCrypt 哈希比对；
+        // 库内为历史 RSA 密文等非 BCrypt 格式时 verify 恒 false（fail-closed，由迁移一次性重置）。
+        // try 只包解密与比对：若把写日志也圈进来，日志表故障会让密码正确的用户被判成
+        // "账号或密码错误"，并留下伪造的 PWD_FAIL 审计误导事后取证
+        boolean matched;
         try {
-            String yesPwd = RSAUtils.decrypt(employee.getLoginPwd());
-            String oldPwd = RSAUtils.decrypt(authBo.getLoginPwd());
-            if (!yesPwd.equals(oldPwd)) {
-                throw new JbkException("账号或密码错误");
-            }
-            // 保存登录成功日志
-            ApiLogLogin logLogin = LogLoginUtils.createLogLogin(
-                    ApiEnum.LoginType.SUCCESS,
-                    employee.getId(),
-                    StpKit.DRIVER_MANAGE,
-                    employee.getEmployeeName()
-            );
-            logLoginService.saveData(logLogin);
+            String inputPwd = RSAUtils.decrypt(authBo.getLoginPwd());
+            matched = PwdUtils.verify(inputPwd, employee.getLoginPwd());
         } catch (Exception e) {
-            // 保存错误日志
-            ApiLogLogin logLogin = LogLoginUtils.createLogLogin(
-                    ApiEnum.LoginType.PWD_FAIL,
-                    employee.getId(),
-                    StpKit.DRIVER_MANAGE,
-                    employee.getEmployeeName()
-            );
-            logLoginService.saveData(logLogin);
+            // 解密失败（密文损坏/非本密钥对）同样按凭据错误处理，不外泄具体原因
+            matched = false;
+        }
+        writeLoginLog(matched ? ApiEnum.LoginType.SUCCESS : ApiEnum.LoginType.PWD_FAIL, employee);
+        if (!matched) {
             throw new JbkException("账号或密码错误");
         }
+        // 强改标记随 JWT 签发：改密/重置都会强制下线，重新登录即刷新，读取方无需回查库
+        boolean pwdChangeRequired = employee.getPwdChangeFlag() != null
+                && employee.getPwdChangeFlag().intValue() == ApiEnum.Flag.YES.value();
         StpKit.MANAGE.login(employee.getId(), SaLoginModel.create()
                 .setExtra(StpKit.EXTRA_NAME, employee.getEmployeeName())
+                .setExtra(StpKit.EXTRA_PWD_CHANGE, pwdChangeRequired)
         );
         ApiEmployeeLoginVo employeeVo = BeanUtil.copyProperties(employee, ApiEmployeeLoginVo.class);
+        employeeVo.setPwdChangeRequired(pwdChangeRequired);
         // 查看人员菜单权限
         employeeVo.setRbacMenuList(
                 roleService.listMenuByUser(employeeVo.getId())
@@ -92,24 +87,37 @@ public class AuthServiceImpl implements IAuthService {
         return employeeVo;
     }
 
+    /**
+     * 登录审计落库：失败不得影响登录判定本身（日志表故障不应变成"密码错误"或 500）。
+     */
+    private void writeLoginLog(ApiEnum.LoginType type, ApiEmployee employee) {
+        try {
+            logLoginService.saveData(LogLoginUtils.createLogLogin(
+                    type,
+                    employee.getId(),
+                    StpKit.DRIVER_MANAGE,
+                    employee.getEmployeeName()
+            ));
+        } catch (Exception ignored) {
+        }
+    }
+
     @Override
     public Boolean openSafe(String loginPwd) {
         long userId = StpKit.MANAGE.getLoginIdAsLong();
-        ApiEmployeeVo employeeVo;
-        try {
-            employeeVo = employeeService.getData(userId);
-        } catch (Exception e) {
+        // 直查 Po：口令哈希不进任何 Vo（ApiEmployeeVo 已剥离 loginPwd，防止随 page/detail 出网）
+        ApiEmployee employee = employeeService.getById(userId);
+        if (employee == null) {
             StpKit.MANAGE.logout();
-            throw e;
+            throw new JbkException("员工信息不存在");
         }
-        if (employeeVo.getDisabledFlag().intValue() == ApiEnum.Flag.YES.value()) {
+        if (employee.getDisabledFlag().intValue() == ApiEnum.Flag.YES.value()) {
             StpKit.MANAGE.logout();
             throw new JbkException("该账号已被禁用");
         }
         // 修复底座缺陷：原实现比较的是"库内密码 vs 库内密码"恒为真，二级认证形同虚设
-        String yesPwd = RSAUtils.decrypt(employeeVo.getLoginPwd());
         String inputPwd = RSAUtils.decrypt(loginPwd);
-        if (!yesPwd.equals(inputPwd)) {
+        if (!PwdUtils.verify(inputPwd, employee.getLoginPwd())) {
             throw new JbkException("密码错误");
         }
         StpKit.MANAGE.openSafe(2 * 30);

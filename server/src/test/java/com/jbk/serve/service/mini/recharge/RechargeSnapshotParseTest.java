@@ -136,8 +136,9 @@ class RechargeSnapshotParseTest {
     // 有限期卡的到期时刻必须原样冻结在快照里，后续卡被续期也不能改变这笔订单的资格判定
     @Test
     void limitedCardExpireTimeCaptured() {
-        String json = RechargeSnapshot.build(REQUEST_ID, pkg().setExpireDays(90), card("2026-12-31 23:59:59"),
-                cardScope(), null, CREATE_TIME);
+        String json = LegacySnapshots.forgeExpireDays(
+                RechargeSnapshot.build(REQUEST_ID, pkg(), card("2026-12-31 23:59:59"),
+                        cardScope(), null, CREATE_TIME), 90);
         assertEquals("2026-12-31 23:59:59", RechargeSnapshot.parse(json).expireTimeAtCreate());
     }
 
@@ -181,13 +182,40 @@ class RechargeSnapshotParseTest {
         rejectTampered("capturedTime 空串", o -> mutateEligibility(o, e -> e.put("capturedTime", "")));
     }
 
-    // 通过创单校验的卡状态只可能是 1；出现别的值说明快照被改写或来自非法创建路径，
+    // 普通充值通过创单校验的卡状态只可能是 1；出现别的值说明快照被改写或来自非法创建路径，
     // 放行等于允许给冻结/注销卡补一笔历史订单
     @Test
     void cardStatusAtCreateMustBeNormal() {
         rejectTampered("状态 0", o -> mutateEligibility(o, e -> e.put("cardStatusAtCreate", 0)));
         rejectTampered("状态 2（冻结）", o -> mutateEligibility(o, e -> e.put("cardStatusAtCreate", 2)));
         rejectTampered("状态 null", o -> mutateEligibility(o, e -> e.put("cardStatusAtCreate", null)));
+    }
+
+    /** 审计 P1-3：非转正快照出现自然过期状态 3 同样拒绝——3 只在转正单里合法。 */
+    @Test
+    void expiredStatusRejectedOnNonPromoteSnapshot() {
+        rejectTampered("非转正快照状态 3", o -> mutateEligibility(o, e -> e.put("cardStatusAtCreate", 3)));
+    }
+
+    /** 审计 P1-3：转正快照记真实状态——3（自然过期）合法保存并解析，2（冻结）仍拒。 */
+    @Test
+    void promoteSnapshotAcceptsExpiredStatusButNotOthers() {
+        // build 正门：永久套餐 × 已过期赠卡（真实状态 3）——不再硬编码 1
+        WsPackage permanent = pkg();
+        permanent.setExpireDays(null);
+        WsCard expiredGift = card("20250101120000");
+        expiredGift.setCardStatus(3);
+        String promoted = RechargeSnapshot.build(REQUEST_ID, permanent, expiredGift,
+                cardScope(), null, CREATE_TIME, true);
+        RechargeSnapshot.Parsed parsed = RechargeSnapshot.parse(promoted);
+        assertEquals(3, parsed.cardStatusAtCreate(), "转正快照必须保存真实状态 3，不得伪装 1");
+        assertTrue(parsed.promoteToPermanent());
+
+        // 保 null 序列化篡改：转正快照的状态 2 仍必须拒绝
+        JSONObject o = JSON.parseObject(promoted, com.alibaba.fastjson.parser.Feature.OrderedField);
+        o.getJSONObject(F_ELIGIBILITY).put("cardStatusAtCreate", 2);
+        rejectSnap(JSON.toJSONString(o, com.alibaba.fastjson.serializer.SerializerFeature.WriteMapNullValue),
+                "转正快照状态 2");
     }
 
     // 范围快照是"充值不得偷偷扩大用卡范围"的比对基准，缺失或非法都不得放行
@@ -282,7 +310,7 @@ class RechargeSnapshotParseTest {
                 RechargeLimits.PAY_AMOUNT_MAX + 1, valid.waterMl(), valid.bonusAmount(),
                 valid.unitPriceSnap(), valid.expireDays(), valid.cardScope(), valid.packageScope(),
                 valid.cardStatusAtCreate(), valid.expireTimeAtCreate(), valid.capturedTime(),
-                valid.purchaseMode(), valid.plannedCardType());
+                valid.purchaseMode(), valid.plannedCardType(), valid.promoteToPermanent());
         assertThrows(JbkException.class, () -> RechargeCredit.of(polluted),
                 "即使绕过 JSON parser 手工构造 Parsed，事务 B 也不得按污染权益入账");
     }

@@ -120,7 +120,7 @@ public class WsStationController {
 1. 先读 `server/src/main/java/com/jbk/tool/consts/ApiEnum.java` 的 `DictType`，不得撞号。
 2. 模块枚举集中在 `tool/consts/<module>/`。
 3. 同步注册 `ApiEnum.DictType`。
-4. SQL 必须同时写 `api_dict_type` 和 `api_dict_data`，统一 `INSERT IGNORE INTO`。
+4. SQL 必须同时写 `api_dict_type` 和 `api_dict_data`，且**必须用 `INSERT ... SELECT ... WHERE NOT EXISTS`，不能用 `INSERT IGNORE`**——这两张表除主键外无唯一键，IGNORE 无键可撞、重复执行会翻倍并让字典接口 500。范式与原因见 `mysql8` skill「字典与菜单」。
 5. SQL 必须实际执行；只写文件不算完成。
 
 ## 菜单与权限

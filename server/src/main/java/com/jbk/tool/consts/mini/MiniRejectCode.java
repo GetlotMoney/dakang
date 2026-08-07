@@ -13,7 +13,8 @@ package com.jbk.tool.consts.mini;
  *   5401  → INVALID_QR_CODE        码不存在/非法
  *   5402  → QR_EXPIRED             码已禁用/过期、或未绑定出水口视同不可用
  *   5403  → UNIVERSAL_CODE_PENDING 万能码，现场选设备/出水口流程待定型
- *   5410  → SCAN_SESSION_EXPIRED   扫码会话缺失/过期（前端同 QR_EXPIRED 文案“请重新扫码”）
+ *   5410  → SCAN_SESSION_EXPIRED   扫码会话缺失/过期（前端提示“请重新扫码”）
+ *   5411  → SCAN_QUOTE_CHANGED     扫码冻结报价与当前档案不一致（水种或单价已变）
  * </pre>
  *
  * <p>
@@ -38,6 +39,13 @@ public final class MiniRejectCode {
     /** 万能码待定型 → miniapp UNIVERSAL_CODE_PENDING */
     public static final int UNIVERSAL_CODE_PENDING = 5403;
 
-    /** 扫码会话缺失或过期 → miniapp QR_EXPIRED（文案“请重新扫码”） */
+    /** 扫码会话缺失或过期 → miniapp SCAN_SESSION_EXPIRED（文案“请重新扫码”） */
     public static final int SCAN_SESSION_EXPIRED = 5410;
+
+    /**
+     * 扫码报价已变化（水种或单价与扫码时冻结值不一致）→ miniapp SCAN_QUOTE_CHANGED。
+     * 与 5410 分开的原因：会话过期是时间到了，报价变化是内容变了，
+     * 前者重扫即可、后者要提示用户价格已调整，合并成一个码用户看到的原因就是错的。
+     */
+    public static final int SCAN_QUOTE_CHANGED = 5411;
 }

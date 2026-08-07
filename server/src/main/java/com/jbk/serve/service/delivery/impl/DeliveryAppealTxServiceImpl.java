@@ -10,16 +10,21 @@ import com.jbk.serve.mapper.delivery.WsDeliveryAppealMapper;
 import com.jbk.serve.mapper.delivery.WsDeliveryExceptionMapper;
 import com.jbk.serve.mapper.delivery.WsDeliveryTaskMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
+import com.jbk.serve.service.aftersale.AfterSaleStrategy;
+import com.jbk.serve.service.aftersale.IAfterSaleActionTxService;
 import com.jbk.serve.service.delivery.DeliveryClock;
 import com.jbk.serve.service.delivery.DeliveryLinkGuard;
+import com.jbk.serve.service.delivery.DeliveryRefundSnapshot;
 import com.jbk.serve.service.delivery.IDeliveryAppealTxService;
 import com.jbk.serve.service.delivery.IDeliveryMediaService;
 import com.jbk.serve.service.message.IWsMessageService;
 import com.jbk.serve.service.ops.IWsDomainEventService;
+import com.jbk.tool.consts.aftersale.AfterSaleEnum;
 import com.jbk.tool.consts.delivery.DeliveryEnum;
 import com.jbk.tool.consts.message.MessageEnum;
 import com.jbk.tool.consts.ops.OpsEnum;
 import com.jbk.tool.consts.trade.TradeEnum;
+import com.jbk.tool.data.aftersale.po.WsAfterSaleAction;
 import com.jbk.tool.data.delivery.bo.DeliveryAppealCreateBo;
 import com.jbk.tool.data.delivery.bo.DeliveryAppealDecideBo;
 import com.jbk.tool.data.delivery.bo.DeliveryAppealEvidenceBo;
@@ -64,6 +69,13 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
     private IWsMessageService messageService;
     @Autowired
     private IWsDomainEventService domainEventService;
+    /**
+     * 售后执行内核（E2E-04 包A）。{@code createPending} 是 {@code REQUIRED} 传播，
+     * 会并入本类裁决事务：裁决回滚时那条待执行动作必须一并消失，否则会留下
+     * 「申诉没裁决、售后却待执行」的幽灵返还。
+     */
+    @Autowired
+    private IAfterSaleActionTxService afterSaleActionTxService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -228,14 +240,13 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
     public boolean decideAppeal(DeliveryAppealDecideBo bo, Long adminUserId, String now) {
         DeliveryClock.requireTime(now, "当前时间");
         long appealId = decimalId(bo.getAppealId(), "appealId");
-        Integer outcome = bo.getOutcome();
-        // 规则17：只允许三种确定结果；规则18：资金补偿只落 2成立待补偿，绝不写退款/入账
-        boolean allowed = ObjectUtil.equal(outcome, DeliveryEnum.AppealStatus.REJECTED.getValue())
-                || ObjectUtil.equal(outcome, DeliveryEnum.AppealStatus.RESEND_PENDING.getValue())
-                || ObjectUtil.equal(outcome, DeliveryEnum.AppealStatus.COMPENSATE_PENDING.getValue());
-        if (!allowed) {
-            throw new JbkException("裁决结果只允许：不成立驳回 / 补送待执行 / 成立待补偿");
-        }
+        // 裁决入参只有策略码一个真相源（E2E-04 R0-2）：白名单与终态派生都在 AfterSaleStrategy，
+        // 本类不再枚举 3/5/2——那会让「策略码说补偿、outcome 说驳回」这种自相矛盾却双双通过
+        // 校验的裁决成为可表达状态。规则18 依旧成立：资金策略只落 2成立待补偿 + 一条待执行动作，
+        // 本事务绝不写卡余额、绝不写钱包流水。
+        AfterSaleEnum.StrategyCode strategy = AfterSaleStrategy.requireStrategy(bo.getStrategyCode());
+        DeliveryEnum.AppealStatus outcomeEnum = AfterSaleStrategy.deriveOutcome(strategy);
+        int outcome = outcomeEnum.getValue();
         if (StrUtil.isBlank(bo.getHandleResult())) {
             throw new JbkException("裁决必须填写处理结果说明");
         }
@@ -262,6 +273,12 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
             // 三方 userId 必须一致：申诉归属与订单/任务归属错位属数据污染，禁止裁决
             throw new JbkException("申诉共键数据异常，禁止裁决");
         }
+        // R0-2 数量边界：唯一判定在 AfterSaleStrategy（含「原因码 × 策略码」白名单——
+        // PLACEMENT/OTHER 不支持资金补偿），且必须先于任何 CAS——越界拒绝时本事务零写入。
+        // 上界所需的四个计数分别来自申诉行与任务行，此处只负责取值，不在本类复刻任何取舍规则。
+        int approvedCount = AfterSaleStrategy.requireApprovedCount(strategy, appeal.getAppealReason(),
+                bo.getApprovedCount(), appeal.getReceivedCount(),
+                task.getDeliveryCount(), task.getActualDeliveryCount());
         int decided = appealMapper.update(null, Wrappers.lambdaUpdate(WsDeliveryAppeal.class)
                 .set(WsDeliveryAppeal::getAppealStatus, outcome)
                 .set(WsDeliveryAppeal::getHandleBy, adminUserId)
@@ -284,19 +301,113 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
         if (taskMoved != 1) {
             throw new JbkException("任务状态已变化，裁决失败");
         }
-        DeliveryEnum.AppealStatus outcomeEnum = outcome == 3 ? DeliveryEnum.AppealStatus.REJECTED
-                : outcome == 5 ? DeliveryEnum.AppealStatus.RESEND_PENDING
-                : DeliveryEnum.AppealStatus.COMPENSATE_PENDING;
+        // 售后执行动作与裁决同事务登记（REQUIRED）：裁决若回滚，待执行动作必须一并消失
+        WsAfterSaleAction action = registerAfterSaleAction(strategy, approvedCount, appeal, task, order,
+                adminUserId, now);
         messageService.sendInApp(appeal.getUserId(), MessageEnum.MsgDomain.DELIVERY, "申诉裁决结果",
-                "您的申诉已裁决：" + outcomeEnum.getDesc() + "。" + bo.getHandleResult().trim(),
+                "您的申诉已裁决：" + outcomeEnum.getDesc() + "。" + bo.getHandleResult().trim()
+                        + (AfterSaleStrategy.refundsAssets(strategy) ? " 补偿将返还至您的水卡。" : ""),
                 "appeal", String.valueOf(appealId), now);
         // 裁决是关键状态变化（申诉 1→终态 + 任务 7→5）：走可靠路径（失败抛出整体回滚，P1-3）；
         // 动作者是后台管理员，身份走会话推断（MANAGE 正确），幂等键按申诉行唯一（一裁一痕）。
         domainEventService.recordReliableOnce(OpsEnum.EventType.DELIVERY_NODE, task.getTaskNo(),
                 "APPEAL_DECIDE:" + appealId,
                 DeliveryEnum.AppealStatus.PENDING.getValue() + ":待处理",
-                outcome + ":" + outcomeEnum.getDesc() + "（appealId=" + appealId + "，time=" + now + "）");
+                outcome + ":" + outcomeEnum.getDesc() + "（appealId=" + appealId
+                        + "，strategy=" + strategy.getCode() + "，approvedCount=" + approvedCount
+                        + "，afterSaleNo=" + (ObjectUtil.isNull(action) ? null : action.getAfterSaleNo())
+                        + "，time=" + now + "）");
         return true;
+    }
+
+    /**
+     * 裁决产出的售后执行动作（E2E-04 包A 集成点）。
+     *
+     * <p><b>三条出口由策略码唯一决定，本方法不做二次判断</b>：
+     * REJECT 零写入不建行（"申诉不成立"必须没有任何待执行动作，否则它迟早会被某个 Worker 捡起来执行）；
+     * 三个资金策略建 {@code ACTION_TYPE=2卡内补偿} 的待执行行，由包A 返还内核在独立事务里执行；
+     * RESEND 建 {@code ACTION_TYPE=4补送} 的待执行行，四元额度恒为 0——补送走履约不动资金，
+     * 包A 的返还事务在入口就会拒绝这种类型，因此它在本包内是一条只登记不执行的待办，
+     * 由包C 实现执行路径。</p>
+     *
+     * <p><b>额度只从订单冻结快照算，绝不出现 payWay 分支</b>：「哪个维度退多少」的全部知识在
+     * {@link AfterSaleStrategy#compute}，这里只负责把三元结果搬进三个额度列。
+     * 快照 fail-closed（{@link DeliveryRefundSnapshot#require}）：历史单价是返还与封顶的共同基准，
+     * 缺失或不自洽时按当前价目表猜一个值出来，会与原扣款流水对不上。</p>
+     *
+     * <p><b>此处刻意不做累计封顶判定</b>：权威封顶只在「持卡行 X 锁 + READ_COMMITTED」的返还事务内
+     * 成立（见 {@code AfterSaleQuota} 类注释）。在本事务里再判一次既不权威，又要引入
+     * {@code sumSuccessRefundByOrderForUpdate} 这条 FOR UPDATE 聚合读——它在默认 RR 隔离级别下
+     * 会在 {@code idx_after_sale_order} 上留 gap 锁，让两笔无关订单的并发裁决互等死锁。
+     * 超额在执行期被拒绝并落「需人工对账」，运营看得到，不会静默多退。</p>
+     *
+     * @return 登记后的动作行；REJECT 返回 {@code null}
+     */
+    private WsAfterSaleAction registerAfterSaleAction(AfterSaleEnum.StrategyCode strategy, int approvedCount,
+                                                      WsDeliveryAppeal appeal, WsDeliveryTask task, WsOrder order,
+                                                      Long adminUserId, String now) {
+        if (strategy == AfterSaleEnum.StrategyCode.REJECT) {
+            return null;
+        }
+        DeliveryRefundSnapshot.Parsed snap = DeliveryRefundSnapshot.require(order);
+        AfterSaleStrategy.Refund refund = AfterSaleStrategy.compute(strategy, approvedCount, snap);
+        boolean refundsAssets = AfterSaleStrategy.refundsAssets(strategy);
+        WsAfterSaleAction draft = new WsAfterSaleAction()
+                .setSourceType(AfterSaleEnum.SourceType.DELIVERY_APPEAL.getValue())
+                // 来源键取 appealId 而非 taskId：uk_appeal_active_task 只约束「待处理」申诉，
+                // 同一任务可合法产生多条已裁决申诉，用 taskId 会把第二次合法申诉误判成重放
+                .setSourceId(appeal.getId())
+                .setOrderId(order.getId())
+                .setUserId(order.getUserId())
+                .setCardId(order.getCardId())
+                .setActionType(refundsAssets
+                        ? AfterSaleEnum.ActionType.CARD_COMPENSATE.getValue()
+                        : AfterSaleEnum.ActionType.RESEND.getValue())
+                .setStrategyCode(strategy.getCode())
+                .setApprovedCount(approvedCount)
+                .setRefundProductFen(refund.productFen())
+                .setRefundServiceFen(refund.serviceFen())
+                .setRefundProductMl(refund.productMl())
+                .setCalcSnapshot(buildDecideSnapshot(strategy, approvedCount, appeal, task, snap, refund,
+                        adminUserId, now))
+                .setApproveBy(adminUserId)
+                .setApproveTime(now);
+        draft.setCreateBy(adminUserId);
+        draft.setUpdateBy(adminUserId);
+        // REFUND_AMOUNT、AFTER_SALE_NO、状态机起点与版本由内核事务钉死，编排层不得自报
+        return afterSaleActionTxService.createPending(draft, now);
+    }
+
+    /**
+     * 计算依据快照：出账即冻结，事后只读不重算。
+     * <p>把「当时的数量上界」与「当时的单价」一并封存——两者都会随任务签收数据与价目表变化，
+     * 事后重算得到的必然是另一组值，运营再也无法核对这笔补偿当初凭什么算出来。</p>
+     */
+    private String buildDecideSnapshot(AfterSaleEnum.StrategyCode strategy, int approvedCount,
+                                       WsDeliveryAppeal appeal, WsDeliveryTask task,
+                                       DeliveryRefundSnapshot.Parsed snap,
+                                       AfterSaleStrategy.Refund refund, Long adminUserId, String now) {
+        return JSONUtil.createObj()
+                .set("strategyCode", strategy.getCode())
+                .set("appealReason", appeal.getAppealReason())
+                .set("receivedCount", appeal.getReceivedCount())
+                .set("taskDeliveryCount", task.getDeliveryCount())
+                .set("taskActualDeliveryCount", task.getActualDeliveryCount())
+                .set("approvedCount", approvedCount)
+                // 入参与上面 requireApprovedCount 逐一相同：封存的上界必须就是当时实际判定用的那个，
+                // 换一组入参重算等于在台账上留下一个与判定无关的数字
+                .set("maxApprovedCount", AfterSaleStrategy.maxApprovedCount(appeal.getAppealReason(),
+                        appeal.getReceivedCount(), task.getDeliveryCount(), task.getActualDeliveryCount()))
+                .set("payWay", snap.payWay())
+                .set("snapDeliveryCount", snap.deliveryCount())
+                .set("unitWaterPriceFen", snap.unitWaterPriceFen())
+                .set("deliveryFeePerContainerFen", snap.deliveryFeePerContainerFen())
+                .set("refundProductFen", refund.productFen())
+                .set("refundServiceFen", refund.serviceFen())
+                .set("refundProductMl", refund.productMl())
+                .set("decidedBy", adminUserId)
+                .set("decidedAt", now)
+                .toString();
     }
 
     @Override

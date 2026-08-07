@@ -101,7 +101,12 @@ public interface RechargeIdentityMapper {
      * 冻结/过期/注销但未删除的卡同样阻断首次购卡——用户与这些卡的关系需要人工厘清，
      * 而不是绕开它们再发一张新卡。口径必须与发卡事务内
      * {@code RechargeCreditMapper#countLiveCardsByUser} 保持一致。
+     * <p>E2E-08 修正：仅排除活动赠卡（判据=带 EXPIRE_TIME 且无 ISSUE_ORDER_ID 订单锚，
+     * 赠卡是唯一无订单锚的发卡路径；审计 P1-2 补 CARD_TYPE=1 限定，与 CardEligibility#isGiftCard 同构），否则先领赠卡的用户被永远挡在首次购卡之外。
+     * 不能只按 EXPIRE_TIME 排除：购卡链历史上可发有限期付费卡（NewCardExpiry），
+     * 整类排除会让持有限期付费卡的用户绕过一人一卡再买一张。</p>
      */
-    @Select("SELECT COUNT(*) FROM ws_card WHERE USER_ID = #{userId} AND DATA_STATUS = 0")
+    @Select("SELECT COUNT(*) FROM ws_card WHERE USER_ID = #{userId} AND DATA_STATUS = 0"
+            + " AND " + com.jbk.serve.service.mini.card.CardEligibility.SQL_NOT_GIFT)
     long selectCountLiveCardsByUser(@Param("userId") Long userId);
 }

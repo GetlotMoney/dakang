@@ -2,7 +2,6 @@ package com.jbk.serve.controller.api;
 
 import cn.hutool.core.util.ObjectUtil;
 import com.jbk.serve.service.api.IApiDictTypeService;
-import com.jbk.tool.annotation.LogOperation;
 import com.jbk.tool.data.api.po.ApiDictType;
 import com.jbk.tool.domain.R;
 import com.jbk.tool.exception.JbkException;
@@ -33,7 +32,8 @@ public class ApiDictTypeController {
     @Autowired
     private IApiDictTypeService dictTypeService;
 
-    @LogOperation
+    // 不记操作日志：字典读取是每个页面加载都会触发的基础读，曾占操作日志 97%（652/668 条），
+    // 把触发对账/赠卡/裁决这些真正需要审计的记录整页淹没。操作日志只记写操作与敏感动作。
     @PostMapping("/getByType")
     @Operation(summary = "get字典列表", description = "传字典类型")
     public R<ApiDictType> getByType(
@@ -42,7 +42,6 @@ public class ApiDictTypeController {
         return R.ok(dictTypeService.getByType(dictType));
     }
 
-    @LogOperation
     @PostMapping("/listByType")
     @Operation(summary = "list字典列表", description = "传字典类型")
     public R<List<ApiDictType>> listByType(

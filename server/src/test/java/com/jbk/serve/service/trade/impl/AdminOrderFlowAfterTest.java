@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
@@ -95,7 +97,7 @@ class AdminOrderFlowAfterTest {
 
     @Test
     void flowsCarryFrozenAfterSnapshotsWhileOrderCarriesCurrentCardValue() {
-        when(orderMapper.selectAdminOrderById(ORDER_ID)).thenReturn(waterOrderA());
+        when(orderMapper.selectAdminOrderById(eq(ORDER_ID), anyInt(), anyInt())).thenReturn(waterOrderA());
         // A 的账本：预扣 10000（AFTER=15020）→ 结算补偿 +5020（AFTER=20020，即 A 的「结算后」）
         when(walletFlowMapper.selectList(any())).thenReturn(List.of(
                 flow(501L, 2, -10_000L, A_SETTLED_AMOUNT_AFTER, 15_020L, "20260723100000"),
@@ -120,7 +122,7 @@ class AdminOrderFlowAfterTest {
     /** 历史/异常流水缺 AFTER 时保持 null 下发——前端据此隐藏「本单结算后」，禁止伪造 0。 */
     @Test
     void missingAfterSnapshotStaysNull() {
-        when(orderMapper.selectAdminOrderById(ORDER_ID)).thenReturn(waterOrderA());
+        when(orderMapper.selectAdminOrderById(eq(ORDER_ID), anyInt(), anyInt())).thenReturn(waterOrderA());
         WsWalletFlow legacy = flow(503L, 2, -10_000L, 0L, 0L, "20260723100000")
                 .setAmountAfter(null)
                 .setMlAfter(null);

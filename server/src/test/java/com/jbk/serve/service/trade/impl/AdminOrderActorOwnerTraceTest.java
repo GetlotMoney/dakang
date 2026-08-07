@@ -40,7 +40,7 @@ class AdminOrderActorOwnerTraceTest {
         order.setCardOwnerPhoneRaw("13900002222");
         order.setCardBalanceFen(8200L);
         order.setCardBalanceMl(360000L);
-        Mockito.when(fixture.orderMapper.selectAdminOrderById(101L)).thenReturn(order);
+        Mockito.when(fixture.orderMapper.selectAdminOrderById(Mockito.eq(101L), Mockito.anyInt(), Mockito.anyInt())).thenReturn(order);
 
         AdminOrderTraceVo trace = fixture.service.getOrderTrace(101L);
 
@@ -69,7 +69,7 @@ class AdminOrderActorOwnerTraceTest {
         order.setCardOwnerUserId(5L);
         order.setCardOwnerName("钱女士");
         order.setCardOwnerPhoneRaw("13900002222");
-        Mockito.when(fixture.orderMapper.selectAdminOrderById(102L)).thenReturn(order);
+        Mockito.when(fixture.orderMapper.selectAdminOrderById(Mockito.eq(102L), Mockito.anyInt(), Mockito.anyInt())).thenReturn(order);
 
         AdminOrderTraceVo trace = fixture.service.getOrderTrace(102L);
 
@@ -93,7 +93,7 @@ class AdminOrderActorOwnerTraceTest {
         order.setCardOwnerPhoneRaw(null);
         order.setCardBalanceFen(null);
         order.setCardBalanceMl(null);
-        Mockito.when(fixture.orderMapper.selectAdminOrderById(103L)).thenReturn(order);
+        Mockito.when(fixture.orderMapper.selectAdminOrderById(Mockito.eq(103L), Mockito.anyInt(), Mockito.anyInt())).thenReturn(order);
 
         AdminOrderTraceVo trace = fixture.service.getOrderTrace(103L);
 
@@ -117,7 +117,7 @@ class AdminOrderActorOwnerTraceTest {
         order.setCardId(3L);
         order.setCardOwnerUserId(5L);
         order.setCardOwnerPhoneRaw("+86-139-0000");
-        Mockito.when(fixture.orderMapper.selectAdminOrderById(104L)).thenReturn(order);
+        Mockito.when(fixture.orderMapper.selectAdminOrderById(Mockito.eq(104L), Mockito.anyInt(), Mockito.anyInt())).thenReturn(order);
 
         AdminOrderTraceVo trace = fixture.service.getOrderTrace(104L);
 
@@ -144,7 +144,7 @@ class AdminOrderActorOwnerTraceTest {
         Page<AdminOrderItemVo> page = new Page<>(1, 10);
         page.setRecords(new ArrayList<>(List.of(member, owner)));
         page.setTotal(2);
-        Mockito.when(fixture.orderMapper.pageAdminOrders(Mockito.any(), Mockito.any())).thenReturn(page);
+        Mockito.when(fixture.orderMapper.pageAdminOrders(Mockito.any(), Mockito.any(), Mockito.anyInt(), Mockito.anyInt())).thenReturn(page);
         AdminOrderBo bo = new AdminOrderBo();
         bo.setCurrent(1L);
         bo.setSize(10L);

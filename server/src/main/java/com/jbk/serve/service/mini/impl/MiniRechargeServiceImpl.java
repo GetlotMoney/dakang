@@ -4,6 +4,7 @@ import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.jbk.serve.mapper.product.WsPackageMapper;
+import com.jbk.serve.service.settlement.IInviteService;
 import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
 import com.jbk.serve.service.mini.IMiniPayStatusService;
 import com.jbk.serve.service.mini.IMiniRechargeService;
@@ -11,7 +12,9 @@ import com.jbk.serve.service.mini.recharge.IRechargeCreateTx;
 import com.jbk.serve.service.mini.recharge.IRechargePaySourceAdapter;
 import com.jbk.serve.service.mini.recharge.RechargeLimits;
 import com.jbk.serve.service.mini.recharge.RechargeOrderNo;
+import com.jbk.serve.service.mini.recharge.RechargeExpiry;
 import com.jbk.serve.service.mini.recharge.RechargePayExpire;
+import com.jbk.serve.service.mini.card.CardEligibility;
 import com.jbk.serve.service.mini.card.WaterCardScope;
 import com.jbk.serve.service.mini.recharge.RechargeSnapshot;
 import com.jbk.serve.service.user.IWsCardService;
@@ -56,6 +59,8 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
     private static final int PAY_WAY_WECHAT = 1;
     /** 卡状态(1332)：1 正常。 */
     private static final int CARD_STATUS_NORMAL = 1;
+    private static final int CARD_STATUS_EXPIRED = 3;
+    private static final int CARD_STATUS_CANCELLED = 4;
     /** 套餐状态(1330)：1 在售。 */
     private static final int PACKAGE_STATUS_ON_SALE = 1;
     /** 支付状态(1342)：1 待支付。 */
@@ -72,6 +77,7 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
 
     private static final Pattern DECIMAL_ID = Pattern.compile("^[1-9]\\d*$");
 
+    private final IInviteService inviteService;
     private final RechargeIdentityMapper identityMapper;
     private final WsPackageMapper wsPackageMapper;
     private final IWsCardService wsCardService;
@@ -108,10 +114,28 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
                                                String requestId, String orderNo) {
         // ② 确无既有订单才读卡与套餐
         WsCard card = loadUsableCard(cardId, userId);
-        // 付费卡一律永久（D-213）；带有效期的卡只能来自活动赠卡。赠卡若可充值，充入的
-        // 付费余额会被赠卡到期日绑架——客户的钱变成会过期的钱，读到卡的第一时间即拒绝。
-        if (StrUtil.isNotBlank(card.getExpireTime())) {
-            throw new JbkException("活动赠卡不支持充值，权益使用完可购买正式水卡");
+        // 赠卡判据=带有效期且无 ISSUE_ORDER_ID 订单锚（赠卡是唯一无订单锚的发卡路径）。
+        // 不能只看 EXPIRE_TIME：有限期付费卡（有订单锚）历史上可售，其续期充值走
+        // requireSameExpiryKind 的同类校验（D-205），按赠卡整类拒绝会误伤且文案失真。
+        //
+        // D-416（2026-08-06 甲方确认）：赠卡不再一刀切拒绝——
+        //   有效期内且权益未耗尽：仍拒绝（付费余额会被到期日绑架，原口径不变）；
+        //   权益用完或自然到期 + 用户无其他付费卡：放行并标记「转正」，入账即转永久付费卡；
+        //   权益用完或自然到期 + 已有付费卡：拒绝（该走合并动线，不产生第二张付费卡，D-417）。
+        boolean giftCard = CardEligibility.isGiftCard(card);
+        boolean promote = false;
+        if (giftCard) {
+            long balanceFen = card.getBalanceAmount() == null ? 0L : card.getBalanceAmount();
+            long balanceMl = card.getBalanceMl() == null ? 0L : card.getBalanceMl();
+            boolean drained = balanceFen == 0L && balanceMl == 0L;
+            boolean expired = RechargeExpiry.naturallyExpired(card.getExpireTime(), DateUtils.time());
+            if (!drained && !expired) {
+                throw new JbkException("活动赠卡在有效期内暂不支持充值，权益用完或到期后可充值转为正式水卡");
+            }
+            if (hasOtherPaidCard(userId, card.getId())) {
+                throw new JbkException("已有正式水卡，请在水卡详情中将赠卡合并入正式水卡");
+            }
+            promote = true;
         }
         WsPackage pkg = loadOnSalePackage(packageId);
         RechargeLimits.validatePackage(pkg);
@@ -120,14 +144,20 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         String createTime = DateUtils.time();
         WaterCardScope cardScope = WaterCardScope.normalize(card.getScopeJson(), "水卡");
         WaterCardScope pkgScope = requireCompatibleScope(pkg, cardScope);
-        requireSameExpiryKind(card, pkg);
-        String payExpireTime = RechargePayExpire.compute(createTime, card.getExpireTime());
-        String snapshot = RechargeSnapshot.build(requestId, pkg, card, cardScope, pkgScope, createTime);
+        if (!promote) {
+            // 转正单豁免同类校验：永久套餐 × 有限赠卡正是转正的定义形态
+            requireSameExpiryKind(card, pkg);
+        }
+        // 转正单付款窗按永久卡口径：不被赠卡旧到期日钳制（到期卡的旧钳制会算出过去时间，创单即死单）
+        String payExpireTime = RechargePayExpire.compute(createTime, promote ? null : card.getExpireTime());
+        String snapshot = RechargeSnapshot.build(requestId, pkg, card, cardScope, pkgScope, createTime, promote);
 
         WsOrder order = new WsOrder();
         order.setOrderNo(orderNo);
         order.setOrderType(ORDER_TYPE_RECHARGE);
         order.setUserId(userId);
+        // E2E-08 归因快照：下单时刻的推荐人（绑定前恒 NULL，绑定不回溯）
+        order.setReferrerUserId(inviteService.referrerSnapshotOf(userId));
         order.setCardId(cardId);
         order.setPackageId(packageId);
         order.setPackageSnap(snapshot);
@@ -182,6 +212,8 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         order.setOrderNo(orderNo);
         order.setOrderType(ORDER_TYPE_RECHARGE);
         order.setUserId(userId);
+        // E2E-08 归因快照：下单时刻的推荐人（绑定前恒 NULL，绑定不回溯）
+        order.setReferrerUserId(inviteService.referrerSnapshotOf(userId));
         // 决策 A2：不预建卡，CARD_ID 由发卡事务在支付成功后 CAS 回填
         order.setCardId(null);
         order.setPackageId(packageId);
@@ -283,10 +315,10 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
                 || !ObjectUtil.equals(payment.getOrderId(), order.getId())
                 || !StrUtil.equals(payment.getOrderNo(), order.getOrderNo())
                 || !ObjectUtil.equals(payment.getPayAmount(), order.getOrderAmount())) {
-            throw new JbkException("支付单与订单共键错位，拒绝");
+            throw JbkException.internal("支付单与订单共键错位，拒绝");
         }
         if (!ObjectUtil.equals(payment.getPaySource(), paySourceAdapter.currentSource())) {
-            throw new JbkException("支付单来源与当前适配器不一致，拒绝");
+            throw JbkException.internal("支付单来源与当前适配器不一致，拒绝");
         }
         requirePaymentEvidence(order, payment);
         // §4.3：capturedTime 必须等于订单 createTime。缺了这一条，下面的 PAY_EXPIRE_TIME 校验就是自指的
@@ -296,16 +328,24 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         }
         // L2-B 资格快照的卡状态固定为通过创单校验的 1；其它值说明快照被改写。
         // purchase 快照没有该字段（创单时无卡），其发卡资格（userHadNoCard=true）已由 parse 强校验。
-        if (!hitPurchase
-                && !ObjectUtil.equals(snap.cardStatusAtCreate(), RechargeSnapshot.CARD_STATUS_AT_CREATE)) {
-            throw new JbkException("订单快照资格状态非法，拒绝");
+        if (!hitPurchase) {
+            // 审计 P1-3：与 parse 同规则——普通单只受状态 1，转正单允许 1 或自然过期 3
+            boolean legal = ObjectUtil.equals(snap.cardStatusAtCreate(), RechargeSnapshot.CARD_STATUS_AT_CREATE)
+                    || (snap.promoteToPermanent() && ObjectUtil.equals(snap.cardStatusAtCreate(),
+                            RechargeSnapshot.CARD_STATUS_EXPIRED_AT_CREATE));
+            if (!legal) {
+                throw new JbkException("订单快照资格状态非法，拒绝");
+            }
         }
         // 套餐范围非空时必须仍与卡范围语义精确相等（与创建路径同一判据）
         if (snap.packageScope() != null && !snap.packageScope().sameAuthorityAs(snap.cardScope())) {
             throw new JbkException("订单快照范围错位，拒绝");
         }
-        // PAY_EXPIRE_TIME 必须与资格快照按冻结算法重算的结果精确相等（证明创建后未被改写）
-        String expected = RechargePayExpire.compute(snap.capturedTime(), snap.expireTimeAtCreate());
+        // PAY_EXPIRE_TIME 必须与资格快照按冻结算法重算的结果精确相等（证明创建后未被改写）。
+        // 审计 P1-3：转正单与创单路径同一公式（promote→按永久口径），否则过期赠卡转正单
+        // 的合法重放会被误判为「付款截止被改写」而拒绝。
+        String expected = RechargePayExpire.compute(snap.capturedTime(),
+                snap.promoteToPermanent() ? null : snap.expireTimeAtCreate());
         if (!StrUtil.equals(payment.getPayExpireTime(), expected)) {
             throw new JbkException("付款截止时间与资格快照不一致，拒绝");
         }
@@ -317,7 +357,7 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         if (!IDEMPOTENT_STATUS_CODES.contains(status.getPayStatusCode())
                 || !ObjectUtil.equals(status.getOrderStatus(), order.getOrderStatus())
                 || !ObjectUtil.equals(status.getPayStatus(), payment.getPayStatus())) {
-            throw new JbkException("订单支付状态不自洽，拒绝幂等返回");
+            throw JbkException.internal("订单支付状态不自洽，拒绝幂等返回");
         }
         return toVo(order, payment.getPayExpireTime(), snap.packageName(), true, payment.getPayStatus());
     }
@@ -372,7 +412,12 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         if (ObjectUtil.isNull(card)) {
             throw new JbkException("水卡不存在或无权访问");
         }
-        if (!ObjectUtil.equals(card.getCardStatus(), CARD_STATUS_NORMAL)) {
+        boolean naturallyExpiredGift = ObjectUtil.equals(card.getCardStatus(), CARD_STATUS_EXPIRED)
+                && card.getIssueOrderId() == null
+                && RechargeExpiry.naturallyExpired(card.getExpireTime(), DateUtils.time());
+        if (!ObjectUtil.equals(card.getCardStatus(), CARD_STATUS_NORMAL) && !naturallyExpiredGift) {
+            // 自然过期的赠卡放行到创单层，由 D-416 转正闸决定去留；
+            // 入账链对「状态 3 且自然过期」本就接受（RechargeCreditTxImpl 步骤 4），上下呼应
             throw new JbkException("水卡当前状态不可充值");
         }
         // 永久卡的唯一持久语义是 SQL NULL。空串曾被当作永久卡放行，但事务 B 的 CAS 只接受 NULL，
@@ -413,8 +458,21 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
     }
 
     /**
-     * 赠卡闸之后到这里的只可能是永久卡（D-213）：本检查拦的是「永久卡买有限套餐」——
-     * 有限套餐是活动赠卡模板，不是充值包；放行等于给永久卡引入到期日或送出未兑现天数。
+     * 是否占用「一人一张付费卡」名额的其他卡（D-416/D-417，审计 P1-2 口径）：
+     * 与 {@code CardEligibility#occupiesPaidSlot} 同构——冻结/过期/<b>注销</b>
+     * (CARD_STATUS 1/2/3/4) 全部占名额，只排逻辑删除与真赠卡（apply 引用 CardEligibility.SQL_NOT_GIFT 唯一谓词）。
+     */
+    private boolean hasOtherPaidCard(Long userId, Long exceptCardId) {
+        return wsCardService.count(Wrappers.lambdaQuery(WsCard.class)
+                .eq(WsCard::getUserId, userId)
+                .ne(WsCard::getId, exceptCardId)
+                .apply(CardEligibility.SQL_NOT_GIFT)) > 0;
+    }
+
+    /**
+     * 赠卡闸之后到这里的是永久卡或有限期付费卡（有订单锚）。本检查拦「期限种类错配」：
+     * 永久卡买有限套餐=引入到期日或送出未兑现天数；有限期卡买永久套餐=静默没收续期语义。
+     * 同类才放行（有限期付费卡续充有限套餐即 D-205 续期路径）。
      */
     private void requireSameExpiryKind(WsCard card, WsPackage pkg) {
         boolean cardFinite = StrUtil.isNotBlank(card.getExpireTime());

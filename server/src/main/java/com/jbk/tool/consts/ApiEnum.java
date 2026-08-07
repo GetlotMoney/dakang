@@ -46,9 +46,23 @@ public interface ApiEnum {
         WS_DELIVERY_AUTO_RULE_STATUS("1355"),// 自动补货规则状态（E2E-03 包A）
         WS_ALARM_TYPE("1360"),// 告警类型（ws_ops.sql）
         WS_ALARM_STATUS("1361"),// 告警状态（ws_ops.sql）
-        WS_WORK_ORDER_STATUS("1362"),// 工单状态（ws_ops.sql）
+        WS_WORK_ORDER_STATUS("1362"),// 工单状态（六状态，E2E-05 重定义；02-ws-business.sql）
         WS_EVENT_TYPE("1363"),// 领域事件类型（ws_ops.sql）
         WS_ACTOR_PORTAL("1364"),// 操作端口/身份上下文来源（03-demo-baseline.sql）
+        WS_WORK_ORDER_TYPE("1365"),// 工单类型（E2E-05 包A）
+        WS_CMD_BATCH_SCOPE("1366"),// 批量指令范围（E2E-05 包A）
+        WS_CMD_BATCH_STATUS("1367"),// 批量指令聚合状态（E2E-05 包A）
+        WS_SIM_STATUS("1368"),// SIM状态（E2E-05 包A）
+        // 1370-1375 由 E2E-04 各迁移写入库；此前漏登记本枚举，补齐以防后续选号撞车
+        WS_AFTER_SALE_SOURCE("1370"),// 售后来源（E2E-04 包A）
+        WS_AFTER_SALE_ACTION_TYPE("1371"),// 售后动作类型（E2E-04 包A）
+        WS_AFTER_SALE_ACTION_STATUS("1372"),// 售后执行状态（E2E-04 包A）
+        WS_REFUND_SOURCE("1373"),// 退款来源（E2E-04 包B）
+        WS_ENTITLEMENT_BATCH_STATUS("1374"),// 权益批次状态（E2E-04 包D）
+        WS_ENTITLEMENT_BATCH_SOURCE("1375"),// 权益批次来源（E2E-04 包D）
+        // 1376~1381 为 E2E-08 分账/对账域字典，已由 02-ws-business.sql 与 settlement 迁移写入数据库，
+        // 但历史上漏登记到本枚举；此处按实际占用补注，避免后续选号时误判为空号。
+        WS_AUDIT_EXPORT_STATUS("1382"),// 审计导出任务状态（ws_audit_export.sql，B23）
         WS_FILTER_STATUS("1383"),// 滤芯状态（ws_device.sql 遥测滤芯JSON）
         ;
         private final String value;

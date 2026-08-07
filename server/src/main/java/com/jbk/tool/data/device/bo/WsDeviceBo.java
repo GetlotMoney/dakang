@@ -67,6 +67,12 @@ public class WsDeviceBo extends PageBo implements Serializable {
     @Size(max = 20, message = "SIM运营商长度不能超过20")
     private String simCarrier;
 
+    @Schema(description = "SIM状态(1368)：1正常 2未激活 3欠费 4停用")
+    private Integer simStatus;
+
+    @Schema(description = "SIM到期时间(yyyyMMddHHmmss)")
+    private String simExpireTime;
+
     @Schema(description = "备注(max500)")
     @Size(max = 500, message = "备注长度不能超过500")
     private String deviceRemark;

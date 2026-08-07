@@ -38,10 +38,6 @@ public class ApiEmployeeVo extends BaseEntityVo implements Serializable {
     @TableField("LOGIN_NAME")
     private String loginName;
 
-    @Schema(description = "登录密码")
-    @TableField("LOGIN_PWD")
-    private String loginPwd;
-
     @Schema(description = "员工名称max10")
     @TableField("EMPLOYEE_NAME")
     private String employeeName;

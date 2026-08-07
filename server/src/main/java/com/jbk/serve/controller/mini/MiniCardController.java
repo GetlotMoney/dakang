@@ -2,12 +2,15 @@ package com.jbk.serve.controller.mini;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import com.jbk.serve.service.mini.IMiniCardService;
+import com.jbk.serve.service.mini.IMiniGiftMergeService;
 import com.jbk.tool.annotation.MySaCheckOr;
 import com.jbk.tool.data.mini.bo.MiniCardDetailBo;
 import com.jbk.tool.data.mini.bo.MiniCardMemberRevokeBo;
 import com.jbk.tool.data.mini.bo.MiniCardMemberSaveBo;
+import com.jbk.tool.data.mini.bo.MiniCardMergeBo;
 import com.jbk.tool.data.mini.vo.MiniCardDetailVo;
 import com.jbk.tool.data.mini.vo.MiniCardMemberVo;
+import com.jbk.tool.data.mini.vo.MiniCardMergeVo;
 import com.jbk.tool.data.mini.vo.MiniCardSummaryVo;
 import com.jbk.tool.data.mini.vo.MiniUsableCardVo;
 import com.jbk.tool.domain.R;
@@ -38,6 +41,7 @@ import java.util.List;
 public class MiniCardController {
 
     private final IMiniCardService miniCardService;
+    private final IMiniGiftMergeService miniGiftMergeService;
 
     @PostMapping("/primary")
     @Operation(summary = "查询本人主水卡摘要（无卡返 null）")
@@ -71,6 +75,15 @@ public class MiniCardController {
         // 铁律6：卡主身份只从会话取；卡归属在 Service 层 WHERE 内强制。
         Long userId = StpKit.KH_USER.getLoginIdAsLong();
         return R.ok(miniCardService.saveMember(bo, userId));
+    }
+
+    @PostMapping("/merge")
+    @Operation(summary = "赠卡合并入正式水卡（D-415；有效期内转移权益，已过期作废清理，均注销赠卡）")
+    @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_KH_USER) })
+    public R<MiniCardMergeVo> merge(@RequestBody @Valid MiniCardMergeBo bo) {
+        // 铁律6：userId 只从会话取；目标正式水卡由服务端锁内定位，前端不可指定。
+        Long userId = StpKit.KH_USER.getLoginIdAsLong();
+        return R.ok(miniGiftMergeService.merge(bo.getCardId(), userId));
     }
 
     @PostMapping("/member/revoke")

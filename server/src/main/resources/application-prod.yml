@@ -61,7 +61,53 @@ wechat:
     appsecret: ${WECHAT_XCX_APPSECRET:}
 
 mini:
+  auth:
+    phoneless-register:
+      # 仅微信身份建号。默认关闭：手机号是唯一可人工找回账号的凭据，无号账号一旦丢失微信即失联。
+      # 当前演示环境小程序为个人主体、未过微信认证，getPhoneNumber 组件被平台禁用、注册链走不通，
+      # 因此用 docker-compose 的 MINI_PHONELESS_REGISTER_ENABLED 环境变量覆盖为 true，不改本文件。
+      # 小程序完成微信认证后，把该环境变量撤回 false 即恢复注册即绑号。
+      enabled: ${MINI_PHONELESS_REGISTER_ENABLED:false}
   pay-sim:
     # 生产默认关闭且**写显式**：Pay-Sim 一旦误开，模拟收款会被当成真实微信收款记账。
     # 演示环境用 docker-compose 的 MINI_PAYSIM_ENABLED 环境变量单独覆盖，不改本文件。
     enabled: false
+  refund-sim:
+    # 生产默认关闭且**写显式**：Refund-Sim 一旦误开，模拟退款会被当成真实微信退款记账，
+    # 账面显示已退款而用户一分钱没收到。演示环境用 docker-compose 的 MINI_REFUNDSIM_ENABLED
+    # 环境变量单独覆盖，不改本文件。关闭时生效的是 fail-closed 的 WechatRefundSourceAdapter。
+    enabled: false
+
+delivery:
+  auto-refill:
+    # 自动补货固定周期触发方（B08-S1）。生产默认关闭且写显式：真实扣款且无用户交互确认，
+    # 必须由隔离验收环境显式开启并验收后，才谈得上在主部署打开。
+    enabled: false
+    fixed-delay: 300000
+    initial-delay: 60000
+
+mybatis-plus:
+  configuration:
+    # 生产关闭 SQL 标准输出：全局配置的 StdOutImpl 会把每条语句的参数打进日志，
+    # 其中包含员工口令的 BCrypt 哈希（登录查询、建号 INSERT 都会命中）。
+    # 哈希非明文，但属离线爆破素材，没有理由每次登录都留一份在日志里（R-201）
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+# 分润 V2（E2E-08 S1）：计算内核与计划模型已就位，但正式比例待甲方书面确认，
+# 且组件尚未与订单完成事务接线（S2 范围）。两环境都显式 false——
+# 开关关闭时任何生产路径不得调用 V2 计算器，现有 V1 分账行为保持不变。
+settlement:
+  # D-421 分润冻结期：分账行创建满 N 天才结算入账（与 24h 申诉窗对齐，冻结期内
+  # 退款冲减零资金动作）。改天数需重启生效。
+  split-freeze-days: 1
+  split-v2:
+    enabled: false
+
+# D-418「0 元注册送」：注册成功自动发放赠卡。参数未定（C-01.8）前保持关闭；
+# 甲方给出金额/水量/天数后填入并打开，重启服务后生效（无需代码变更）。
+marketing:
+  register-gift:
+    enabled: false
+    amount-fen: 0
+    water-ml: 0
+    expire-days: 0

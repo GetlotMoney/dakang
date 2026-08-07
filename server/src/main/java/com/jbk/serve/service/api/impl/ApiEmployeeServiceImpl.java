@@ -17,9 +17,11 @@ import com.jbk.tool.data.api.po.*;
 import com.jbk.serve.mapper.api.ApiEmployeeMapper;
 import com.jbk.serve.service.api.IApiEmployeeService;
 import com.jbk.serve.service.api.IApiEmployeeTagService;
+import com.jbk.tool.data.api.vo.ApiEmployeeInitPwdVo;
 import com.jbk.tool.data.api.vo.ApiEmployeeVo;
 import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.utils.OptionalUtils;
+import com.jbk.tool.utils.PwdUtils;
 import com.jbk.tool.utils.RSAUtils;
 import com.jbk.tool.utils.SortUtils;
 import com.jbk.tool.utils.auth.LogLoginUtils;
@@ -69,7 +71,7 @@ public class ApiEmployeeServiceImpl extends MPJBaseServiceImpl<ApiEmployeeMapper
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Long saveData(ApiEmployeeBo employeeBo) {
+    public ApiEmployeeInitPwdVo saveData(ApiEmployeeBo employeeBo) {
         // 唯一校验
         long count = count(Wrappers.lambdaQuery(ApiEmployee.class)
                 .eq(ApiEmployee::getEmployeePhone, employeeBo.getEmployeePhone())
@@ -77,10 +79,12 @@ public class ApiEmployeeServiceImpl extends MPJBaseServiceImpl<ApiEmployeeMapper
                 .eq(ApiEmployee::getLoginName, employeeBo.getLoginName())
         );
         OptionalUtils.gtZeroElseThrow(count, "用户手机号或登录名已存在，添加失败");
-        // 保存员工
+        // 保存员工：初始密码为一次性强随机口令（取代可从员工列表推出的"手机号后6位"），
+        // 库内只存 BCrypt 哈希，明文仅经响应回执一次；首次登录被强制改密
         ApiEmployee apiEmployee = BeanUtil.copyProperties(employeeBo, ApiEmployee.class);
-        String phone = employeeBo.getEmployeePhone().substring(5);
-        apiEmployee.setLoginPwd(RSAUtils.encrypt(phone));
+        String initPwd = PwdUtils.generateInitialPwd();
+        apiEmployee.setLoginPwd(PwdUtils.hash(initPwd));
+        apiEmployee.setPwdChangeFlag(ApiEnum.Flag.YES.value());
         save(apiEmployee);
         // 保存标签
         if (ObjectUtil.isNotEmpty(employeeBo.getTagIdList())) {
@@ -95,7 +99,9 @@ public class ApiEmployeeServiceImpl extends MPJBaseServiceImpl<ApiEmployeeMapper
             apiEmployeeTagService.saveBatch(employeeTagList);
         }
 
-        return apiEmployee.getId();
+        return new ApiEmployeeInitPwdVo()
+                .setId(apiEmployee.getId())
+                .setInitialPwd(initPwd);
     }
 
     @Override
@@ -190,43 +196,68 @@ public class ApiEmployeeServiceImpl extends MPJBaseServiceImpl<ApiEmployeeMapper
     }
 
     @Override
-    public Boolean resetPassword(Long id) {
-        ApiEmployeeVo employeeVo = getData(id);
-        String initPwd = employeeVo.getEmployeePhone().substring(5);
-        String encryptPwd = RSAUtils.encrypt(initPwd);
+    public ApiEmployeeInitPwdVo resetPassword(Long id) {
+        ApiEmployee employee = getById(id);
+        OptionalUtils.nullToElseThrow(employee, "员工信息不存在");
+        // 重置为一次性强随机口令：明文仅经响应回执一次，目标账号强制下线并在下次登录强制改密
+        String initPwd = PwdUtils.generateInitialPwd();
         update(Wrappers.lambdaUpdate(ApiEmployee.class)
                 .eq(ApiEmployee::getId, id)
-                .set(ApiEmployee::getLoginPwd, encryptPwd)
+                .set(ApiEmployee::getLoginPwd, PwdUtils.hash(initPwd))
+                .set(ApiEmployee::getPwdChangeFlag, ApiEnum.Flag.YES.value())
         );
         StpKit.MANAGE.logout(id);
-        return true;
+        return new ApiEmployeeInitPwdVo()
+                .setId(id)
+                .setInitialPwd(initPwd);
     }
 
     @Override
     public Boolean updatePassword(ApiEmployeeBo employeeBo) {
-        ApiEmployeeVo employee = getData(employeeBo.getId());
-        String dbOldPwd = RSAUtils.decrypt(employee.getLoginPwd());
+        // 只允许修改当前会话本人的密码：请求体中的 id 不作为身份来源，
+        // 否则任何登录员工可用"员工列表可见的他人信息"探测/接管他人账号
+        long sessionUserId = StpKit.MANAGE.getLoginIdAsLong();
+        ApiEmployee employee = getById(sessionUserId);
+        OptionalUtils.nullToElseThrow(employee, "员工信息不存在");
         String oldPwd = RSAUtils.decrypt(employeeBo.getLoginPwd());
-        if (!StrUtil.equals(dbOldPwd, oldPwd)) {
+        String currentHash = employee.getLoginPwd();
+        if (!PwdUtils.verify(oldPwd, currentHash)) {
             throw new JbkException("原密码输入错误，请重新输入");
         }
-        String newPwd = RSAUtils.encrypt(RSAUtils.decrypt(employeeBo.getNewLoginPwd()));
-        update(Wrappers.lambdaUpdate(ApiEmployee.class)
-                .eq(ApiEmployee::getId, employeeBo.getId())
-                .set(ApiEmployee::getLoginPwd, newPwd)
+        String newPwd = RSAUtils.decrypt(employeeBo.getNewLoginPwd());
+        PwdUtils.checkStrength(newPwd);
+        // 禁止原样重设：初始口令本身满足强度规则，否则员工把初始口令再填一遍即可清掉强改标记，
+        // 而该口令管理员看到过（一次性口令形同虚设）——这是强改门唯一的实际绕过路径
+        if (PwdUtils.verify(newPwd, currentHash)) {
+            throw new JbkException("新密码不能与原密码相同");
+        }
+        // 乐观条件锁定"刚校验过的那份哈希"：管理员重置与本人改密都是无条件覆盖，
+        // 若并发交错，本人改密会把重置生成的随机口令覆盖回自选口令并清掉强改标记，
+        // 使管理员重置失效。影响 0 行即表示口令已被他人改动，按原密码错误处理
+        boolean changed = update(Wrappers.lambdaUpdate(ApiEmployee.class)
+                .eq(ApiEmployee::getId, sessionUserId)
+                .eq(ApiEmployee::getLoginPwd, currentHash)
+                .set(ApiEmployee::getLoginPwd, PwdUtils.hash(newPwd))
+                .set(ApiEmployee::getPwdChangeFlag, ApiEnum.Flag.NO.value())
         );
+        if (!changed) {
+            throw new JbkException("原密码输入错误，请重新输入");
+        }
+        String operatorName = (String) StpKit.MANAGE.getExtra(StpKit.EXTRA_NAME);
         try {
             // 保存退出登录日志
             ApiLogLogin logLogin = LogLoginUtils.createLogLogin(
                     ApiEnum.LoginType.LOG_OUT,
-                    employeeBo.getId(),
+                    sessionUserId,
                     StpKit.DRIVER_MANAGE,
-                    (String) StpKit.MANAGE.getExtra(StpKit.EXTRA_NAME)
+                    operatorName
             );
             logLoginService.saveData(logLogin);
         } catch (Exception e) {
         }
-        StpKit.MANAGE.logout();
+        // 按账号全端登出（与 resetPassword 一致）：只登出当前 token 会让攻击者已持有的
+        // 另一条会话在 timeout 内继续有效，改密的凭据轮换意义落空
+        StpKit.MANAGE.logout(sessionUserId);
         return Boolean.TRUE;
     }
 

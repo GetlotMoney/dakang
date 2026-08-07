@@ -15,8 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class DeliveryTransitionsTest {
 
-    /** 合法转换全集：1→2→3→4→5、5↔7（申诉/裁决归档）。 */
-    private static final Set<String> ALLOWED = Set.of("1>2", "2>3", "3>4", "4>5", "5>7", "7>5");
+    /** 合法转换全集：1→2→3→4→5、5↔7（申诉/裁决归档）、1→6（待接单取消，E2E-04 包A）。 */
+    private static final Set<String> ALLOWED = Set.of("1>2", "2>3", "3>4", "4>5", "5>7", "7>5", "1>6");
 
     @Test
     void fullMatrixMatchesWhitelistExactly() {
@@ -52,5 +52,15 @@ class DeliveryTransitionsTest {
         assertFalse(DeliveryTransitions.allowed(5, 4), "已签收不允许回退");
         assertFalse(DeliveryTransitions.allowed(4, 3), "已送达不允许回退");
         assertFalse(DeliveryTransitions.allowed(5, 5), "重复签收非法");
+    }
+
+    @Test
+    void cancelOnlyFromPending() {
+        assertTrue(DeliveryTransitions.allowed(1, 6), "待接单可自助取消");
+        // 已接单之后配送员已投入履约成本，取消必须走异常/申诉链路；
+        // 这条边一旦放宽，用户就能在配送员出发后单方面撤单并全额退款
+        for (int from : new int[]{2, 3, 4, 5, 6, 7}) {
+            assertFalse(DeliveryTransitions.allowed(from, 6), "状态 " + from + " 不允许自助取消");
+        }
     }
 }

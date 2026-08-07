@@ -63,4 +63,16 @@ public class WsAlarm extends BaseEntity implements Serializable {
     @Schema(description = "恢复时间（自动恢复时回填）")
     @TableField("RECOVER_TIME")
     private String recoverTime;
+
+    @TableField("ACTIVE_DEDUPE_KEY")
+    @Schema(description = "活动告警幂等键：AlarmDedupeKey 单一出处生成；活动期间非空且全库唯一，忽略/自动恢复时原子清空")
+    private String activeDedupeKey;
+
+    @TableField("HANDLE_BY")
+    @Schema(description = "处置人（api_employee.ID；忽略/转工单时回填）")
+    private Long handleBy;
+
+    @TableField("HANDLE_TIME")
+    @Schema(description = "处置时间")
+    private String handleTime;
 }

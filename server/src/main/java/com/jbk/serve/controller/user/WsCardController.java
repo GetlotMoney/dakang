@@ -41,6 +41,8 @@ public class WsCardController {
 
     @Autowired
     private IWsCardService cardService;
+    @Autowired
+    private com.jbk.serve.service.settlement.IGiftCardService giftCardService;
 
     @PostMapping("/page")
     @Operation(summary = "分页查询（卡号/类型/状态/持卡用户筛选）")
@@ -74,5 +76,16 @@ public class WsCardController {
     public R<Boolean> changeStatus(
             @RequestBody @Validated(IdGroup.class) WsCardBo bo) {
         return R.ok(cardService.changeStatus(bo));
+    }
+
+    @LogOperation
+    @RepeatSubmit
+    @PostMapping("/issueGift")
+    @Operation(summary = "运营赠卡发放（高风险：人工权益发放；D-213 口径带有效期不可充值，请求号幂等）")
+    @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_MANAGE) }, permission = {
+            @SaCheckPermission(value = "user:card:issue", type = StpKit.DRIVER_MANAGE) })
+    public R<Long> issueGift(
+            @RequestBody @jakarta.validation.Valid com.jbk.tool.data.settlement.bo.GiftIssueBo bo) {
+        return R.ok(giftCardService.issue(bo, StpKit.MANAGE.getLoginIdAsLong()));
     }
 }

@@ -23,6 +23,36 @@ public final class WaterBillingMath {
         return unitPriceFenPerLiter;
     }
 
+    /**
+     * 解析出水口配置单价（{@code ws_device_outlet.OUTLET_PRICE}，varchar 存的「分/升」）为整数。
+     *
+     * <p>唯一实现：此前扫码上下文、下单装配、结算三处各写一份 {@code Integer.parseInt}，
+     * 宽严不一（有的容忍前后空白、有的不校验范围），最松的那一处就是错误计价的入口。
+     * 只接受纯十进制整数文本，负数、小数、带符号、空白与任何非数字一律拒绝，
+     * 范围复用 {@link #requireUnitPrice}。</p>
+     *
+     * @param outletPrice 出水口配置原文
+     * @return 规范化后的分/升
+     * @throws JbkException 文本非法或越界
+     */
+    public static int requireOutletPrice(String outletPrice) {
+        String text = outletPrice == null ? "" : outletPrice.trim();
+        if (!text.matches("^(?:0|[1-9]\\d*)$")) {
+            throw new JbkException("出水口单价配置非法（" + outletPrice + "）");
+        }
+        long value;
+        try {
+            value = Long.parseLong(text);
+        }
+        catch (NumberFormatException overflow) {
+            throw new JbkException("出水口单价配置超出取值范围（" + outletPrice + "）");
+        }
+        if (value > UNIT_PRICE_MAX_FEN_PER_LITER) {
+            throw new JbkException("取水单价超出允许范围");
+        }
+        return requireUnitPrice((int) value);
+    }
+
     public static long requireNonNegativeMl(Long ml, String label) {
         if (ml == null || ml < 0) {
             throw new JbkException(label + "必须为非负整数毫升");

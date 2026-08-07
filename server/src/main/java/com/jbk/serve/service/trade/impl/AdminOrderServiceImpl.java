@@ -12,6 +12,8 @@ import com.jbk.serve.service.delivery.IAdminDeliveryService;
 import com.jbk.serve.service.device.IWsCommandService;
 import com.jbk.serve.service.mini.recharge.RechargeDetailVerifier;
 import com.jbk.serve.service.trade.IAdminOrderService;
+import com.jbk.serve.service.trade.OrderCommandVerifier;
+import com.jbk.tool.consts.aftersale.AfterSaleEnum;
 import com.jbk.tool.data.PageDataVo;
 import com.jbk.tool.data.device.po.WsCommand;
 import com.jbk.tool.data.trade.bo.AdminOrderBo;
@@ -28,7 +30,6 @@ import com.jbk.tool.exception.JbkException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -53,7 +54,9 @@ public class AdminOrderServiceImpl implements IAdminOrderService {
     @Override
     public PageDataVo<AdminOrderItemVo> pageOrders(AdminOrderBo bo) {
         Page<AdminOrderItemVo> page = new Page<>(bo.getCurrent(), bo.getSize());
-        IPage<AdminOrderItemVo> result = orderMapper.pageAdminOrders(page, bo);
+        IPage<AdminOrderItemVo> result = orderMapper.pageAdminOrders(page, bo,
+                AfterSaleEnum.SourceType.WATER_ABNORMAL.getValue(),
+                AfterSaleEnum.ActionStatus.SUCCESS.getValue());
         List<AdminOrderItemVo> records = result.getRecords();
         records.forEach(this::decorateActorAndOwner);
         return PageDataVo.getPageData(records, result.getTotal());
@@ -61,7 +64,9 @@ public class AdminOrderServiceImpl implements IAdminOrderService {
 
     @Override
     public AdminOrderTraceVo getOrderTrace(Long id) {
-        AdminOrderItemVo order = orderMapper.selectAdminOrderById(id);
+        AdminOrderItemVo order = orderMapper.selectAdminOrderById(id,
+                AfterSaleEnum.SourceType.WATER_ABNORMAL.getValue(),
+                AfterSaleEnum.ActionStatus.SUCCESS.getValue());
         if (ObjectUtil.isNull(order)) {
             throw new JbkException("订单不存在");
         }
@@ -206,7 +211,13 @@ public class AdminOrderServiceImpl implements IAdminOrderService {
         AdminCommandTraceVo vo = new AdminCommandTraceVo();
         vo.setCmdId(order.getCmdId());
         vo.setDeviceNo(order.getDeviceNo());
-        String mismatch = commandLinkMismatch(order, cmd);
+        // 共键/状态矩阵判定统一在 OrderCommandVerifier（读写两侧共用），本层只负责取值与投影。
+        // afterSaleConfirmed 由订单查询 SQL 一并带出（EXISTS 子查询），不在此处逐行查库造成 N+1。
+        String mismatch = OrderCommandVerifier.commandLinkMismatch(
+                order.getId(), order.getOrderNo(), order.getOrderType(), order.getOrderStatus(),
+                order.getDeviceId(), order.getOutletId(), order.getOutletNo(), order.getOutletDeviceId(),
+                order.getPlanMl(), order.getActualMl(), order.getCmdId(), order.getFinishTime(),
+                Boolean.TRUE.equals(order.getAfterSaleConfirmed()), cmd);
         if (StrUtil.isNotBlank(mismatch)) {
             vo.setLinkStatus("mismatch");
             vo.setLinkReason(mismatch);
@@ -224,286 +235,12 @@ public class AdminOrderServiceImpl implements IAdminOrderService {
         return vo;
     }
 
-    /** 指令类型(1320)：1=开始出水（取水订单唯一允许绑定的指令类型）。 */
-    private static final int CMD_TYPE_START_DISPENSE = 1;
     /** 订单类型(1340)：1=扫码取水。 */
     private static final int ORDER_TYPE_WATER = 1;
     /** 订单类型(1340)：2=购卡充值。 */
     private static final int ORDER_TYPE_RECHARGE = 2;
     /** 订单类型(1340)：3=水配送。 */
     private static final int ORDER_TYPE_DELIVERY = 3;
-
-    /**
-     * 订单-指令共键校验（纯函数，供单元测试直接驱动）。
-     *
-     * @param cmd 可为 null（订单引用的指令不存在）
-     * @return null 表示共键一致；否则返回不一致原因。
-     */
-    static String commandLinkMismatch(AdminOrderItemVo order, WsCommand cmd) {
-        if (ObjectUtil.isNull(cmd)) {
-            return "订单引用的指令（CMD_ID=" + order.getCmdId() + "）不存在，不能作为本单履约证据";
-        }
-        if (ObjectUtil.isNull(order.getCmdId()) || ObjectUtil.isNull(cmd.getId())
-                || !cmd.getId().equals(order.getCmdId())) {
-            return "订单 CMD_ID 与实际读取的指令主键不一致，不能作为本单履约证据";
-        }
-        // 收口复审：DATA_STATUS 必须精确为 0（正常）；为空同样 fail-closed，不默认视为未删除。
-        Integer dataStatus = cmd.getDataStatus();
-        if (ObjectUtil.isNull(dataStatus) || dataStatus != 0) {
-            return "指令数据状态异常（DATA_STATUS=" + dataStatus + "），不能作为本单履约证据";
-        }
-        if (ObjectUtil.isNull(cmd.getOrderId())) {
-            return "指令未关联任何订单（ORDER_ID 为空），不能作为本单履约证据";
-        }
-        if (!cmd.getOrderId().equals(order.getId())) {
-            return "指令归属订单（" + cmd.getOrderId() + "）与当前订单（" + order.getId() + "）不一致";
-        }
-        if (ObjectUtil.isNull(order.getDeviceId()) || ObjectUtil.isNull(cmd.getDeviceId())) {
-            return "订单或指令缺少设备标识，无法证明同一设备履约";
-        }
-        if (!cmd.getDeviceId().equals(order.getDeviceId())) {
-            return "指令目标设备（" + cmd.getDeviceId() + "）与订单设备（" + order.getDeviceId() + "）不一致";
-        }
-        if (ObjectUtil.isNull(order.getOutletId()) || ObjectUtil.isNull(order.getOutletDeviceId())) {
-            return "订单出水口不存在或缺少所属设备，无法证明出水口归属";
-        }
-        if (!order.getOutletDeviceId().equals(order.getDeviceId())) {
-            return "订单出水口所属设备（" + order.getOutletDeviceId() + "）与订单设备（"
-                    + order.getDeviceId() + "）不一致";
-        }
-        // 收口复审：订单只要引用了指令，就必须同时满足 ORDER_TYPE=1 且 CMD_TYPE=1，其他任何组合一律 mismatch。
-        Integer orderType = order.getOrderType();
-        boolean isWaterOrder = ObjectUtil.isNotNull(orderType) && orderType == ORDER_TYPE_WATER;
-        boolean isDispense = ObjectUtil.isNotNull(cmd.getCmdType()) && cmd.getCmdType() == CMD_TYPE_START_DISPENSE;
-        if (!isWaterOrder || !isDispense) {
-            return "订单关联指令仅允许「扫码取水订单(1) ↔ 开始出水指令(1)」组合，当前订单类型（"
-                    + orderType + "）/指令类型（" + cmd.getCmdType() + "）不符";
-        }
-        // 出水指令报文为空/畸形/缺 orderNo/orderNo 为空一律 mismatch；并核对 planMl、outletNo 与订单一致。
-        String payload = cmd.getCmdPayload();
-        if (StrUtil.isBlank(payload)) {
-            return "出水指令报文为空，无法核验归属订单号";
-        }
-        cn.hutool.json.JSONObject json;
-        try {
-            json = cn.hutool.json.JSONUtil.parseObj(payload);
-        } catch (Exception e) {
-            return "出水指令报文不是合法 JSON，无法核验归属订单号";
-        }
-        Object orderNoValue = json.get("orderNo");
-        if (!(orderNoValue instanceof String payloadOrderNo) || StrUtil.isBlank(payloadOrderNo)) {
-            return "出水指令报文订单号（orderNo）缺失、为空或不是字符串，不能作为本单履约证据";
-        }
-        if (!payloadOrderNo.equals(order.getOrderNo())) {
-            return "指令报文内订单号（" + payloadOrderNo + "）与当前订单（" + order.getOrderNo() + "）不一致";
-        }
-        // 出水计划量和出水口是履约证据必填共键；任一侧缺失、JSON 类型不是整数或数值不一致均 fail-closed。
-        Long payloadPlanMl = strictJsonInteger(json.get("planMl"));
-        if (ObjectUtil.isNull(payloadPlanMl)) {
-            return "出水指令报文缺少整数计划水量（planMl），履约证据不完整";
-        }
-        if (payloadPlanMl <= 0) {
-            return "出水指令报文计划水量（planMl）必须为正整数";
-        }
-        if (ObjectUtil.isNull(order.getPlanMl())) {
-            return "订单缺少计划水量（PLAN_ML），无法核验指令履约证据";
-        }
-        if (order.getPlanMl() <= 0) {
-            return "订单计划水量（PLAN_ML）必须为正整数，无法作为履约证据";
-        }
-        if (!payloadPlanMl.equals(order.getPlanMl())) {
-            return "指令报文计划水量（" + payloadPlanMl + "）与订单计划水量（" + order.getPlanMl() + "）不一致";
-        }
-        Long payloadOutletNo = strictJsonInteger(json.get("outletNo"));
-        if (ObjectUtil.isNull(payloadOutletNo)) {
-            return "出水指令报文缺少整数出水口（outletNo），履约证据不完整";
-        }
-        if (payloadOutletNo <= 0) {
-            return "出水指令报文出水口（outletNo）必须为正整数";
-        }
-        if (ObjectUtil.isNull(order.getOutletNo())) {
-            return "订单缺少出水口（OUTLET_NO），无法核验指令履约证据";
-        }
-        if (order.getOutletNo() <= 0) {
-            return "订单出水口（OUTLET_NO）必须为正整数，无法作为履约证据";
-        }
-        if (payloadOutletNo.longValue() != order.getOutletNo().longValue()) {
-            return "指令报文出水口（" + payloadOutletNo + "）与订单出水口（" + order.getOutletNo() + "）不一致";
-        }
-        String stateMismatch = commandStateMismatch(order, cmd);
-        if (StrUtil.isNotBlank(stateMismatch)) {
-            return stateMismatch;
-        }
-
-        // 失败/超时可能发生在未出水阶段，因此双侧均无实际量时允许；一旦任一侧提供实际量，
-        // 两侧必须同时提供严格非负整数且数值一致，避免异常单拼接到其他执行结果。
-        if (ObjectUtil.isNotNull(order.getOrderStatus()) && order.getOrderStatus() == 6) {
-            String actualMismatch = abnormalActualMismatch(order, cmd);
-            if (StrUtil.isNotBlank(actualMismatch)) {
-                return actualMismatch;
-            }
-        }
-
-        // 完成/部分退款态核对实际水量，防「正确单号 + 错误水量」仍显示 ok。
-        if (ObjectUtil.isNotNull(order.getOrderStatus())
-                && (order.getOrderStatus() == 4 || order.getOrderStatus() == 8)) {
-            if (ObjectUtil.isNull(order.getActualMl())) {
-                return "订单已结算但缺少实际水量（ACTUAL_ML），履约证据不完整";
-            }
-            if (order.getActualMl() <= 0) {
-                return "订单已结算但实际水量（ACTUAL_ML）不是正整数，履约证据不合法";
-            }
-            Long resultActualMl = null;
-            if (StrUtil.isNotBlank(cmd.getResultPayload())) {
-                try {
-                    resultActualMl = strictJsonInteger(
-                            cn.hutool.json.JSONUtil.parseObj(cmd.getResultPayload()).get("actualMl"));
-                } catch (Exception ignored) {
-                    resultActualMl = null;
-                }
-            }
-            if (ObjectUtil.isNull(resultActualMl)) {
-                return "订单已结算但指令结果报文缺少实际水量（actualMl），履约证据不完整";
-            }
-            if (resultActualMl <= 0) {
-                return "订单已结算但指令结果实际水量（actualMl）不是正整数";
-            }
-            if (!resultActualMl.equals(order.getActualMl())) {
-                return "指令结果实际水量（" + resultActualMl + "）与订单实际水量（" + order.getActualMl() + "）不一致";
-            }
-        }
-        if (ObjectUtil.isNotNull(order.getOrderStatus()) && order.getOrderStatus() == 7) {
-            Long resultActualMl = null;
-            if (StrUtil.isNotBlank(cmd.getResultPayload())) {
-                try {
-                    resultActualMl = strictJsonInteger(
-                            cn.hutool.json.JSONUtil.parseObj(cmd.getResultPayload()).get("actualMl"));
-                } catch (Exception ignored) {
-                    resultActualMl = null;
-                }
-            }
-            if (ObjectUtil.isNull(order.getActualMl()) || order.getActualMl() != 0L
-                    || ObjectUtil.isNull(resultActualMl) || resultActualMl != 0L) {
-                return "零出水退款订单必须由实际水量为 0 的成功指令结果佐证";
-            }
-        }
-        return null;
-    }
-
-    /** 只接受当前真实状态机能够产生的订单/指令状态与时间证据组合。 */
-    private static String commandStateMismatch(AdminOrderItemVo order, WsCommand cmd) {
-        Integer orderStatus = order.getOrderStatus();
-        Integer cmdStatus = cmd.getCmdStatus();
-        if (ObjectUtil.isNull(orderStatus)) {
-            return "订单状态为空，无法核验指令履约阶段";
-        }
-        if (ObjectUtil.isNotNull(cmdStatus)) {
-            if (cmdStatus == 1 && (StrUtil.isNotBlank(cmd.getSentTime())
-                    || StrUtil.isNotBlank(cmd.getAckTime())
-                    || StrUtil.isNotBlank(cmd.getFinishTime())
-                    || StrUtil.isNotBlank(cmd.getResultPayload()))) {
-                return "待下发指令不得携带下发、回执、完成时间或执行结果";
-            }
-            if (cmdStatus == 2) {
-                if (StrUtil.isBlank(cmd.getSentTime())) {
-                    return "已下发指令缺少下发时间";
-                }
-                if (StrUtil.isNotBlank(cmd.getAckTime())
-                        || StrUtil.isNotBlank(cmd.getFinishTime())
-                        || StrUtil.isNotBlank(cmd.getResultPayload())) {
-                    return "已下发指令不得提前携带回执、完成时间或执行结果";
-                }
-            }
-            if (cmdStatus == 3) {
-                if (StrUtil.isBlank(cmd.getSentTime()) || StrUtil.isBlank(cmd.getAckTime())) {
-                    return "已回执指令必须具备下发和回执时间";
-                }
-                if (StrUtil.isNotBlank(cmd.getFinishTime()) || StrUtil.isNotBlank(cmd.getResultPayload())) {
-                    return "已回执指令不得提前携带完成时间或执行结果";
-                }
-            }
-        }
-        if (orderStatus == 2 && ObjectUtil.isNotNull(cmdStatus) && (cmdStatus == 1 || cmdStatus == 2)) {
-            return null;
-        }
-        if (orderStatus == 3) {
-            if (ObjectUtil.isNull(cmdStatus) || cmdStatus != 3
-                    || StrUtil.isBlank(cmd.getSentTime()) || StrUtil.isBlank(cmd.getAckTime())) {
-                return "出水中订单必须关联已回执指令，并具备下发/回执时间";
-            }
-            return null;
-        }
-        if (orderStatus == 4 || orderStatus == 7 || orderStatus == 8) {
-            // 设备协议允许未先上报 ACK 而直接返回 result，因此成功终态不强制 ACK_TIME。
-            if (ObjectUtil.isNull(cmdStatus) || cmdStatus != 4
-                    || StrUtil.isBlank(cmd.getSentTime()) || StrUtil.isBlank(cmd.getFinishTime())) {
-                return "已结算订单必须关联执行成功指令，并具备下发/完成时间";
-            }
-            if (StrUtil.isBlank(order.getFinishTime())) {
-                return "已结算订单缺少订单完成时间，无法与指令终态相互佐证";
-            }
-            return null;
-        }
-        if (orderStatus == 6) {
-            if (ObjectUtil.isNull(cmdStatus) || (cmdStatus != 5 && cmdStatus != 6)
-                    || StrUtil.isBlank(cmd.getFinishTime())) {
-                return "异常待补偿订单必须关联失败/超时终态指令，并具备完成时间";
-            }
-            return null;
-        }
-        return "订单状态（" + orderStatus + "）与指令状态（" + cmdStatus + "）不属于允许的履约证据组合";
-    }
-
-    /** 异常订单实际量证据：双侧均无值允许；任一侧有值时必须双侧严格非负且相等。 */
-    private static String abnormalActualMismatch(AdminOrderItemVo order, WsCommand cmd) {
-        Long orderActualMl = order.getActualMl();
-        boolean resultActualPresent = false;
-        Long resultActualMl = null;
-        if (StrUtil.isNotBlank(cmd.getResultPayload())) {
-            cn.hutool.json.JSONObject resultJson;
-            try {
-                resultJson = cn.hutool.json.JSONUtil.parseObj(cmd.getResultPayload());
-            } catch (Exception ignored) {
-                return "异常指令结果报文不是合法 JSON，无法核验实际水量";
-            }
-            resultActualPresent = resultJson.containsKey("actualMl");
-            if (resultActualPresent) {
-                resultActualMl = strictJsonInteger(resultJson.get("actualMl"));
-                if (ObjectUtil.isNull(resultActualMl)) {
-                    return "异常指令结果实际水量（actualMl）必须为整数数值";
-                }
-            }
-        }
-        if (ObjectUtil.isNull(orderActualMl) && !resultActualPresent) {
-            return null;
-        }
-        if (ObjectUtil.isNull(orderActualMl) || !resultActualPresent) {
-            return "异常订单与指令结果的实际水量必须同时存在或同时为空";
-        }
-        if (orderActualMl < 0 || resultActualMl < 0) {
-            return "异常订单与指令结果的实际水量必须为非负整数";
-        }
-        if (!resultActualMl.equals(orderActualMl)) {
-            return "异常指令结果实际水量（" + resultActualMl + "）与订单实际水量（"
-                    + orderActualMl + "）不一致";
-        }
-        return null;
-    }
-
-    /** JSON 履约量只接受整数数值；字符串、浮点数、布尔值和越界整数均视为证据类型错误。 */
-    private static Long strictJsonInteger(Object value) {
-        if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
-            return ((Number) value).longValue();
-        }
-        if (value instanceof BigInteger integer) {
-            try {
-                return integer.longValueExact();
-            } catch (ArithmeticException ignored) {
-                return null;
-            }
-        }
-        return null;
-    }
 
     private List<CommandTraceNodeVo> buildTimeline(WsCommand cmd) {
         List<CommandTraceNodeVo> timeline = new ArrayList<>();

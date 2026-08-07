@@ -45,6 +45,24 @@ public final class DeliveryOrderNo {
         return ORDER_PREFIX + digestHex(userId + ":AR:" + ruleId + ":" + periodIndex);
     }
 
+    /**
+     * 补送子订单号（E2E-04 包C）：幂等键 {@code RESEND:APPEAL:<appealId>}。
+     *
+     * <p>与 {@link #deriveAutoRefill} 同一条思路——凡是「由系统而非用户请求触发」的建单，
+     * 幂等键都必须由业务主体确定性构成，而不是走 {@link #derive} 那条要求 UUID requestId 的路：
+     * 那条路上的随机性来自用户端，系统触发时没有这样的随机源，硬造一个就等于放弃幂等。</p>
+     *
+     * <p>同一条申诉重复生成补送必然派生出同一个订单号，撞 {@code uk_order_no} —— 这是
+     * 三道防重复补送闸里的第一道（另两道是 RESULT_ORDER_ID 的 CAS 与新订单上的 uk_dtask_order）。</p>
+     */
+    public static String deriveResend(Long userId, Long appealId) {
+        requireUserId(userId);
+        if (appealId == null || appealId <= 0) {
+            throw new JbkException("补送申诉ID非法，无法派生补送单号");
+        }
+        return ORDER_PREFIX + digestHex(userId + ":RESEND:APPEAL:" + appealId);
+    }
+
     /** 任务号由订单号派生：订单唯一 ⇒ 任务号唯一；无独立随机性可供伪造。 */
     public static String deriveTaskNo(String orderNo) {
         if (orderNo == null || orderNo.isBlank()) {

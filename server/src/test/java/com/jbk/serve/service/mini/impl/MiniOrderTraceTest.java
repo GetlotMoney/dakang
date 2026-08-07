@@ -9,6 +9,7 @@ import com.jbk.tool.data.trade.po.WsOrder;
 import com.jbk.tool.data.trade.po.WsPayment;
 import com.jbk.tool.data.trade.vo.OrderDetailVo;
 import com.jbk.tool.data.trade.vo.OrderTraceNodeVo;
+import com.jbk.tool.data.mini.vo.MiniAfterSaleProgressVo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -139,5 +140,25 @@ class MiniOrderTraceTest {
         assertNull(vo.getCommandNo());
         assertNull(vo.getCommandStatus());
         assertEquals(0, vo.getFlowCount());
+    }
+
+    @Test
+    void orderDetailReturnsServerProjectedAfterSaleForCurrentUser() {
+        MiniAfterSaleProgressVo progress = new MiniAfterSaleProgressVo()
+                .setAfterSaleNo("AS20260729000001")
+                .setSourceType(2)
+                .setActionType(4)
+                .setActionStatus(1)
+                .setApprovedCount(1)
+                .setResendOrderNo("WDRESEND0001")
+                .setResendTaskNo("DT-RESEND-0001");
+        when(wsOrderMapper.selectLatestMiniAfterSaleProgress(1L, USER_ID)).thenReturn(progress);
+
+        OrderDetailVo detail = detailOf(order(
+                TradeEnum.OrderType.DELIVERY.getValue(), TradeEnum.OrderStatus.FINISHED.getValue()));
+
+        assertEquals("AS20260729000001", detail.getAfterSale().getAfterSaleNo());
+        assertEquals("WDRESEND0001", detail.getAfterSale().getResendOrderNo());
+        assertEquals("DT-RESEND-0001", detail.getAfterSale().getResendTaskNo());
     }
 }

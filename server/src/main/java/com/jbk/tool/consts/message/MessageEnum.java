@@ -34,9 +34,10 @@ public interface MessageEnum {
         }
     }
 
-    /** 消息渠道：一期固定站内 */
+    /** 消息渠道：一期只有站内真实发送；2 为微信订阅骨架占位（重试/降级状态机演练与历史样本用，一期不发送） */
     enum MsgChannel {
-        IN_APP(1, "站内");
+        IN_APP(1, "站内"),
+        WECHAT_SUBSCRIBE(2, "微信订阅（骨架占位）");
 
         private final int value;
         private final String desc;

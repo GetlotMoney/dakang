@@ -8,6 +8,7 @@ import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.jbk.serve.mapper.device.WsCommandMapper;
+import com.jbk.serve.service.settlement.IInviteService;
 import com.jbk.serve.mapper.device.WsDeviceMapper;
 import com.jbk.serve.mapper.device.WsDeviceOutletMapper;
 import com.jbk.serve.mapper.station.WsStationMapper;
@@ -19,6 +20,8 @@ import com.jbk.serve.service.mini.IMiniOrderService;
 import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.serve.service.trade.ITradeOrderTxService;
 import com.jbk.serve.service.trade.WaterBillingMath;
+import com.jbk.tool.consts.mini.MiniRejectCode;
+import com.jbk.serve.service.trade.WaterOrderSnapshot;
 import com.jbk.tool.config.system.redis.utils.RedisUtils;
 import com.jbk.tool.consts.ops.OpsEnum;
 import com.jbk.tool.consts.trade.TradeEnum;
@@ -76,6 +79,8 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     private static final String ORDER_IDEMPOTENCY_DATA_INVALID = "既有订单幂等数据异常，请联系客服处理";
     private static final String ORDER_NO_COLLISION = "订单号生成冲突，请重新扫码下单";
 
+    @Autowired
+    private IInviteService inviteService;
     @Autowired
     private IMiniDeviceService miniDeviceService;
     @Autowired
@@ -163,11 +168,15 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
         }
         WsDeviceOutlet outlet = requireOutlet(session.getOutletId());
         WsDevice device = requireDevice(session.getDeviceId());
-        if (ObjectUtil.notEqual(outlet.getWaterTypeId(), bo.getWaterTypeId())) {
-            throw new JbkException("水种与出水口不一致，请重新扫码");
+        // 前端自报水种只做一致性核验，绝不作为权威来源：权威是扫码会话里冻结的那一份。
+        if (ObjectUtil.notEqual(session.getWaterTypeId(), bo.getWaterTypeId())) {
+            throw new JbkException("水种与本次扫码不一致，请重新扫码");
         }
+        // 报价漂移即拒：确认页看到的价与此刻档案价不同，不允许静默按新价扣款。
+        requireQuoteUnchanged(session, outlet);
 
-        int unitPrice = parseUnitPrice(outlet);
+        // 单价一律取会话冻结值，不再读当前档案——读当前价正是「页面一个价、扣款另一个价」的根因。
+        int unitPrice = session.getUnitPriceFenPerLiter();
         long planMl = bo.getPlanMl();
         // v1.3 缺口B：payWay2 预扣按 ceil 向上取整到分（不少扣）；payWay3 水量支付订单金额记 0
         long orderAmount = ObjectUtil.equal(payWay, TradeEnum.PayWay.CARD_BALANCE.getValue())
@@ -182,10 +191,12 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
                 .setDeviceId(device.getId())
                 .setOutletId(outlet.getId())
                 .setCardId(bo.getCardId())
-                .setPackageSnap(buildSnap(requestId, unitPrice, planMl, payWay, bo.getWaterTypeId()))
+                .setPackageSnap(buildSnap(requestId, unitPrice, planMl, payWay, session.getWaterTypeId()))
                 .setPlanMl(planMl)
                 .setOrderAmount(orderAmount)
                 .setPayWay(payWay)
+                // E2E-08 归因快照：下单时刻的推荐人（绑定前恒 NULL，绑定不回溯）
+                .setReferrerUserId(inviteService.referrerSnapshotOf(userId))
                 .setOrderStatus(TradeEnum.OrderStatus.PAID.getValue());
 
         WsOrder saved;
@@ -396,50 +407,27 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
             throw new JbkException(ORDER_NO_COLLISION);
         }
 
-        JSONObject snap;
-        try {
-            if (StrUtil.isBlank(order.getPackageSnap())) {
-                throw new IllegalArgumentException("empty snapshot");
-            }
-            snap = JSONUtil.parseObj(order.getPackageSnap());
-        } catch (Exception malformed) {
-            throw new JbkException(ORDER_IDEMPOTENCY_DATA_INVALID);
-        }
-
-        String snapRequestId = snap.getStr("requestId");
-        Long snapPlanMl = strictSnapshotLong(snap.get("planMl"));
-        Integer snapPayWay = strictSnapshotInteger(snap.get("payWay"));
-        Integer snapUnitPrice = strictSnapshotInteger(snap.get("unitPriceFenPerLiter"));
-        Long snapWaterTypeId = resolveIdempotencyWaterType(order, snap);
-        if (StrUtil.isBlank(snapRequestId)
-                || ObjectUtil.isNull(snapPlanMl)
-                || ObjectUtil.isNull(snapPayWay)
-                || ObjectUtil.isNull(snapUnitPrice)
-                || ObjectUtil.isNull(snapWaterTypeId)) {
-            throw new JbkException(ORDER_IDEMPOTENCY_DATA_INVALID);
-        }
-        if (!StrUtil.equals(snapRequestId, requestId)) {
-            throw new JbkException(ORDER_NO_COLLISION);
-        }
-
+        // 快照解析与数值规则唯一实现在 WaterOrderSnapshot：此处再写一份必然与下单事务、
+        // 指令准备漂移出宽严不一的口径，最松的那一处就是绕过口。
+        WaterOrderSnapshot.Frozen frozen;
         long expectedAmount;
         try {
-            WaterBillingMath.requirePlanMl(snapPlanMl);
-            WaterBillingMath.requireUnitPrice(snapUnitPrice);
-            if (ObjectUtil.equal(snapPayWay, TradeEnum.PayWay.CARD_BALANCE.getValue())) {
-                expectedAmount = WaterBillingMath.ceilAmount(snapPlanMl, snapUnitPrice);
-            } else if (ObjectUtil.equal(snapPayWay, TradeEnum.PayWay.CARD_ML.getValue())) {
-                expectedAmount = 0L;
-            } else {
-                throw new JbkException(ORDER_IDEMPOTENCY_DATA_INVALID);
-            }
-        } catch (JbkException | ArithmeticException invalid) {
+            frozen = WaterOrderSnapshot.parseForIdempotency(order.getPackageSnap());
+            expectedAmount = WaterOrderSnapshot.expectedOrderAmount(frozen);
+        }
+        catch (JbkException | ArithmeticException invalid) {
             throw new JbkException(ORDER_IDEMPOTENCY_DATA_INVALID);
         }
+        if (!StrUtil.equals(frozen.requestId(), requestId)) {
+            throw new JbkException(ORDER_NO_COLLISION);
+        }
+        Long snapWaterTypeId = ObjectUtil.isNull(frozen.waterTypeId())
+                ? resolveLegacyWaterTypeFromOutlet(order)
+                : frozen.waterTypeId();
 
         boolean snapshotSelfConsistent = WATER_PAID_REACHED_STATUS.contains(order.getOrderStatus())
-                && ObjectUtil.equal(order.getPlanMl(), snapPlanMl)
-                && ObjectUtil.equal(order.getPayWay(), snapPayWay)
+                && ObjectUtil.equal(order.getPlanMl(), frozen.planMl())
+                && ObjectUtil.equal(order.getPayWay(), frozen.payWay())
                 && ObjectUtil.equal(order.getOrderAmount(), expectedAmount);
         if (!snapshotSelfConsistent) {
             throw new JbkException(ORDER_IDEMPOTENCY_DATA_INVALID);
@@ -454,34 +442,7 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
         }
     }
 
-    /** JSON 数值必须保持整数类型；拒绝字符串和小数被解析器宽松转换后进入幂等事实。 */
-    private static Long strictSnapshotLong(Object raw) {
-        if (!(raw instanceof Number)) {
-            return null;
-        }
-        try {
-            return new BigDecimal(raw.toString()).longValueExact();
-        } catch (NumberFormatException | ArithmeticException invalid) {
-            return null;
-        }
-    }
-
-    private static Integer strictSnapshotInteger(Object raw) {
-        Long value = strictSnapshotLong(raw);
-        if (value == null || value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
-            return null;
-        }
-        return value.intValue();
-    }
-
-    /**
-     * 新订单从冻结快照核对水种。兼容修复前未写 waterTypeId 的历史快照时，只允许回查订单已经持久关联的
-     * 出水口；出水口或水种缺失即 fail-closed，不读取本次扫码会话，也不接受前端自报水种作为事实。
-     */
-    private Long resolveIdempotencyWaterType(WsOrder order, JSONObject snap) {
-        if (snap.containsKey("waterTypeId")) {
-            return snap.getLong("waterTypeId");
-        }
+    private Long resolveLegacyWaterTypeFromOutlet(WsOrder order) {
         if (ObjectUtil.isNull(order.getOutletId())) {
             throw new JbkException(ORDER_IDEMPOTENCY_DATA_INVALID);
         }
@@ -522,13 +483,9 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     }
 
     private String buildSnap(String requestId, int unitPrice, long planMl, int payWay, Long waterTypeId) {
-        return JSONUtil.createObj()
-                .set("requestId", requestId)
-                .set("unitPriceFenPerLiter", unitPrice)
-                .set("planMl", planMl)
-                .set("payWay", payWay)
-                .set("waterTypeId", waterTypeId)
-                .toString();
+        // 构造与解析共用 WaterOrderSnapshot 一套键名：这边少写一个字段、那边严格解析就会全线拒单，
+        // 两处各写各的迟早对不上，故不在本类拼 JSON
+        return WaterOrderSnapshot.build(requestId, unitPrice, planMl, payWay, waterTypeId);
     }
 
     // ==================== 详情/列表装配 ====================
@@ -572,6 +529,7 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
         // 详细履约证据仍由 /mini/order/delivery-task/detail 承载，这里只给定位键不复制内容。
         String deliveryTaskNo = null;
         Long appealId = null;
+        OrderDetailVo.CancelEligibilityVo cancelEligibility = null;
         if (ObjectUtil.equals(order.getOrderType(), TradeEnum.OrderType.DELIVERY.getValue())) {
             com.jbk.tool.data.delivery.po.WsDeliveryTask deliveryTask = deliveryTaskMapper.selectOne(
                     Wrappers.lambdaQuery(com.jbk.tool.data.delivery.po.WsDeliveryTask.class)
@@ -583,6 +541,7 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
                             .orderByDesc(com.jbk.tool.data.delivery.po.WsDeliveryAppeal::getId)
                             .last("LIMIT 1"));
             appealId = ObjectUtil.isNull(appeal) ? null : appeal.getId();
+            cancelEligibility = buildCancelEligibility(deliveryTask);
         }
         return new OrderDetailVo()
                 .setOrder(item)
@@ -591,7 +550,10 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
                 .setTrace(buildTrace(order))
                 .setFlowCount(ObjectUtil.isNull(flowCount) ? 0 : flowCount.intValue())
                 .setDeliveryTaskNo(deliveryTaskNo)
-                .setAppealId(appealId);
+                .setAppealId(appealId)
+                // 只读投影仍带 USER_ID 本人范围闸；缺少动作即 null，页面不按订单状态推算结果。
+                .setAfterSale(wsOrderMapper.selectLatestMiniAfterSaleProgress(order.getId(), order.getUserId()))
+                .setCancelEligibility(cancelEligibility);
     }
 
     /**
@@ -632,6 +594,12 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
         } else if (ObjectUtil.equals(order.getOrderStatus(), 5)) {
             trace.add(node("CLOSED", "订单关闭", order.getUpdateTime(),
                     StrUtil.blankToDefault(order.getCancelReason(), "支付方确认订单关闭"), "warning"));
+        } else if (ObjectUtil.equals(order.getOrderStatus(), 7)) {
+            trace.add(node("REFUNDED", "已退款", order.getFinishTime(),
+                    "退款结果与权益冲减已完成", "warning"));
+        } else if (ObjectUtil.equals(order.getOrderStatus(), 8)) {
+            trace.add(node("PART_REFUNDED", "部分退款", order.getFinishTime(),
+                    "退款结果与保留权益已完成核对", "warning"));
         }
         return trace;
     }
@@ -745,14 +713,54 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
         return device;
     }
 
-    private int parseUnitPrice(WsDeviceOutlet outlet) {
+    /**
+     * 编排层的报价漂移闸（S2）：会话冻结的水种与单价必须与当前出水口一致。
+     *
+     * <p>这只是提前给出友好拒因，安全边界在下单事务内的三方终判（会话 / 快照 / 锁内档案）。
+     * 单价解析唯一实现在 {@link WaterBillingMath#requireOutletPrice}。</p>
+     */
+    private void requireQuoteUnchanged(ScanSessionInfo session, WsDeviceOutlet outlet) {
+        if (ObjectUtil.notEqual(session.getWaterTypeId(), outlet.getWaterTypeId())) {
+            throw new JbkException("出水口水种已调整，请重新扫码确认", MiniRejectCode.SCAN_QUOTE_CHANGED);
+        }
+        int current;
         try {
-            int parsed = Integer.parseInt(StrUtil.trim(outlet.getOutletPrice()));
-            return WaterBillingMath.requireUnitPrice(parsed);
-        } catch (NumberFormatException | JbkException e) {
+            current = WaterBillingMath.requireOutletPrice(outlet.getOutletPrice());
+        }
+        catch (JbkException invalid) {
             domainEventService.recordByDevice(OpsEnum.EventType.DEVICE_STATUS, String.valueOf(outlet.getId()), null,
                     "出水口单价配置非法：outletId=" + outlet.getId() + " price=" + outlet.getOutletPrice());
             throw new JbkException("出水口单价配置异常，请联系管理员");
         }
+        if (ObjectUtil.notEqual(session.getUnitPriceFenPerLiter(), current)) {
+            throw new JbkException("取水价格已调整，请重新扫码确认", MiniRejectCode.SCAN_QUOTE_CHANGED);
+        }
+    }
+
+    /**
+     * 待接单取消资格（E2E-04 包E）。
+     *
+     * <p><b>判定复用 {@link com.jbk.serve.service.delivery.DeliveryTransitions#allowed}——
+     * 与真正执行取消的 {@code cancelPendingDeliveryOrder} 是同一份状态机</b>。
+     * 若这里另写一句「TASK_STATUS==1 就能取消」，读模型与写路径就有了两份真相：
+     * 状态机哪天多一条可取消边，用户端入口不会跟着出现；少一条边，用户点了才被拒。</p>
+     *
+     * <p>本方法只回答「现在能不能点」，不做任何写入。真正的并发裁决仍在取消事务的
+     * CAS 里——两次判定之间配送员完全可能接单，那时用户会拿到服务端的拒因文案。</p>
+     */
+    private OrderDetailVo.CancelEligibilityVo buildCancelEligibility(
+            com.jbk.tool.data.delivery.po.WsDeliveryTask task) {
+        OrderDetailVo.CancelEligibilityVo vo = new OrderDetailVo.CancelEligibilityVo();
+        if (ObjectUtil.isNull(task)) {
+            vo.setAllowed(false);
+            vo.setReason("配送任务不存在，无法取消");
+            return vo;
+        }
+        boolean allowed = com.jbk.serve.service.delivery.DeliveryTransitions.allowed(
+                task.getTaskStatus(),
+                com.jbk.tool.consts.delivery.DeliveryEnum.TaskStatus.CANCELLED.getValue());
+        vo.setAllowed(allowed);
+        vo.setReason(allowed ? null : "配送员已接单或任务已推进，无法自助取消，请联系客服");
+        return vo;
     }
 }

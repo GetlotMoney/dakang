@@ -187,9 +187,32 @@ public class WsDomainEventServiceImpl extends ServiceImpl<WsDomainEventMapper, W
         event.setEventType(eventType.getValue());
         event.setEventKey(eventKey);
         event.setEventPayload(payload.toString());
-        event.setWhitelistFlag(ApiEnum.Flag.NO.value());
+        // 白名单置位单一来源（E2E-07 / REQ-083）：可订阅类型落库即标记；
+        // 消费翻转 CONSUMED_FLAG 明确归二期，本期白名单只供只读订阅查询
+        event.setWhitelistFlag(WHITELIST_EVENT_TYPES.contains(eventType.getValue())
+                ? ApiEnum.Flag.YES.value() : ApiEnum.Flag.NO.value());
         event.setConsumedFlag(ApiEnum.Flag.NO.value());
         return event;
+    }
+
+    @Override
+    public com.jbk.tool.data.PageDataVo<WsDomainEvent> pageWhitelist(Long current, Long size, Integer eventType) {
+        long page = ObjectUtil.defaultIfNull(current, 1L);
+        long pageSize = ObjectUtil.defaultIfNull(size, 20L);
+        if (page <= 0 || pageSize <= 0 || pageSize > 100 || page > 100_000) {
+            throw new JbkException("分页参数不合法");
+        }
+        // 类型筛选必须在白名单内：非白名单类型直接拒绝，不泄露其事件是否存在
+        if (ObjectUtil.isNotNull(eventType) && !WHITELIST_EVENT_TYPES.contains(eventType)) {
+            throw new JbkException("事件类型不在可订阅白名单内");
+        }
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<WsDomainEvent> result =
+                page(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, pageSize),
+                        Wrappers.lambdaQuery(WsDomainEvent.class)
+                                .eq(WsDomainEvent::getWhitelistFlag, ApiEnum.Flag.YES.value())
+                                .eq(ObjectUtil.isNotNull(eventType), WsDomainEvent::getEventType, eventType)
+                                .orderByDesc(WsDomainEvent::getId));
+        return com.jbk.tool.data.PageDataVo.getPageData(result.getRecords(), result.getTotal());
     }
 
     private Object toJsonValue(Object value) {

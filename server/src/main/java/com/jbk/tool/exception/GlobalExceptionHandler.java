@@ -43,13 +43,20 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(value = JbkException.class)
     public R serviceExceptionHandler(JbkException e) {
-        if (e.getCode() == ErrorMsg.REPEAT_SUBMIT.getCode()) {
-            // 重复提交不计入信息
+        if (e.getCode() == ErrorMsg.REPEAT_SUBMIT.getCode()
+                || e.getCode() == ErrorMsg.PWD_CHANGE_REQUIRED.getCode()) {
+            // 重复提交不计入信息；
+            // 首改密码门的拒绝同样不计入——它由 SPA 每次挂载批量触发（一屏可达数十次），
+            // 计入则待改密用户刷新几次页面即可把整个出口 IP 打进临时封禁乃至永久封禁
         } else {
             redisIpRateLimit(e);
         }
+        // 精确原因恒进日志——无论是否展示给用户，排障信息一个字都不丢。
         log.error("=========》JbkException：{},{}", e.getMsg(), ExceptionUtil.stacktraceToString(e));
-        return R.error(e.getMsg(),e.getCode());
+        // 诊断类异常（JbkException.internal）的原文是给排障看的，不弹给用户：
+        // 「支付单与订单共键错位，拒绝」对用户既看不懂也无法处置，只会造成恐慌。
+        String clientMsg = e.isUserFacing() ? e.getMsg() : JbkException.INTERNAL_FALLBACK_MSG;
+        return R.error(clientMsg, e.getCode());
 
     }
 

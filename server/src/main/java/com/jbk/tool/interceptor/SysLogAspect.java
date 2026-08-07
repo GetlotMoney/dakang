@@ -75,7 +75,9 @@ public class SysLogAspect {
         String method = className + "." + methodName;
         String reqParam;
         if (StrUtil.isNotEmpty(request.getContentType()) && request.getContentType().contains("application/json")) {
-            reqParam = ((RequestWrapper) request).getRequestBody();
+            // 与 RequestAspect 同一脱敏实现：口令、令牌、手机号等一律不入操作日志表。
+            // 传输层 RSA 无一次性挑战，密文等价于口令——原样落库即可被重放到登录接口（R-201）
+            reqParam = RequestAspect.sanitizeRequestForLog(((RequestWrapper) request).getRequestBody());
         } else {
             reqParam = preHandle(joinPoint, request);
         }
@@ -165,15 +167,13 @@ public class SysLogAspect {
     }
 
     /**
-     * 返回数据
+     * 返回数据：只留 code/msg，data 一律省略。
      *
-     * @param retVal
-     * @return
+     * <p>此前是整体 {@code JSON.toJSONString(retVal)}，于是建号/重置密码响应里的一次性初始口令
+     * 明文被写进 {@code api_log_operation.LOG_RESPONSE_PARAM}，并可经 {@code /api/logOperation/pageData}
+     * 被任何持日志查询权的员工读到——足以抢在本人首登前接管账号（R-201）。</p>
      */
     private String postHandle(Object retVal) throws JsonProcessingException {
-        if (null == retVal) {
-            return "";
-        }
-        return JSON.toJSONString(retVal);
+        return RequestAspect.responseSummaryForLog(retVal);
     }
 }

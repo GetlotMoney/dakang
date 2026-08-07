@@ -58,8 +58,54 @@ wechat:
     appsecret: ${WECHAT_XCX_APPSECRET:}
 
 mini:
+  auth:
+    phoneless-register:
+      # 仅微信身份建号：小程序主体尚未通过微信认证，平台在**组件层**禁用 open-type="getPhoneNumber"
+      # （点击不弹窗、回调不触发），新用户拿不到 phoneCode，走「必须先授权手机号」的老路会永远卡在
+      # UNBOUND。为 true 时新 openid 直接建号、USER_PHONE 留 NULL，登录后在「我的」自助补绑。
+      # 小程序完成微信认证后应改回 false，恢复注册即绑号。
+      enabled: true
   pay-sim:
     # Pay-Sim 模拟支付：仅 dev/演示环境为 true。为 true 时 PaySimSourceAdapter 与 /mini/pay-sim/**
     # 才会注册，且支付单被永久打上 PAY_SOURCE=2，模拟收款不可能混进真实微信对账口径。
     # prod 配置里必须保持 false 或缺省（缺省即 false）。
     enabled: true
+  refund-sim:
+    # Refund-Sim 模拟退款：与 pay-sim **独立**的开关，绝不复用同一项。
+    # 退款是出账，比收款危险一个量级；任何为了跑通支付而开模拟的环境，
+    # 不应连模拟退款一起打开，两者必须能分别授权。
+    # 为 true 时 RefundSimSourceAdapter 与 /mini/refund-sim/** 才注册，
+    # 退款单被永久打上 REFUND_SOURCE=2，模拟退款不可能混进真实微信退款对账口径。
+    # 为 false/缺省时注册的是 WechatRefundSourceAdapter —— 它是 fail-closed 空实现，
+    # 会直接拒绝发起退款（R0-8：真实凭据未配置时禁止回退 Refund-Sim）。
+    enabled: true
+
+delivery:
+  auto-refill:
+    # 自动补货固定周期触发方（B08-S1）。**默认关闭且写显式**：Worker 一旦装配就会按周期
+    # 真实扣用户水卡余额，开发环境随手启动后台就静默扣款是不可接受的。
+    # 隔离验收环境用 docker-compose 的 DAKANG_AUTO_REFILL_ENABLED 环境变量单独覆盖，不改本文件。
+    enabled: false
+    # 扫描间隔（毫秒，fixedDelay 语义：上一轮结束后再等这么久）。缺省 5 分钟。
+    fixed-delay: 300000
+    # 启动后首次扫描的延迟（毫秒），避开启动期的库连接与缓存预热。
+    initial-delay: 60000
+
+# 分润 V2（E2E-08 S1）：计算内核与计划模型已就位，但正式比例待甲方书面确认，
+# 且组件尚未与订单完成事务接线（S2 范围）。两环境都显式 false——
+# 开关关闭时任何生产路径不得调用 V2 计算器，现有 V1 分账行为保持不变。
+settlement:
+  # D-421 分润冻结期：分账行创建满 N 天才结算入账（与 24h 申诉窗对齐，冻结期内
+  # 退款冲减零资金动作）。改天数需重启生效。
+  split-freeze-days: 1
+  split-v2:
+    enabled: false
+
+# D-418「0 元注册送」：注册成功自动发放赠卡。参数未定（C-01.8）前保持关闭；
+# 甲方给出金额/水量/天数后填入并打开，重启服务后生效（无需代码变更）。
+marketing:
+  register-gift:
+    enabled: false
+    amount-fen: 0
+    water-ml: 0
+    expire-days: 0

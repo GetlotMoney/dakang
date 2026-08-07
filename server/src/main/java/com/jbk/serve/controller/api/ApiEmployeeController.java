@@ -10,6 +10,7 @@ import com.jbk.tool.annotation.SwaggerApiExclude;
 import com.jbk.tool.annotation.SwaggerApiInclude;
 import com.jbk.tool.consts.ApiEnum;
 import com.jbk.tool.data.api.bo.ApiEmployeeBo;
+import com.jbk.tool.data.api.vo.ApiEmployeeInitPwdVo;
 import com.jbk.tool.data.api.vo.ApiEmployeeVo;
 import com.jbk.tool.data.PageDataVo;
 import com.jbk.tool.domain.R;
@@ -57,11 +58,11 @@ public class ApiEmployeeController {
 
     @LogOperation
     @RepeatSubmit
-    @Operation(summary = "保存")
+    @Operation(summary = "保存（响应含一次性初始密码，日志层整体省略响应体）")
     @PostMapping("/saveData")
     @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)},
             permission = {@SaCheckPermission(value = "api:employee:add", type = StpKit.DRIVER_MANAGE)})
-    public R<Long> saveData(
+    public R<ApiEmployeeInitPwdVo> saveData(
             @SwaggerApiExclude({"id", "loginPwd", "disabledFlag"})
             @RequestBody
             @Validated(InsertGroup.class)
@@ -111,10 +112,10 @@ public class ApiEmployeeController {
     }
 
     @LogOperation
-    @Operation(summary = "重置密码")
+    @Operation(summary = "重置密码（响应含一次性初始密码，日志层整体省略响应体）")
     @PostMapping("/resetPassword")
     @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)}, permission = {@SaCheckPermission(value = "api:employee:resetPwd", type = StpKit.DRIVER_MANAGE)})
-    public R<Boolean> resetPassword(
+    public R<ApiEmployeeInitPwdVo> resetPassword(
             @SwaggerApiInclude({"id"})
             @RequestBody
             @Validated(IdGroup.class)
@@ -122,17 +123,17 @@ public class ApiEmployeeController {
         return R.ok(employeeService.resetPassword(employeeBo.getId()));
     }
 
+    // 只改当前会话本人的密码，身份取自会话而非请求体，故不再要求 id
     @LogOperation
-    @Operation(summary = "修改密码")
+    @Operation(summary = "修改密码（仅限本人）")
     @PostMapping("/updatePassword")
     @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)})
     public R<Boolean> updatePassword(
-            @SwaggerApiInclude({"id", "loginPwd", "newLoginPwd"})
+            @SwaggerApiInclude({"loginPwd", "newLoginPwd"})
             @RequestBody
-            @Validated(IdGroup.class)
             ApiEmployeeBo employeeBo) {
         OptionalUtils.emptyToElseThrow(employeeBo.getLoginPwd(), "原密码不为空");
-        OptionalUtils.emptyToElseThrow(employeeBo.getNewLoginPwd(), "原密码不为空");
+        OptionalUtils.emptyToElseThrow(employeeBo.getNewLoginPwd(), "新密码不为空");
         return R.ok(employeeService.updatePassword(employeeBo));
     }
 

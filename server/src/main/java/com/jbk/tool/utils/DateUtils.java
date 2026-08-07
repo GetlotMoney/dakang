@@ -1,5 +1,6 @@
 package com.jbk.tool.utils;
 
+import com.jbk.tool.exception.JbkException;
 import cn.hutool.core.date.DateUtil;
 import cn.hutool.core.util.StrUtil;
 import org.apache.commons.lang3.StringUtils;
@@ -288,6 +289,28 @@ public class DateUtils {
         }
         return term;
     }
+
+    /**
+     * yyyyMMddHHmmss 时间串加秒——<b>全仓单一出处</b>。
+     *
+     * <p>本方法出现之前，同样一段「parse → plusSeconds → format」在
+     * RechargeIssueTxImpl、RechargeCreditFailureTxImpl、RechargePayFactServiceImpl、
+     * AdminAfterSaleServiceImpl 里各私有一份，共四份。它们算的都是重试排期时间——
+     * 一旦其中一份被改（比如有人加了时区处理或改了容错方式），排期口径就会分叉，
+     * 而分叉的表现是「某些重试永远不到期」这种极难定位的形状。</p>
+     *
+     * <p>非法时间串一律抛 {@link JbkException} 而不是让 {@code DateTimeParseException} 逸出：
+     * 调用点全部在资金重试路径上，那里需要的是一个能落进 LAST_ERROR 的可读原因。</p>
+     *
+     * @param time    14 位业务时间串
+     * @param seconds 增加的秒数，可为负
+     */
+    public static String plusSeconds(String time, long seconds) {
+        try {
+            return java.time.LocalDateTime.parse(time, COMPACT_FORMATTER)
+                    .plusSeconds(seconds).format(COMPACT_FORMATTER);
+        } catch (RuntimeException e) {
+            throw new JbkException("业务时间格式非法，无法安排重试");
+        }
+    }
 }
-
-

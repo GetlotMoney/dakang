@@ -10,8 +10,10 @@ import com.jbk.serve.service.delivery.IDeliveryMediaService;
 import com.jbk.serve.service.delivery.IDeliveryOrderService;
 import com.jbk.serve.service.delivery.IDeliveryTaskTxService;
 import com.jbk.serve.service.delivery.impl.CourierAccess;
+import com.jbk.serve.service.mini.IMiniFamilyService;
 import com.jbk.serve.service.mini.IMiniOrderService;
 import com.jbk.tool.consts.delivery.DeliveryEnum;
+import com.jbk.tool.data.delivery.bo.DeliveryCreateBo;
 import com.jbk.tool.data.delivery.po.WsDeliveryAppeal;
 import com.jbk.tool.data.delivery.po.WsDeliveryTask;
 import com.jbk.tool.data.mini.bo.MiniDeliveryMediaUploadBo;
@@ -19,10 +21,12 @@ import com.jbk.tool.data.mini.vo.MiniCourierAdmissionVo;
 import com.jbk.tool.data.mini.vo.MiniDeliveryTaskVo;
 import com.jbk.tool.data.trade.po.WsOrder;
 import com.jbk.tool.data.user.po.WsCourier;
+import com.jbk.tool.data.user.po.WsUserAddress;
 import com.jbk.tool.exception.JbkException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
@@ -72,6 +76,8 @@ class MiniDeliveryServiceVoTest {
     private WsStationMapper stationMapper;
     @Mock
     private WsCourierMapper courierMapper;
+    @Mock
+    private IMiniFamilyService familyService;
 
     @InjectMocks
     private MiniDeliveryServiceImpl service;
@@ -292,5 +298,74 @@ class MiniDeliveryServiceVoTest {
         assertThrows(JbkException.class, () -> service.getMyAppeal("05", 6L));
         assertThrows(JbkException.class, () -> service.getMyAppeal("abc", 6L));
         verifyNoInteractions(appealMapper);
+    }
+
+    // ==================== 下单 addressId 解引用（家庭/地址落地） ====================
+
+    private DeliveryCreateBo createBo() {
+        DeliveryCreateBo bo = new DeliveryCreateBo();
+        bo.setRequestId("REQTEST");
+        bo.setCardId("1");
+        bo.setStationId("1");
+        bo.setWaterTypeId("2");
+        bo.setContainerSpec("10L桶");
+        bo.setDeliveryCount(2);
+        bo.setPlanReturnCount(0);
+        bo.setDeliveryMode(1);
+        return bo;
+    }
+
+    // addressId 传入时服务端按归属解引用，收货地址与号码取自地址簿快照，不采信前端文本
+    @Test
+    void createWithAddressIdDereferencesServerSide() {
+        DeliveryCreateBo bo = createBo();
+        bo.setAddressId(11L);
+        bo.setReceiveAddress("前端伪造地址");
+        bo.setReceivePhone("13000000000");
+        when(familyService.requireOwnAddress(6L, 11L)).thenReturn(new WsUserAddress()
+                .setRegion("湖北省武汉市洪山区")
+                .setAddressDetail("光谷软件园 A1 栋")
+                .setContactPhone("13900001111"));
+        WsOrder order = deliveryOrder(20L, 6L);
+        WsDeliveryTask task = signedTask(20L, 6L);
+        task.setId(30L);
+        when(deliveryOrderService.createDeliveryOrder(any(DeliveryCreateBo.class), eq(6L)))
+                .thenReturn(new IDeliveryOrderService.CreatedDelivery(order, task));
+
+        service.createOrder(bo, 6L);
+
+        ArgumentCaptor<DeliveryCreateBo> cap = ArgumentCaptor.forClass(DeliveryCreateBo.class);
+        verify(deliveryOrderService).createDeliveryOrder(cap.capture(), eq(6L));
+        assertEquals("湖北省武汉市洪山区 光谷软件园 A1 栋", cap.getValue().getReceiveAddress());
+        assertEquals("13900001111", cap.getValue().getReceivePhone());
+    }
+
+    // 他人 addressId：解引用 fail-closed，绝不落单
+    @Test
+    void createWithForeignAddressIdFailsClosed() {
+        DeliveryCreateBo bo = createBo();
+        bo.setAddressId(99L);
+        when(familyService.requireOwnAddress(6L, 99L))
+                .thenThrow(new JbkException("地址不存在或已删除"));
+
+        assertThrows(JbkException.class, () -> service.createOrder(bo, 6L));
+        verifyNoInteractions(deliveryOrderService);
+    }
+
+    // 不传 addressId 走直填文本，不触碰地址簿
+    @Test
+    void createWithoutAddressIdSkipsAddressBook() {
+        DeliveryCreateBo bo = createBo();
+        bo.setReceiveAddress("直填地址");
+        bo.setReceivePhone("13900001111");
+        WsOrder order = deliveryOrder(21L, 6L);
+        WsDeliveryTask task = signedTask(21L, 6L);
+        task.setId(31L);
+        when(deliveryOrderService.createDeliveryOrder(any(DeliveryCreateBo.class), eq(6L)))
+                .thenReturn(new IDeliveryOrderService.CreatedDelivery(order, task));
+
+        service.createOrder(bo, 6L);
+
+        verifyNoInteractions(familyService);
     }
 }

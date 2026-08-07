@@ -153,7 +153,8 @@ public interface DeliveryEnum {
     enum MediaPurpose {
         SIGN_PHOTO(1, "签收三照"),
         APPEAL_EVIDENCE(2, "申诉举证"),
-        EXCEPTION_EVIDENCE(3, "异常举证");
+        EXCEPTION_EVIDENCE(3, "异常举证"),
+        WORK_ORDER(4, "工单证据");
 
         private final int value;
         private final String desc;

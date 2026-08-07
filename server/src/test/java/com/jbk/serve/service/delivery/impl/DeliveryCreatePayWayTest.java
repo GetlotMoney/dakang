@@ -68,6 +68,9 @@ class DeliveryCreatePayWayTest {
         ReflectionTestUtils.setField(service, "autoRuleMapper", autoRuleMapper);
         ReflectionTestUtils.setField(service, "orderTxService", orderTxService);
         ReflectionTestUtils.setField(service, "domainEventService", domainEventService);
+        // E2E-08 归因快照协作方：mock 恒返回 null 推荐人（归因行为由 AttributionDbTest 锁定）
+        ReflectionTestUtils.setField(service, "inviteService",
+                Mockito.mock(com.jbk.serve.service.settlement.IInviteService.class));
 
         when(orderMapper.selectOne(any())).thenReturn(null);
         WsStation station = new WsStation();

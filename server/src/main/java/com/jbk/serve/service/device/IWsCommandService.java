@@ -37,14 +37,22 @@ public interface IWsCommandService extends IService<WsCommand> {
     Long sendDispenseForOrder(Long orderId);
 
     /**
+     * 以批量子指令身份下发（E2E-05）：建 PENDING 子指令（带 BATCH_ID，
+     * {@code uk_cmd_batch_device} 防同批次同设备重复展开）并立即下发。
+     * 只允许 {@code DeviceControlServiceImpl} 在 confirm 展开时调用；
+     * 紧急停止子指令额外携带 orderId（停止出水必须锚定服务端确认的活动订单）。
+     */
+    Long sendAsBatchChild(Long batchId, Long deviceId, int cmdType, String cmdPayload, Long orderId);
+
+    /**
      * 设备回执（ack）：2已下发 → 3已回执，并联动出水单 2已支付→3出水中。
-     * ackCode 非 accepted（rejected/busy/failed）→ 指令 2→5 失败 + 出水单转异常待补偿；缺省 accepted 兼容旧设备。
+     * ackCode 只有非空且忽略大小写等于 accepted 才受理；rejected/busy/failed/缺失均转失败并联动订单异常。
      * 迟到/重复/错设备 ACK 只审计不改状态（REQ-041）。
      *
      * @param deviceId 上报设备ID（校验与指令目标一致，防错设备 ACK）
      * @param cmdNo    平台指令号
      * @param ackTs    设备回执时间 yyyyMMddHHmmss（P0-06 时间双存，非法回退服务器时间）
-     * @param ackCode  回执结果码（accepted/rejected/busy/failed，可空默认 accepted）
+     * @param ackCode  回执结果码（accepted/rejected/busy/failed；空值按失败处理）
      * @return 是否推进了状态
      */
     boolean onAck(Long deviceId, String cmdNo, String ackTs, String ackCode);

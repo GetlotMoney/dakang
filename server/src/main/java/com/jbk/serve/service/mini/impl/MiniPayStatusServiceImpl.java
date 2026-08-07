@@ -6,6 +6,7 @@ import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
 import com.jbk.serve.service.mini.IMiniPayStatusService;
 import com.jbk.serve.service.mini.recharge.RechargePayExpire;
 import com.jbk.serve.service.mini.recharge.RechargePayStatus;
+import com.jbk.serve.service.mini.recharge.RechargeRefundEvidenceVerifier;
 import com.jbk.serve.service.mini.recharge.RechargeSnapshot;
 import com.jbk.tool.data.mini.bo.MiniPayStatusBo;
 import com.jbk.tool.data.mini.vo.MiniPayStatusVo;
@@ -35,6 +36,7 @@ public class MiniPayStatusServiceImpl implements IMiniPayStatusService {
     private static final Set<String> RETRYABLE = Set.of("WAITING_PAYMENT", "PAID_CREDIT_PENDING");
 
     private final RechargeIdentityMapper identityMapper;
+    private final RechargeRefundEvidenceVerifier refundEvidenceVerifier;
 
     @Override
     public MiniPayStatusVo query(MiniPayStatusBo bo, Long userId) {
@@ -73,6 +75,14 @@ public class MiniPayStatusServiceImpl implements IMiniPayStatusService {
         long flows = identityMapper.countLiveRechargeFlows(order.getId());
         RechargePayStatus.Resolved resolved = RechargePayStatus.resolve(order, payment, events, flows);
 
+        if (resolved.ok() && RechargeRefundEvidenceVerifier.isRefundedStatus(order.getOrderStatus())) {
+            try {
+                refundEvidenceVerifier.requireIfRefunded(order);
+            } catch (JbkException mismatch) {
+                return mismatch(order, payment, mismatch.getMessage());
+            }
+        }
+
         MiniPayStatusVo vo = base(order, payment);
         vo.setPayStatusCode(resolved.statusCode());
         vo.setStatusMessage(resolved.statusMessage());
@@ -107,7 +117,10 @@ public class MiniPayStatusServiceImpl implements IMiniPayStatusService {
         if (!StrUtil.equals(snap.capturedTime(), order.getCreateTime())) {
             return "快照采集时间与订单创建时间不一致";
         }
-        String expected = RechargePayExpire.compute(snap.capturedTime(), snap.expireTimeAtCreate());
+        // 审计 P1-3：与创单/幂等重放同一公式——转正单（promote）按永久口径重算，
+        // 否则过期赠卡转正单的支付状态查询会被误判「付款截止不一致」
+        String expected = RechargePayExpire.compute(snap.capturedTime(),
+                snap.promoteToPermanent() ? null : snap.expireTimeAtCreate());
         if (!StrUtil.equals(payment.getPayExpireTime(), expected)) {
             return "付款截止时间与资格快照不一致";
         }

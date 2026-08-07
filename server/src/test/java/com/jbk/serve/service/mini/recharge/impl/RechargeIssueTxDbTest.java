@@ -1,5 +1,7 @@
 package com.jbk.serve.service.mini.recharge.impl;
 
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
+import com.jbk.serve.service.aftersale.batch.EntitlementLedger;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.jbk.serve.mapper.trade.RechargeCreditMapper;
 import com.jbk.serve.service.mini.recharge.IRechargeCreditTx;
@@ -47,6 +49,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -118,6 +121,9 @@ class RechargeIssueTxDbTest {
                     new com.baomidou.mybatisplus.core.MybatisConfiguration();
             cfg.setMapUnderscoreToCamelCase(true);
             factory.setConfiguration(cfg);
+            factory.setMapperLocations(new org.springframework.core.io.support
+                    .PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:mapper/trade/TradeCardMapper.xml"));
             return new SqlSessionTemplate(factory.getObject());
         }
 
@@ -129,13 +135,22 @@ class RechargeIssueTxDbTest {
         }
 
         @Bean
+        MapperFactoryBean<WsCardEntitlementBatchMapper> wsCardEntitlementBatchMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<WsCardEntitlementBatchMapper> bean = new MapperFactoryBean<>(
+                    WsCardEntitlementBatchMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
         RechargeLedgerVerifier ledgerVerifier() {
             return new RechargeLedgerVerifier();
         }
 
         @Bean
-        RechargeIssueTxImpl issueTx(RechargeCreditMapper mapper, RechargeLedgerVerifier ledger) {
-            return new RechargeIssueTxImpl(mapper, ledger);
+        RechargeIssueTxImpl issueTx(RechargeCreditMapper mapper, RechargeLedgerVerifier ledger,
+                                    WsCardEntitlementBatchMapper batchMapper) {
+            return new RechargeIssueTxImpl(mapper, ledger, batchMapper);
         }
 
         @Bean
@@ -145,8 +160,49 @@ class RechargeIssueTxDbTest {
 
         @Bean
         RechargeCreditTxImpl creditTx(RechargeCreditMapper mapper, RechargeLockedState locked,
-                                      RechargeLedgerVerifier ledger) {
-            return new RechargeCreditTxImpl(mapper, locked, ledger);
+                                      RechargeLedgerVerifier ledger,
+                                      WsCardEntitlementBatchMapper batchMapper,
+                                      EntitlementLedger entitlementLedger) {
+            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger);
+        }
+
+        @Bean
+        RechargeCreditFailureTxImpl creditFailureTx(RechargeCreditMapper mapper, RechargeLockedState locked,
+                                                    RechargeLedgerVerifier ledger) {
+            return new RechargeCreditFailureTxImpl(mapper, locked, ledger);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper> allocationMapper(
+                SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.trade.TradeCardMapper> tradeCardMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.trade.TradeCardMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.trade.TradeCardMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.trade.WsWalletFlowMapper> walletFlowMapperBean(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.trade.WsWalletFlowMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.trade.WsWalletFlowMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        EntitlementLedger entitlementLedger(WsCardEntitlementBatchMapper batchMapper,
+                                            com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper allocationMapper,
+                                            com.jbk.serve.mapper.trade.TradeCardMapper tradeCardMapper,
+                                            com.jbk.serve.mapper.trade.WsWalletFlowMapper walletFlowMapper) {
+            return new EntitlementLedger(batchMapper, allocationMapper, tradeCardMapper, walletFlowMapper);
         }
 
         @Bean
@@ -162,6 +218,8 @@ class RechargeIssueTxDbTest {
     @Autowired
     private IRechargeCreditTx creditTx;
     @Autowired
+    private com.jbk.serve.service.mini.recharge.IRechargeCreditFailureTx creditFailureTx;
+    @Autowired
     private JdbcTemplate jdbc;
 
     @BeforeEach
@@ -169,6 +227,31 @@ class RechargeIssueTxDbTest {
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_user (
                   ID BIGINT PRIMARY KEY
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        // E2E-04 包D：充值入账同事务建立权益批次，故本类的 schema 必须包含它。
+        // uk_batch_order 是「每笔充值恰好一个批次」的物理保证——本类的重放用例
+        // 正是靠它与 uk_card_issue_order 一起把「重放不得二次发权益」钉死。
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_card_entitlement_batch (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(14),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(14),
+                  CARD_ID BIGINT NOT NULL, USER_ID BIGINT NOT NULL, SOURCE_TYPE TINYINT NOT NULL,
+                  ORDER_ID BIGINT NULL, ORDER_NO VARCHAR(32) NULL, PAYMENT_ID BIGINT NULL,
+                  PACKAGE_ID BIGINT NULL, PACKAGE_SNAP TEXT NULL,
+                  PAY_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_BONUS_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_WATER_ML BIGINT NOT NULL DEFAULT 0,
+                  REMAIN_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  REMAIN_WATER_ML BIGINT NOT NULL DEFAULT 0,
+                  EXPIRE_TIME VARCHAR(14) NULL, SCOPE_JSON TEXT NULL,
+                  BATCH_STATUS TINYINT NOT NULL, REFUND_LOCKED_BY BIGINT NULL,
+                  REFUND_LOCK_TIME VARCHAR(14) NULL,
+                  REFUNDED_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  VERSION INT NOT NULL DEFAULT 1,
+                  UNIQUE KEY uk_batch_order (ORDER_ID),
+                  KEY idx_batch_pick (CARD_ID, BATCH_STATUS, EXPIRE_TIME, CREATE_TIME)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         // uk_card_no + uk_card_issue_order 双唯一键是本测试的主角之一：发卡幂等的最后防线在数据库层
         jdbc.execute("""
@@ -222,6 +305,9 @@ class RechargeIssueTxDbTest {
                   UNIQUE KEY uk_wallet_flow_biz_key (BIZ_IDEMPOTENCY_KEY)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("TRUNCATE TABLE ws_wallet_flow");
+        // 包D 批次表也要逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键，
+        // 表现为与被测逻辑无关的 DuplicateKey，掩盖真正的断言
+        jdbc.execute("TRUNCATE TABLE ws_card_entitlement_batch");
         jdbc.execute("TRUNCATE TABLE ws_card");
         jdbc.execute("DELETE FROM ws_payment_event");
         jdbc.execute("DELETE FROM ws_payment");
@@ -251,8 +337,11 @@ class RechargeIssueTxDbTest {
     }
 
     private String purchaseSnapshot(Integer expireDays, String createTime) {
-        return RechargeSnapshot.buildForPurchase(UUID, purchasePackage(expireDays),
-                WaterCardScope.normalize(SCOPE, "套餐"), createTime);
+        // D-213 后 buildForPurchase 造不出有限期付费快照；历史旧单铸造见 LegacySnapshots
+        return com.jbk.serve.service.mini.recharge.LegacySnapshots.forgeExpireDays(
+                RechargeSnapshot.buildForPurchase(UUID, purchasePackage(null),
+                        WaterCardScope.normalize(SCOPE, "套餐"), createTime),
+                expireDays);
     }
 
     private WsPackage purchasePackage(Integer expireDays) {
@@ -429,8 +518,9 @@ class RechargeIssueTxDbTest {
         long eventIdB = 998L;
         String orderNoB = "RC0000000000000000000000000A02";
         String uuidB = "550e8400-e29b-41d4-a716-446655440111";
-        String snapshotB = RechargeSnapshot.buildForPurchase(uuidB, purchasePackage(EXPIRE_DAYS),
-                WaterCardScope.normalize(SCOPE, "套餐"), CREATE_TIME);
+        String snapshotB = com.jbk.serve.service.mini.recharge.LegacySnapshots.forgeExpireDays(
+                RechargeSnapshot.buildForPurchase(uuidB, purchasePackage(null),
+                        WaterCardScope.normalize(SCOPE, "套餐"), CREATE_TIME), EXPIRE_DAYS);
         String payExpireB = RechargePayExpire.compute(CREATE_TIME, null);
         jdbc.update("INSERT INTO ws_order(ID,ORDER_NO,ORDER_TYPE,USER_ID,CARD_ID,PACKAGE_ID,PACKAGE_SNAP,"
                         + "ORDER_AMOUNT,PAY_WAY,ORDER_STATUS,DATA_STATUS,CREATE_TIME) "
@@ -599,6 +689,141 @@ class RechargeIssueTxDbTest {
 
     // ------------------------------------------------------------------
 
+    /** 转正现场造数（审计 R2 P1-3）：过期耗尽赠卡 + 已支付转正单 + 已认领事件。 */
+    private void seedPromoteScene(long giftCardId, long orderId, long paymentId, long eventId,
+                                  long ownerUserId, String orderNo) {
+        String expiredAt = "20250101120000";
+        jdbc.update("INSERT INTO ws_card(ID,DATA_STATUS,CARD_NO,CARD_TYPE,USER_ID,BALANCE_AMOUNT,BALANCE_ML,"
+                        + "SCOPE_JSON,EXPIRE_TIME,CARD_STATUS,ISSUE_ORDER_ID) "
+                        + "VALUES(?,0,?,1,?,0,0,?,?,3,NULL)",
+                giftCardId, "GC-" + giftCardId, ownerUserId, SCOPE, expiredAt);
+        WsPackage permanent = purchasePackage(null);
+        com.jbk.tool.data.user.po.WsCard c = new com.jbk.tool.data.user.po.WsCard();
+        c.setId(giftCardId);
+        c.setCardStatus(3);
+        c.setExpireTime(expiredAt);
+        c.setScopeJson(SCOPE);
+        String requestId = "550e8400-e29b-41d4-a716-4466554400" + (giftCardId % 90 + 10);
+        String snap = RechargeSnapshot.build(requestId, permanent, c,
+                WaterCardScope.normalize(SCOPE, "水卡"), null, CREATE_TIME, true);
+        String payExpire = RechargePayExpire.compute(CREATE_TIME, null);
+        jdbc.update("INSERT INTO ws_order(ID,ORDER_NO,ORDER_TYPE,USER_ID,CARD_ID,PACKAGE_ID,PACKAGE_SNAP,"
+                        + "ORDER_AMOUNT,PAY_WAY,ORDER_STATUS,DATA_STATUS,CREATE_TIME) VALUES(?,?,?,?,?,?,?,?,?,?,0,?)",
+                orderId, orderNo, 2, ownerUserId, giftCardId, 3L, snap, PAY_AMOUNT, 1, 2, CREATE_TIME);
+        jdbc.update("INSERT INTO ws_payment(ID,ORDER_ID,ORDER_NO,TRANSACTION_ID,PAY_AMOUNT,PAY_STATUS,PAY_SOURCE,"
+                        + "CURRENCY,PAY_EXPIRE_TIME,PAY_SUCCESS_TIME,DATA_STATUS,CREATE_TIME) VALUES(?,?,?,?,?,?,?,?,?,?,0,?)",
+                paymentId, orderId, orderNo, "SIMTX-P" + orderId, PAY_AMOUNT, 2, 2, "CNY",
+                payExpire, PAID, CREATE_TIME);
+        jdbc.update("INSERT INTO ws_payment_event(ID,ORDER_NO,ORDER_ID,PAYMENT_ID,PAY_SOURCE,FACT_CHANNEL,"
+                        + "PROVIDER_EVENT_KEY,TRADE_STATE,TRANSACTION_ID,PAY_AMOUNT,CURRENCY,PAY_SUCCESS_TIME,"
+                        + "PROCESSING_STATUS,DATA_STATUS) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,2,0)",
+                eventId, orderNo, orderId, paymentId, 2, 3, "evt-" + eventId, "SUCCESS",
+                "SIMTX-P" + orderId, PAY_AMOUNT, "CNY", PAID);
+    }
+
+    /**
+     * 审计 R2 P1-3：<b>首次购卡 × 赠卡转正</b>两条不同事务实现并发争夺同一用户的付费名额。
+     * 两链共用 ws_user 行锁（payment→order→user→card 同序）+ READ_COMMITTED 锁内复查：
+     * 任一方可赢，但最终恰一张付费卡；输家 UNRECOVERABLE（订单6/事实待对账通道），
+     * payment 的成功事实保持不变，零卡权益、零充值流水。
+     */
+    @Test
+    void concurrentFirstPurchaseAndPromotionYieldExactlyOnePaidCard() throws Exception {
+        long giftCardId = 500L;
+        seedPromoteScene(giftCardId, ORDER_ID + 100, PAYMENT_ID + 100, EVENT_ID + 100,
+                USER_ID, "RC0000000000000000000000000B01");
+
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Callable<IRechargeCreditTx.CreditResult>> jobs = List.of(
+                () -> { barrier.await(10, TimeUnit.SECONDS); return issueTx.issue(EVENT_ID, PROCESSING); },
+                () -> { barrier.await(10, TimeUnit.SECONDS); return creditTx.credit(EVENT_ID + 100, PROCESSING); });
+        // R3：invokeAll 自带 30s 上限（死锁在这里表现为任务被取消，而不是无限等待）
+        List<Future<IRechargeCreditTx.CreditResult>> futures = pool.invokeAll(jobs, 30, TimeUnit.SECONDS);
+        assertFalse(futures.get(0).isCancelled(), "首购事务 30s 内完成（无死锁）");
+        assertFalse(futures.get(1).isCancelled(), "转正事务 30s 内完成（无死锁）");
+        IRechargeCreditTx.CreditResult issueResult = futures.get(0).get();
+        IRechargeCreditTx.CreditResult promoteResult = futures.get(1).get();
+        pool.shutdown();
+
+        long credited = List.of(issueResult, promoteResult).stream()
+                .filter(r -> r.outcome() == IRechargeCreditTx.Outcome.CREDITED).count();
+        long unrecoverable = List.of(issueResult, promoteResult).stream()
+                .filter(r -> r.outcome() == IRechargeCreditTx.Outcome.UNRECOVERABLE).count();
+        assertEquals(1L, credited, "恰一方入账/发卡成功");
+        assertEquals(1L, unrecoverable, "另一方 UNRECOVERABLE");
+
+        // R3：按实际输家执行失败落痕（生产中由 worker 在 unrecoverable 后调用同一事务），
+        // 把「订单→6 / 事实→5待对账」从口头承诺变成本用例的真库断言
+        boolean promoteLost = promoteResult.outcome() == IRechargeCreditTx.Outcome.UNRECOVERABLE;
+        if (promoteLost) {
+            creditFailureTx.record(EVENT_ID + 100, false, promoteResult.reason(), PROCESSING);
+        } else {
+            issueTx.recordFailure(EVENT_ID, false, issueResult.reason(), PROCESSING);
+        }
+
+        List<Integer> orderStatuses = jdbc.queryForList(
+                "SELECT ORDER_STATUS FROM ws_order ORDER BY ORDER_STATUS", Integer.class);
+        assertEquals(List.of(4, 6), orderStatuses, "赢家订单已完成(4)、输家订单异常待人工(6)");
+        assertEquals(2L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_payment WHERE PAY_STATUS = 2",
+                Long.class), "两笔支付成功事实都保持");
+        long winnerEventId = promoteLost ? EVENT_ID : EVENT_ID + 100;
+        long loserEventId = promoteLost ? EVENT_ID + 100 : EVENT_ID;
+        assertEquals(3, jdbc.queryForObject(
+                "SELECT PROCESSING_STATUS FROM ws_payment_event WHERE ID = " + winnerEventId, Integer.class),
+                "赢家事件已处理(3)");
+        assertEquals(5, jdbc.queryForObject(
+                "SELECT PROCESSING_STATUS FROM ws_payment_event WHERE ID = " + loserEventId, Integer.class),
+                "输家事件待对账(5)");
+        assertEquals(1L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_card WHERE "
+                + com.jbk.serve.service.mini.card.CardEligibility.SQL_NOT_GIFT, Long.class),
+                "最终恰一张付费卡（发卡赢=新卡 / 转正赢=赠卡转永久）");
+        assertEquals(1L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow WHERE FLOW_TYPE = 1",
+                Long.class), "只有赢家一条充值流水");
+        long winnerOrderId = promoteLost ? ORDER_ID : ORDER_ID + 100;
+        assertEquals(1L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow WHERE FLOW_TYPE = 1 "
+                + "AND ORDER_ID = " + winnerOrderId, Long.class), "充值流水只关联赢家订单");
+        if (promoteLost) {
+            assertEquals(0L, jdbc.queryForObject("SELECT BALANCE_AMOUNT FROM ws_card WHERE ID = " + giftCardId,
+                    Long.class), "输掉的转正单零卡权益变动");
+            assertEquals(3, jdbc.queryForObject("SELECT CARD_STATUS FROM ws_card WHERE ID = " + giftCardId,
+                    Integer.class), "赠卡保持过期态未被转正");
+            assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_card_entitlement_batch "
+                    + "WHERE CARD_ID = " + giftCardId, Long.class), "输家零批次写入");
+        } else {
+            assertEquals(0L, jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM ws_card WHERE ISSUE_ORDER_ID = " + ORDER_ID, Long.class),
+                    "输掉的首购单零发卡");
+        }
+    }
+
+    /** 审计 R2 P1-3：两个不同用户并发转正/发卡——用户行锁按行隔离，无关用户不互阻不死锁。 */
+    @Test
+    void concurrentDifferentUsersDoNotBlockEachOther() throws Exception {
+        long userB = USER_ID + 1;
+        jdbc.update("INSERT INTO ws_user(ID) VALUES(?)", userB);
+        seedPromoteScene(600L, ORDER_ID + 200, PAYMENT_ID + 200, EVENT_ID + 200,
+                userB, "RC0000000000000000000000000C01");
+
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Callable<IRechargeCreditTx.CreditResult>> jobs = List.of(
+                () -> { barrier.await(10, TimeUnit.SECONDS); return issueTx.issue(EVENT_ID, PROCESSING); },
+                () -> { barrier.await(10, TimeUnit.SECONDS); return creditTx.credit(EVENT_ID + 200, PROCESSING); });
+        List<Future<IRechargeCreditTx.CreditResult>> futures = pool.invokeAll(jobs, 30, TimeUnit.SECONDS);
+        assertFalse(futures.get(0).isCancelled(), "用户A 事务 30s 内完成（无互阻）");
+        assertFalse(futures.get(1).isCancelled(), "用户B 事务 30s 内完成（无互阻）");
+        IRechargeCreditTx.CreditResult a = futures.get(0).get();
+        IRechargeCreditTx.CreditResult b = futures.get(1).get();
+        pool.shutdown();
+
+        assertEquals(IRechargeCreditTx.Outcome.CREDITED, a.outcome(), "用户A 首购成功，不被用户B 阻塞");
+        assertEquals(IRechargeCreditTx.Outcome.CREDITED, b.outcome(), "用户B 转正成功，不被用户A 阻塞");
+        assertEquals(2L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_card WHERE "
+                + com.jbk.serve.service.mini.card.CardEligibility.SQL_NOT_GIFT, Long.class),
+                "两个用户各得一张付费卡");
+    }
+
     private void addClaimedEvent(long id, String paid) {
         jdbc.update("INSERT INTO ws_payment_event(ID,ORDER_NO,ORDER_ID,PAYMENT_ID,PAY_SOURCE,FACT_CHANNEL,"
                         + "PROVIDER_EVENT_KEY,TRADE_STATE,TRANSACTION_ID,PAY_AMOUNT,CURRENCY,PAY_SUCCESS_TIME,"
@@ -654,5 +879,44 @@ class RechargeIssueTxDbTest {
     private int eventStatus(long id) {
         return jdbc.queryForObject("SELECT PROCESSING_STATUS FROM ws_payment_event WHERE ID=?",
                 Integer.class, id);
+    }
+
+    /**
+     * E2E-04 包D：首次购卡入账必须<b>同事务</b>建出权益批次，且批次剩余恰等于发放量。
+     *
+     * <p>没有这条正向断言，「接了但没生效」是看不出来的——把 createOnCredit 那一行删掉，
+     * 既有用例一条都不会红（它们只看卡余额与流水）。而批次缺失的后果是这笔充值
+     * 永远无法退款：折算没有基准。</p>
+     */
+    @Test
+    void firstPurchaseCreatesEntitlementBatchMatchingGrantedAmounts() {
+        issueTx.issue(EVENT_ID, PROCESSING);
+        java.util.Map<String, Object> batch = jdbc.queryForMap("SELECT * FROM ws_card_entitlement_batch");
+        assertEquals(1, ((Number) batch.get("SOURCE_TYPE")).intValue(), "首次购卡来源");
+        assertEquals(1, ((Number) batch.get("BATCH_STATUS")).intValue(), "新批次可用");
+        assertEquals(PAYMENT_ID, ((Number) batch.get("PAYMENT_ID")).longValue(),
+                "首次购卡权益批次必须锚定本次原支付单");
+        assertEquals(((Number) batch.get("GRANT_AMOUNT_FEN")).longValue(),
+                ((Number) batch.get("REMAIN_AMOUNT_FEN")).longValue(), "新批次剩余必须等于发放额");
+        assertEquals(((Number) batch.get("GRANT_WATER_ML")).longValue(),
+                ((Number) batch.get("REMAIN_WATER_ML")).longValue(), "水量同理");
+        Long cardFen = jdbc.queryForObject("SELECT BALANCE_AMOUNT FROM ws_card", Long.class);
+        Long cardMl = jdbc.queryForObject("SELECT BALANCE_ML FROM ws_card", Long.class);
+        assertEquals(cardFen, ((Number) batch.get("REMAIN_AMOUNT_FEN")).longValue(),
+                "批次剩余必须与卡聚合一致——这是消费分摊成立的前提");
+        assertEquals(cardMl, ((Number) batch.get("REMAIN_WATER_ML")).longValue());
+    }
+
+    /** 同一笔充值重放不得建出第二个批次（uk_batch_order）。 */
+    @Test
+    void replayDoesNotCreateSecondBatch() {
+        issueTx.issue(EVENT_ID, PROCESSING);
+        try {
+            issueTx.issue(EVENT_ID, PROCESSING);
+        } catch (RuntimeException ignored) {
+            // 重放被幂等闸拒绝是预期结果，本用例只关心批次没有变成两条
+        }
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ws_card_entitlement_batch", Integer.class));
     }
 }

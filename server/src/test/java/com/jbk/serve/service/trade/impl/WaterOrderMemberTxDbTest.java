@@ -1,14 +1,21 @@
 package com.jbk.serve.service.trade.impl;
 
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
+import com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper;
 import com.jbk.serve.mapper.device.WsDeviceMapper;
 import com.jbk.serve.mapper.device.WsDeviceOutletMapper;
+import com.jbk.serve.mapper.device.WsFaultDictMapper;
 import com.jbk.serve.mapper.device.WsQrcodeMapper;
 import com.jbk.serve.mapper.station.WsStationMapper;
 import com.jbk.serve.mapper.trade.TradeCardMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.mapper.trade.WsWalletFlowMapper;
 import com.jbk.serve.mapper.user.WsCardMemberMapper;
+import com.jbk.serve.service.aftersale.batch.EntitlementFixture;
+import com.jbk.serve.service.aftersale.batch.EntitlementLedger;
+import com.jbk.serve.service.delivery.impl.DeliveryDbSchema;
+import com.jbk.serve.service.device.DeviceAvailabilityGuard;
 import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.serve.service.trade.ITradeOrderTxService;
 import com.jbk.tool.data.mini.vo.ScanSessionInfo;
@@ -162,6 +169,26 @@ class WaterOrderMemberTxDbTest {
             return mapper(WsStationMapper.class, t);
         }
 
+        @Bean
+        MapperFactoryBean<WsCardEntitlementBatchMapper> wsCardEntitlementBatchMapper(SqlSessionTemplate t) {
+            // 包D-4：取水扣减同事务写权益分摊，故本上下文必须提供这两个 Mapper
+            return mapper(WsCardEntitlementBatchMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<WsEntitlementAllocationMapper> wsEntitlementAllocationMapper(SqlSessionTemplate t) {
+            return mapper(WsEntitlementAllocationMapper.class, t);
+        }
+
+        @Bean
+        EntitlementLedger entitlementLedger(WsCardEntitlementBatchMapper batchMapper,
+                                            WsEntitlementAllocationMapper allocationMapper,
+                                            TradeCardMapper tradeCardMapper,
+                                            WsWalletFlowMapper walletFlowMapper) {
+            // 真实台账而不是 Mock：分摊要摊到真表上，才能验证「卡扣了、批次也扣了」
+            return new EntitlementLedger(batchMapper, allocationMapper, tradeCardMapper, walletFlowMapper);
+        }
+
         private static <M> MapperFactoryBean<M> mapper(Class<M> type, SqlSessionTemplate template) {
             MapperFactoryBean<M> bean = new MapperFactoryBean<>(type);
             bean.setSqlSessionTemplate(template);
@@ -171,6 +198,25 @@ class WaterOrderMemberTxDbTest {
         @Bean
         IWsDomainEventService domainEventService() {
             return Mockito.mock(IWsDomainEventService.class);
+        }
+
+        @Bean
+        com.jbk.serve.service.settlement.ISplitService splitService() {
+            // E2E-08 完成挂点协作方：本类锁既有资金事实，分账行为由 SettlementDbTest 用真库锁定
+            return org.mockito.Mockito.mock(com.jbk.serve.service.settlement.ISplitService.class);
+        }
+
+        @Bean
+        MapperFactoryBean<WsFaultDictMapper> wsFaultDictMapper(SqlSessionTemplate t) {
+            // B20：事务内可用性复验要读故障码字典（未登记码 fail-closed）
+            return mapper(WsFaultDictMapper.class, t);
+        }
+
+        @Bean
+        DeviceAvailabilityGuard deviceAvailabilityGuard(WsDeviceMapper d, WsDeviceOutletMapper o,
+                                                        WsFaultDictMapper f) {
+            // 真实 Guard 而不是 Mock：FOR UPDATE 当前读与判定接线必须在真库上被证明
+            return new DeviceAvailabilityGuard(d, o, f);
         }
 
         @Bean
@@ -224,6 +270,7 @@ class WaterOrderMemberTxDbTest {
                   PLAN_ML BIGINT NULL, ACTUAL_ML BIGINT NULL, ORDER_AMOUNT BIGINT,
                   PAY_WAY TINYINT, ORDER_STATUS TINYINT, CMD_ID BIGINT NULL,
                   FINISH_TIME VARCHAR(20) NULL, CANCEL_REASON VARCHAR(500) NULL,
+                  REFERRER_USER_ID BIGINT NULL,
                   UNIQUE KEY uk_order_no (ORDER_NO),
                   KEY idx_order_card_user_type_time (CARD_ID, USER_ID, ORDER_TYPE, CREATE_TIME)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
@@ -261,8 +308,10 @@ class WaterOrderMemberTxDbTest {
                   DEVICE_NO VARCHAR(50), DEVICE_NAME VARCHAR(100), DEVICE_MODEL VARCHAR(50),
                   STATION_ID BIGINT, OWNER_USER_ID BIGINT NULL, CHANNEL_USER_ID BIGINT NULL,
                   FIRMWARE_VERSION VARCHAR(50), SIM_ICCID VARCHAR(50), SIM_CARRIER VARCHAR(20),
+                  SIM_STATUS TINYINT NULL, SIM_EXPIRE_TIME VARCHAR(14) NULL,
                   ONLINE_STATUS TINYINT, RUN_STATUS TINYINT, LAST_HEARTBEAT VARCHAR(20),
-                  LAST_FAULT_CODE VARCHAR(20), SIGNAL_STRENGTH INT, DEVICE_REMARK VARCHAR(255)
+                  LAST_FAULT_CODE VARCHAR(20), LAST_STATUS_DEVICE_TIME VARCHAR(14),
+                  SIGNAL_STRENGTH INT, DEVICE_REMARK VARCHAR(255)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_device_outlet (
@@ -280,6 +329,10 @@ class WaterOrderMemberTxDbTest {
                   QRCODE_CONTENT VARCHAR(200), QRCODE_TYPE TINYINT, DEVICE_ID BIGINT NULL,
                   OUTLET_ID BIGINT NULL, QRCODE_STATUS TINYINT
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        // 包D-4：取水扣减同事务写权益分摊，建表与生产同源（SchemaParityTest 常态守卫）
+        DeliveryDbSchema.createEntitlementTables(jdbc);
+        jdbc.execute("TRUNCATE TABLE ws_entitlement_allocation");
+        jdbc.execute("TRUNCATE TABLE ws_card_entitlement_batch");
         jdbc.execute("TRUNCATE TABLE ws_card_member");
         jdbc.execute("TRUNCATE TABLE ws_wallet_flow");
         jdbc.execute("TRUNCATE TABLE ws_order");
@@ -301,6 +354,8 @@ class WaterOrderMemberTxDbTest {
         jdbc.update("INSERT INTO ws_card(ID,DATA_STATUS,CARD_NO,CARD_TYPE,USER_ID,BALANCE_AMOUNT,BALANCE_ML,"
                         + "SCOPE_JSON,EXPIRE_TIME,CARD_STATUS) VALUES(?,0,?,1,?,?,?,?,NULL,1)",
                 CARD_ID, "VC-TEST-100", OWNER_ID, BALANCE_FEN, BALANCE_ML, SCOPE_MATCH);
+        // 包D-4：卡是裸 INSERT，补历史聚合批次以满足「批次剩余合计 == 卡聚合值」
+        EntitlementFixture.seedLegacyBatch(jdbc, CARD_ID, OWNER_ID, BALANCE_FEN, BALANCE_ML);
         seedMember(0, 1, null, null, DAY_LIMIT_ML);
     }
 
@@ -316,6 +371,11 @@ class WaterOrderMemberTxDbTest {
 
     private ScanSessionInfo session(long userId) {
         return new ScanSessionInfo()
+                // S2：会话冻结报价（与 order() 的 PACKAGE_SNAP 同源，事务内三方一致校验据此比对）
+                .setScanSessionId("scan-m")
+                .setWaterTypeId(8L)
+                .setUnitPriceFenPerLiter(20)
+                .setQuotedAt(NOW)
                 .setUserId(userId)
                 .setQrcodeId(QRCODE_ID)
                 .setStationId(STATION_ID)

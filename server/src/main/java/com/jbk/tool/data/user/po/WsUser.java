@@ -77,6 +77,10 @@ public class WsUser extends BaseEntity implements Serializable {
     @TableField("PROMO_CODE")
     private String promoCode;
 
+    @Schema(description = "本人邀请码（E2E-08，确定性派生唯一；与推送码是否合一属外部确认项）")
+    @TableField("OWN_INVITE_CODE")
+    private String ownInviteCode;
+
 }
 
 

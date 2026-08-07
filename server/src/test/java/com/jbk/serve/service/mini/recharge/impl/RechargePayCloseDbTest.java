@@ -1,5 +1,7 @@
 package com.jbk.serve.service.mini.recharge.impl;
 
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
+import com.jbk.serve.service.aftersale.batch.EntitlementLedger;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.jbk.serve.mapper.trade.RechargeCreditMapper;
 import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
@@ -9,6 +11,7 @@ import com.jbk.serve.service.mini.recharge.IRechargePayCloseTx;
 import com.jbk.serve.service.mini.recharge.IRechargePayFactService;
 import com.jbk.serve.service.mini.recharge.RechargePayExpire;
 import com.jbk.serve.service.mini.recharge.RechargeQueryEventKey;
+import com.jbk.serve.service.mini.recharge.RechargeRefundEvidenceVerifier;
 import com.jbk.serve.service.mini.card.WaterCardScope;
 import com.jbk.serve.service.mini.recharge.RechargeSnapshot;
 import com.jbk.tool.data.mini.bo.MiniPaySimBo;
@@ -32,6 +35,7 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.mockito.Mockito;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -118,6 +122,9 @@ class RechargePayCloseDbTest {
                     new com.baomidou.mybatisplus.core.MybatisConfiguration();
             cfg.setMapUnderscoreToCamelCase(true);
             factory.setConfiguration(cfg);
+            factory.setMapperLocations(new org.springframework.core.io.support
+                    .PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:mapper/trade/TradeCardMapper.xml"));
             return new SqlSessionTemplate(factory.getObject());
         }
 
@@ -125,6 +132,23 @@ class RechargePayCloseDbTest {
         MapperFactoryBean<RechargeCreditMapper> creditMapper(SqlSessionTemplate template) {
             MapperFactoryBean<RechargeCreditMapper> bean = new MapperFactoryBean<>(RechargeCreditMapper.class);
             bean.setSqlSessionTemplate(template);
+            return bean;
+        }
+
+
+        /**
+
+         * E2E-04 包D：充值入账现在同事务建立权益批次，故上下文必须提供该 Mapper。
+
+         * 缺它整个上下文起不来——本类此前一次性红掉正是这个原因。
+
+         */
+
+        @Bean
+        MapperFactoryBean<WsCardEntitlementBatchMapper> wsCardEntitlementBatchMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<WsCardEntitlementBatchMapper> bean = new MapperFactoryBean<>(
+                    WsCardEntitlementBatchMapper.class);
+            bean.setSqlSessionTemplate(t);
             return bean;
         }
 
@@ -147,8 +171,43 @@ class RechargePayCloseDbTest {
 
         @Bean
         RechargeCreditTxImpl creditTx(RechargeCreditMapper mapper, RechargeLockedState locked,
-                                      RechargeLedgerVerifier ledger) {
-            return new RechargeCreditTxImpl(mapper, locked, ledger);
+                                      RechargeLedgerVerifier ledger,
+                                      WsCardEntitlementBatchMapper batchMapper,
+                                      EntitlementLedger entitlementLedger) {
+            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper> allocationMapper(
+                SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.trade.TradeCardMapper> tradeCardMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.trade.TradeCardMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.trade.TradeCardMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.trade.WsWalletFlowMapper> walletFlowMapperBean(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.trade.WsWalletFlowMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.trade.WsWalletFlowMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        EntitlementLedger entitlementLedger(WsCardEntitlementBatchMapper batchMapper,
+                                            com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper allocationMapper,
+                                            com.jbk.serve.mapper.trade.TradeCardMapper tradeCardMapper,
+                                            com.jbk.serve.mapper.trade.WsWalletFlowMapper walletFlowMapper) {
+            return new EntitlementLedger(batchMapper, allocationMapper, tradeCardMapper, walletFlowMapper);
         }
 
         @Bean
@@ -168,8 +227,9 @@ class RechargePayCloseDbTest {
         }
 
         @Bean
-        RechargeIssueTxImpl issueTx(RechargeCreditMapper mapper, RechargeLedgerVerifier ledger) {
-            return new RechargeIssueTxImpl(mapper, ledger);
+        RechargeIssueTxImpl issueTx(RechargeCreditMapper mapper, RechargeLedgerVerifier ledger,
+                                    WsCardEntitlementBatchMapper batchMapper) {
+            return new RechargeIssueTxImpl(mapper, ledger, batchMapper);
         }
 
         /** 按接口注入 confirm/close/credit/issue：@Transactional 走 JDK 接口代理，注入实现类会失败。 */
@@ -185,7 +245,8 @@ class RechargePayCloseDbTest {
 
         @Bean
         MiniPayStatusServiceImpl payStatusService(RechargeIdentityMapper identity) {
-            return new MiniPayStatusServiceImpl(identity);
+            return new MiniPayStatusServiceImpl(identity,
+                    Mockito.mock(RechargeRefundEvidenceVerifier.class));
         }
 
         @Bean
@@ -220,6 +281,31 @@ class RechargePayCloseDbTest {
 
     @BeforeEach
     void reset() {
+        // E2E-04 包D：充值入账同事务建立权益批次，故本类的 schema 必须包含它。
+        // uk_batch_order 是「每笔充值恰好一个批次」的物理保证——本类的重放用例
+        // 正是靠它与 uk_card_issue_order 一起把「重放不得二次发权益」钉死。
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_card_entitlement_batch (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(14),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(14),
+                  CARD_ID BIGINT NOT NULL, USER_ID BIGINT NOT NULL, SOURCE_TYPE TINYINT NOT NULL,
+                  ORDER_ID BIGINT NULL, ORDER_NO VARCHAR(32) NULL, PAYMENT_ID BIGINT NULL,
+                  PACKAGE_ID BIGINT NULL, PACKAGE_SNAP TEXT NULL,
+                  PAY_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_BONUS_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_WATER_ML BIGINT NOT NULL DEFAULT 0,
+                  REMAIN_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  REMAIN_WATER_ML BIGINT NOT NULL DEFAULT 0,
+                  EXPIRE_TIME VARCHAR(14) NULL, SCOPE_JSON TEXT NULL,
+                  BATCH_STATUS TINYINT NOT NULL, REFUND_LOCKED_BY BIGINT NULL,
+                  REFUND_LOCK_TIME VARCHAR(14) NULL,
+                  REFUNDED_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  VERSION INT NOT NULL DEFAULT 1,
+                  UNIQUE KEY uk_batch_order (ORDER_ID),
+                  KEY idx_batch_pick (CARD_ID, BATCH_STATUS, EXPIRE_TIME, CREATE_TIME)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_card (
                   ID BIGINT PRIMARY KEY, CARD_NO VARCHAR(50), USER_ID BIGINT,
@@ -272,6 +358,9 @@ class RechargePayCloseDbTest {
                   ORDER_ID BIGINT, FLOW_REMARK VARCHAR(255), BIZ_IDEMPOTENCY_KEY VARCHAR(64) NULL,
                   UNIQUE KEY uk_wallet_flow_biz_key (BIZ_IDEMPOTENCY_KEY)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        // 包D 批次表逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键，
+        // 表现为与被测逻辑无关的 DuplicateKey，掩盖真正的断言
+        jdbc.execute("TRUNCATE TABLE ws_card_entitlement_batch");
         jdbc.execute("TRUNCATE TABLE ws_wallet_flow");
         jdbc.execute("TRUNCATE TABLE ws_payment_event");
         jdbc.execute("DELETE FROM ws_payment");
@@ -299,13 +388,15 @@ class RechargePayCloseDbTest {
         p.setWaterMl(WATER_ML);
         p.setBonusAmount(0L);
         p.setUnitPriceSnap("20.00");
-        p.setExpireDays(EXPIRE_DAYS);
+        p.setExpireDays(null); // D-213：历史有限期由下方铸造
         WsCard c = new WsCard();
         c.setId(CARD_ID);
+        c.setCardStatus(1);
         c.setExpireTime(CARD_EXPIRE);
         c.setScopeJson(SCOPE);
-        String json = RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
-                p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, CREATE_TIME);
+        String json = com.jbk.serve.service.mini.recharge.LegacySnapshots.forgeExpireDays(
+                RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
+                        p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, CREATE_TIME), EXPIRE_DAYS);
         RechargeSnapshot.Parsed parsed = RechargeSnapshot.parse(json);
         assertEquals(PAY_EXPIRE, RechargePayExpire.compute(parsed.capturedTime(), parsed.expireTimeAtCreate()),
                 "测试基线的付款截止时间必须由冻结算法算出，不能手填");
@@ -635,13 +726,15 @@ class RechargePayCloseDbTest {
         p.setWaterMl(WATER_ML);
         p.setBonusAmount(0L);
         p.setUnitPriceSnap("20.00");
-        p.setExpireDays(EXPIRE_DAYS);
+        p.setExpireDays(null); // D-213：历史有限期由下方铸造
         WsCard c = new WsCard();
         c.setId(CARD_ID);
+        c.setCardStatus(1);
         c.setExpireTime(CARD_EXPIRE);
         c.setScopeJson(SCOPE);
-        String json = RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
-                p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, createTime);
+        String json = com.jbk.serve.service.mini.recharge.LegacySnapshots.forgeExpireDays(
+                RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
+                        p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, createTime), EXPIRE_DAYS);
         RechargeSnapshot.Parsed parsed = RechargeSnapshot.parse(json);
         String expire = RechargePayExpire.compute(parsed.capturedTime(), parsed.expireTimeAtCreate());
         jdbc.update("UPDATE ws_order SET PACKAGE_SNAP=?, CREATE_TIME=? WHERE ID=?", json, createTime, ORDER_ID);

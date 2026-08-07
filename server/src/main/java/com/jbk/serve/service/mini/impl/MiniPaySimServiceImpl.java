@@ -98,7 +98,7 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
             WsPaymentEvent saved = creditMapper.selectEventByProviderKey(
                     paySource, FACT_CHANNEL_PAY_SIM, providerEventKey);
             if (saved == null) {
-                throw new JbkException("支付事实落库失败");
+                throw JbkException.internal("支付事实落库失败");
             }
             eventId = saved.getId();
         }
@@ -133,7 +133,7 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
         // 用内部订单金额补造出来的"外部事实"在对账时是纯粹的伪证。
         String providerEventKey = RechargeQueryEventKey.derive(
                 paySource, orderNo, tradeState, null, null, null, null);
-        String rawBody = queryRawBody(orderNo, tradeState, now);
+        String rawBody = queryRawBody(orderNo, tradeState);
         String sha256 = sha256Hex(rawBody);
 
         WsPaymentEvent existing = creditMapper.selectEventByProviderKey(
@@ -153,7 +153,7 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
             WsPaymentEvent saved = creditMapper.selectEventByProviderKey(
                     paySource, FACT_CHANNEL_QUERY, providerEventKey);
             if (saved == null) {
-                throw new JbkException("查单事实落库失败");
+                throw JbkException.internal("查单事实落库失败");
             }
             eventId = requireSameDigest(saved.getId(), sha256);
         }
@@ -188,7 +188,7 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
         List<WsPaymentEvent> events = identityMapper.selectEventsByOrderNoIncludingDeleted(orderNo);
         if (events != null && events.stream()
                 .anyMatch(e -> RechargePayStatus.SUCCESS.equals(e.getTradeState()))) {
-            throw new JbkException("模拟支付方已记录该订单的支付成功事实，查单不会返回未支付或已关闭");
+            throw JbkException.internal("模拟支付方已记录该订单的支付成功事实，查单不会返回未支付或已关闭");
         }
         if (StrUtil.isBlank(payment.getPayExpireTime())) {
             // 截止时间缺失时支付方无从判断是否该关单，fail-closed 拒绝而不是默认关闭
@@ -202,7 +202,7 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
     /** 契约 §5.3：同键重复到达必须比对正文摘要，不一致即人工核查，不得复用旧事实。 */
     private Long requireSameDigest(Long eventId, String sha256) {
         if (creditMapper.countEventMatchingDigest(eventId, sha256) != 1) {
-            throw new JbkException("同一查单事实键下的正文摘要不一致，已拒绝复用，请人工核查");
+            throw JbkException.internal("同一查单事实键下的正文摘要不一致，已拒绝复用，请人工核查");
         }
         return eventId;
     }
@@ -234,7 +234,7 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
         int paySource = paySourceAdapter.currentSource();
         if (!ObjectUtil.equals(payment.getPaySource(), paySource)) {
             // 支付单是微信来源却想用 Pay-Sim 操作：拒绝，绝不让模拟事实混进真实收款口径
-            throw new JbkException("支付单来源与当前适配器不一致，" + refuseLabel);
+            throw JbkException.internal("支付单来源与当前适配器不一致，" + refuseLabel);
         }
         return new Target(order, payment, paySource);
     }
@@ -301,9 +301,15 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
      * <p>刻意<b>不含</b>金额与交易号：支付方在 NOTPAY/CLOSED 时本来就不返回这些字段，
      * 把内部值写进"外部证据"会让这条 RAW_BODY 在事后对账时被误当成支付方的原话。</p>
      */
-    private static String queryRawBody(String orderNo, String tradeState, String queryTime) {
+    /**
+     * 查单事实正文——刻意<b>不含时间戳</b>：同一查单键的重复轮询必须产出同一正文，
+     * 否则跨秒的第二次轮询会在 requireSameDigest（契约 §5.3 同键同正文）处被判「摘要
+     * 不一致转人工」，把正常轮询打成告警（此前多轮测试恰好同秒才没暴露）。
+     * 查单时刻的事实已由事实行的 RECEIVED_TIME 列承载，不需要塞进正文。
+     */
+    private static String queryRawBody(String orderNo, String tradeState) {
         return "{\"source\":\"PAY_SIM\",\"channel\":\"QUERY\",\"out_trade_no\":\"" + orderNo
-                + "\",\"trade_state\":\"" + tradeState + "\",\"query_time\":\"" + queryTime + "\"}";
+                + "\",\"trade_state\":\"" + tradeState + "\"}";
     }
 
     /** 与真实微信通知同构的最小报文（字段顺序固定，保证摘要可复算）。 */

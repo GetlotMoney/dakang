@@ -67,7 +67,8 @@ public class MiniCatalogServiceImpl implements IMiniCatalogService {
                 .eq(WsDevice::getStationId, station.getId()));
         long onlineCount = devices.stream()
                 // 在线状态(1300)：1在线；2离线/3未激活不计
-                .filter(device -> ObjectUtil.equal(device.getOnlineStatus(), 1))
+                .filter(device -> ObjectUtil.equal(device.getOnlineStatus(),
+                        com.jbk.tool.consts.device.DeviceEnum.OnlineStatus.ONLINE.getValue()))
                 .count();
         List<Long> deviceIds = devices.stream().map(WsDevice::getId).collect(Collectors.toList());
         long outletCount = deviceIds.isEmpty() ? 0 : outletMapper.selectCount(

@@ -7,6 +7,7 @@ import com.jbk.serve.mapper.product.WsPackageMapper;
 import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
 import com.jbk.serve.service.mini.recharge.IRechargeCreateTx;
 import com.jbk.serve.service.mini.recharge.IRechargePaySourceAdapter;
+import com.jbk.serve.service.mini.recharge.RechargeRefundEvidenceVerifier;
 import com.jbk.serve.service.mini.recharge.RechargeOrderNo;
 import com.jbk.tool.data.mini.bo.MiniRechargeCreateBo;
 import com.jbk.tool.data.mini.vo.MiniRechargeOrderVo;
@@ -100,8 +101,13 @@ class MiniRechargeConcurrencyTest {
         cardService = Mockito.mock(com.jbk.serve.service.user.IWsCardService.class);
         createTx = Mockito.mock(IRechargeCreateTx.class);
         IRechargePaySourceAdapter paySource = () -> IRechargePaySourceAdapter.WECHAT;
-        service = new MiniRechargeServiceImpl(identityMapper, packageMapper, cardService, createTx, paySource,
-                new MiniPayStatusServiceImpl(identityMapper));
+        service = new MiniRechargeServiceImpl(new com.jbk.serve.service.settlement.IInviteService() {
+                    public String myInviteCode(Long userId) { return "IVTEST0000"; }
+                    public void bindReferrer(Long userId, String inviteCode) { }
+                    public Long referrerSnapshotOf(Long userId) { return null; }
+                }, identityMapper, packageMapper, cardService, createTx, paySource,
+                new MiniPayStatusServiceImpl(identityMapper,
+                        Mockito.mock(RechargeRefundEvidenceVerifier.class)));
         when(identityMapper.selectEventsByOrderNoIncludingDeleted(anyString())).thenReturn(List.of());
 
         when(cardService.getOne(any(Wrapper.class))).thenReturn(card());

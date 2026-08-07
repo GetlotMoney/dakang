@@ -51,10 +51,52 @@
     </update>
 
     <!--
+      E2E-04 包A 统一权益返还（金额 + 水量一次写入）。与 deduct* 对称；与 compensate* 的口径差异见接口类注释。
+      铁律①：WHERE 带全部前态（归属 / 逻辑删除 / 卡状态 / 两列余额），影响行必须 == 1；
+      铁律③：AFTER 双列由调用方按「前态 + 本次 delta」算预期值，不再 selectById 重读。
+
+      逐条 WHERE 的存在理由（删任意一条都会开出一个静默错账的口子）：
+        ID                       —— 目标行；
+        DATA_STATUS = 0          —— 逻辑删除卡影响 0 行 → 转人工，不静默入账；
+        USER_ID = expectedOwner  —— 卡归属漂移（换主）时影响 0 行，钱绝不打进别人的卡（铁律6）；
+        CARD_STATUS IN (1,2,3)   —— 1正常/2冻结/3过期均允许收退款：退的是用户自己的钱，
+                                    拒绝返还等于平台白拿；3已过期必须在集合内，否则会静默改变
+                                    E2E-01 在过期卡上的退差行为（compensate* 现状连卡状态都不校验）；
+                                    4已注销落在集合外 → 影响 0 行 → 转人工。
+                                    SET 里刻意不含 CARD_STATUS：冻结卡允许收款但绝不自动解冻
+                                    （对照 RechargeCreditMapper.creditFiniteCard 会 SET CARD_STATUS=1，
+                                     那两条 CAS 严禁用于售后返还）；
+        BALANCE_AMOUNT/ML 双前态 —— 让 AFTER 可由预期值推导，并把「账本被并发改写」暴露成 0 行而非错账；
+                                    因此调用方必须先 selectByIdForUpdate 锁卡读前态。
+        入参方向闸               —— 本表没有 CHECK 约束，负值是「返还」这个动作里唯一没有库层守卫的方向；
+                                    传负数时 WHERE 全满足、影响行 1、流水记负数，一次返还会静默执行成一次扣款。
+                                    故把「两列均 >= 0 且不同时为 0」写进 WHERE：非法方向影响 0 行 → 转人工。
+      注意：金额上限（R0-3 累计封顶）无法由本 SQL 表达（它看不到 ws_wallet_flow 与售后历史），
+            由「锁定读的四元额度聚合 + uk_after_sale_source + uk_wallet_flow_biz_key」三层承担。
+    -->
+    <update id="refundCardAssets">
+        UPDATE ws_card
+        SET BALANCE_AMOUNT = BALANCE_AMOUNT + #{amountFen},
+            BALANCE_ML     = BALANCE_ML + #{ml},
+            UPDATE_BY      = #{opUserId},
+            UPDATE_TIME    = #{now}
+        WHERE ID = #{cardId}
+          AND DATA_STATUS = 0
+          AND USER_ID = #{expectedOwnerUserId}
+          AND CARD_STATUS IN (1, 2, 3)
+          AND BALANCE_AMOUNT = #{oldAmount}
+          AND BALANCE_ML = #{oldMl}
+          AND #{amountFen} &gt;= 0
+          AND #{ml} &gt;= 0
+          AND (#{amountFen} &gt; 0 OR #{ml} &gt; 0)
+    </update>
+
+    <!--
       补偿入账（退差/退款）：加回余额/水量，原子 UPDATE（铁律1）。加钱无需余量校验，
       但仍以「卡存在且未逻辑删除且归属同一卡主」为条件——退差必须回到同一张卡主的卡，
       卡归属漂移时影响 0 行并由结算层回滚，而不是打进别人的卡。
-      防重由结算层「订单终态校验 + ORDER_ID+FLOW_TYPE=4 流水去重」保证。
+      防重由结算层的订单终态条件 UPDATE 保证；本 SQL 无库层幂等、不校验 CARD_STATUS、不带余额前态，
+      属 E2E-01 历史路径专用，新代码一律用上面的 refundCardAssets（迁移待办见接口类注释）。
     -->
     <update id="compensateBalance">
         UPDATE ws_card
@@ -74,6 +116,71 @@
         WHERE ID = #{cardId}
           AND DATA_STATUS = 0
           AND USER_ID = #{expectedOwnerUserId}
+    </update>
+
+    <!--
+      权益冲减（E2E-04 包D-5）：外部退款成功后，把退掉的那批权益从卡上减掉。
+      与 refundCardAssets 逐条镜像——双列前态 + 归属 + 状态白名单 + 入参方向校验，
+      额外多两条余量条件：退款结算绝不允许把卡余额扣成负数（宁可 0 行转人工）。
+    -->
+    <update id="reverseCardAssets">
+        UPDATE ws_card
+        SET BALANCE_AMOUNT = BALANCE_AMOUNT - #{amountFen},
+            BALANCE_ML     = BALANCE_ML - #{ml},
+            UPDATE_BY      = #{opUserId},
+            UPDATE_TIME    = #{now}
+        WHERE ID = #{cardId}
+          AND DATA_STATUS = 0
+          AND USER_ID = #{expectedOwnerUserId}
+          AND CARD_STATUS IN (1, 2, 3)
+          AND BALANCE_AMOUNT = #{oldAmount}
+          AND BALANCE_ML = #{oldMl}
+          AND BALANCE_AMOUNT &gt;= #{amountFen}
+          AND BALANCE_ML &gt;= #{ml}
+          AND #{amountFen} &gt;= 0
+          AND #{ml} &gt;= 0
+          AND (#{amountFen} &gt; 0 OR #{ml} &gt; 0)
+    </update>
+
+    <!--
+      首购退款后的卡注销（E2E-04 包D-5）：只改状态，绝不删卡、不删流水。
+      零余额零水量两条谓词是物理防线——注销一张还带权益的卡等于作废用户没退款的那部分。
+    -->
+    <update id="closeEmptyCard">
+        UPDATE ws_card
+        SET CARD_STATUS = 4,
+            UPDATE_BY   = #{opUserId},
+            UPDATE_TIME = #{now}
+        WHERE ID = #{cardId}
+          AND DATA_STATUS = 0
+          AND USER_ID = #{expectedOwnerUserId}
+          AND CARD_STATUS IN (1, 2, 3)
+          AND BALANCE_AMOUNT = 0
+          AND BALANCE_ML = 0
+    </update>
+
+    <!--
+      聚合有效期重算（E2E-04 包D-5）：退掉一个批次后，卡有效期取剩余批次里最晚的那个。
+      前态用 choose 分流：NULL（永久）走 IS NULL，否则等值比较——
+      并发续期与本次重算撞上时影响 0 行、整体回滚，绝不用旧值覆盖刚续上的有效期。
+    -->
+    <update id="resetAggregateExpireTime">
+        UPDATE ws_card
+        SET EXPIRE_TIME = #{newExpireTime},
+            UPDATE_BY   = #{opUserId},
+            UPDATE_TIME = #{now}
+        WHERE ID = #{cardId}
+          AND DATA_STATUS = 0
+          AND USER_ID = #{expectedOwnerUserId}
+          AND CARD_STATUS IN (1, 2, 3)
+        <choose>
+            <when test="oldExpireTime == null or oldExpireTime == ''">
+                AND (EXPIRE_TIME IS NULL OR EXPIRE_TIME = '')
+            </when>
+            <otherwise>
+                AND EXPIRE_TIME = #{oldExpireTime}
+            </otherwise>
+        </choose>
     </update>
 
 </mapper>

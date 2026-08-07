@@ -12,6 +12,7 @@ import com.jbk.serve.service.mini.auth.KhUserSession;
 import com.jbk.serve.service.mini.auth.WechatCode2SessionResult;
 import com.jbk.tool.config.wechat.WechatXcxConfig;
 import com.jbk.tool.data.mini.bo.MiniBindPhoneBo;
+import com.jbk.tool.data.mini.bo.MiniBindPhoneSelfBo;
 import com.jbk.tool.data.mini.bo.MiniLoginBo;
 import com.jbk.tool.data.mini.vo.MiniAuthResultVo;
 import com.jbk.tool.data.user.po.WsUser;
@@ -30,7 +31,9 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -82,7 +85,8 @@ class MiniAuthServiceTest {
         capabilityService = Mockito.mock(IMiniCapabilityService.class);
         when(capabilityService.capabilitiesOf(any())).thenReturn(List.of("USER_BASE"));
         service = new MiniAuthServiceImpl(identityMapper, code2Session, phone, issuer, bindTx, config,
-                capabilityService);
+                capabilityService,
+                Mockito.mock(com.jbk.serve.service.settlement.IRegisterGiftService.class));
         ReflectionTestUtils.setField(service, "redis", redis);
     }
 
@@ -275,5 +279,93 @@ class MiniAuthServiceTest {
             assertThrows(ClassNotFoundException.class, () -> Class.forName(banned), banned + " 仍存在");
         }
         assertNotNull(Class.forName("com.jbk.serve.controller.mini.MiniAuthController"));
+    }
+
+    // ---------- 仅微信身份建号开关 ----------
+
+    // 13) 开关关闭（默认）：新 openid 仍走 UNBOUND 票据路径，绝不悄悄建号
+    @Test
+    void phonelessRegisterOffKeepsTicketPath() {
+        when(code2Session.resolve("code-x")).thenReturn(new WechatCode2SessionResult(OPENID, "sk"));
+        when(identityMapper.selectByOpenidIncludingDeleted(OPENID)).thenReturn(new ArrayList<>());
+
+        MiniAuthResultVo vo = service.login(loginBo());
+
+        assertEquals("UNBOUND", vo.getResult());
+        verify(bindTx, never()).registerByOpenid(anyString());
+    }
+
+    // 14) 开关打开：新 openid 直接建号并 BOUND；上下文标记未绑号且不携带 userPhone
+    @Test
+    void phonelessRegisterOnCreatesAccountAndBinds() {
+        ReflectionTestUtils.setField(service, "phonelessRegisterEnabled", true);
+        when(code2Session.resolve("code-x")).thenReturn(new WechatCode2SessionResult(OPENID, "sk"));
+        when(identityMapper.selectByOpenidIncludingDeleted(OPENID)).thenReturn(new ArrayList<>());
+        when(bindTx.registerByOpenid(OPENID)).thenReturn(new BoundUser(66L, "微信用户", null));
+
+        MiniAuthResultVo vo = service.login(loginBo());
+
+        assertEquals("BOUND", vo.getResult());
+        assertEquals("66", vo.getAccountContext().getUserId());
+        assertNull(vo.getAccountContext().getUserPhone());
+        assertFalse(vo.getAccountContext().getPhoneBound(), "未绑号必须显式标 false，不让前端靠字段缺失猜");
+        verify(issuer).issue(eq(66L), any());
+    }
+
+    // 15) 开关打开但 openid 已建号：走既有账号，不重复建号
+    @Test
+    void phonelessRegisterOnStillPrefersExistingAccount() {
+        ReflectionTestUtils.setField(service, "phonelessRegisterEnabled", true);
+        when(code2Session.resolve("code-x")).thenReturn(new WechatCode2SessionResult(OPENID, "sk"));
+        when(identityMapper.selectByOpenidIncludingDeleted(OPENID))
+                .thenReturn(List.of(user(9L, OPENID, PHONE, 0, 1, 1)));
+
+        MiniAuthResultVo vo = service.login(loginBo());
+
+        assertEquals("BOUND", vo.getResult());
+        assertTrue(vo.getAccountContext().getPhoneBound());
+        verify(bindTx, never()).registerByOpenid(anyString());
+    }
+
+    // 16) 开关打开也不得放行禁用/删除账号（建号路径不是绕过封禁的后门）
+    @Test
+    void phonelessRegisterOnStillRejectsUnusableAccount() {
+        ReflectionTestUtils.setField(service, "phonelessRegisterEnabled", true);
+        when(code2Session.resolve("code-x")).thenReturn(new WechatCode2SessionResult(OPENID, "sk"));
+        when(identityMapper.selectByOpenidIncludingDeleted(OPENID))
+                .thenReturn(List.of(user(9L, OPENID, PHONE, 1, 1, 1)));
+
+        assertThrows(JbkException.class, () -> service.login(loginBo()));
+        verify(bindTx, never()).registerByOpenid(anyString());
+        verify(issuer, never()).issue(anyLong(), any());
+    }
+
+    // ---------- 登录后自助补绑 ----------
+
+    // 17) 补绑成功：号码由服务端换取，返回刷新后的上下文，且不换发会话
+    @Test
+    void bindPhoneForCurrentUserRefreshesContextWithoutNewSession() {
+        when(phone.resolvePhone("phone-code-x")).thenReturn(PHONE);
+        when(bindTx.bindPhoneToCurrentUser(66L, PHONE)).thenReturn(new BoundUser(66L, "微信用户", PHONE));
+
+        MiniBindPhoneSelfBo bo = new MiniBindPhoneSelfBo();
+        bo.setPhoneCode("phone-code-x");
+        var ctx = service.bindPhoneForCurrentUser(66L, bo);
+
+        assertEquals("66", ctx.getUserId());
+        assertEquals(PHONE, ctx.getUserPhone());
+        assertTrue(ctx.getPhoneBound());
+        verify(issuer, never()).issue(anyLong(), any());
+    }
+
+    // 18) 补绑失败不得改上下文（事务抛异常即整体失败）
+    @Test
+    void bindPhoneForCurrentUserFailClosed() {
+        when(phone.resolvePhone("phone-code-x")).thenReturn(PHONE);
+        when(bindTx.bindPhoneToCurrentUser(66L, PHONE)).thenThrow(new JbkException("该手机号已被其他账号使用"));
+
+        MiniBindPhoneSelfBo bo = new MiniBindPhoneSelfBo();
+        bo.setPhoneCode("phone-code-x");
+        assertThrows(JbkException.class, () -> service.bindPhoneForCurrentUser(66L, bo));
     }
 }

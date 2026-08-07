@@ -36,20 +36,18 @@ public interface ITradeOrderTxService {
      * 返回影响行数：==1 抢闸成功（可 publish）；==0 已有指令占位（重复触发，作废本次不下发）。
      * 保证一个订单物理上不可能产生两条有效出水指令（设备安全铁律4 配套）。
      *
+     * <p>CAS 谓词还包含订单类型、已支付状态与「站-设备-出水口」三共键：调用方读单、判定设备到
+     * 抢占之间，订单可能被并发转异常/退款/完成，档案也可能迁站或改绑。影响行数不是 1 时
+     * 调用方必须作废本次 PENDING 指令且不得 publish。</p>
+     *
      * @param orderId   订单ID
      * @param commandId 待关联的指令ID
+     * @param stationId 判定所依据的当前水站ID（必须仍等于订单落库值）
+     * @param deviceId  判定所依据的当前设备ID
+     * @param outletId  判定所依据的当前出水口ID
      * @return 影响行数（0 或 1）
      */
-    int claimCommandSlot(Long orderId, Long commandId);
-
-    /**
-     * 指令回执联动订单：条件 UPDATE ws_order SET ORDER_STATUS=3出水中 WHERE ID=? AND ORDER_STATUS=2已支付。
-     * 幂等：affected==0（已推进/非 2 态）不覆盖，由调用方审计留痕。
-     *
-     * @param orderId 订单ID
-     * @return 影响行数（0 或 1）
-     */
-    int onCommandAcked(Long orderId);
+    int claimCommandSlot(Long orderId, Long commandId, Long stationId, Long deviceId, Long outletId);
 
     /**
      * 出水结果结算（L1d，铁律1）：事务内 条件推进订单终态 → 回写 ACTUAL_ML → 差额/退款补偿入账（原子 UPDATE+流水）。

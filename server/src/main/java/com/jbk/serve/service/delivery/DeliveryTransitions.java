@@ -6,7 +6,7 @@ import com.jbk.tool.exception.JbkException;
 /**
  * 配送任务状态机转换矩阵（E2E-03 规则10）：
  * 1待接单 →(接单) 2已接单 →(离站) 3配送中 →(送达) 4已送达待确认 →(三照签收) 5已签收；
- * 5 →(用户申诉) 7申诉中 →(裁决) 5。其余一律非法。
+ * 5 →(用户申诉) 7申诉中 →(裁决) 5；1 →(用户待接单取消) 6已取消。其余一律非法。
  *
  * <p>纯函数，供 Service 与单测共用；Service 侧还必须叠加
  * 版本/配送员归属/订单共键条件（规则11），本类只钉状态维度。</p>
@@ -34,8 +34,15 @@ public final class DeliveryTransitions {
         int delivering = DeliveryEnum.TaskStatus.DELIVERING.getValue();
         int arrived = DeliveryEnum.TaskStatus.ARRIVED.getValue();
         int signed = DeliveryEnum.TaskStatus.SIGNED.getValue();
+        int cancelled = DeliveryEnum.TaskStatus.CANCELLED.getValue();
         int appealing = DeliveryEnum.TaskStatus.APPEALING.getValue();
         if (from == pending && to == accepted) {
+            return true;
+        }
+        // 待接单取消（E2E-04 包A）：只有尚未被任何配送员认领的任务可取消。
+        // 2已接单 之后配送员已投入履约成本，取消要走异常/申诉链路，不是本边——
+        // 这条边一旦放宽到 2/3/4，用户就能在配送员出发后单方面撤单并全额退款。
+        if (from == pending && to == cancelled) {
             return true;
         }
         if (from == accepted && to == delivering) {

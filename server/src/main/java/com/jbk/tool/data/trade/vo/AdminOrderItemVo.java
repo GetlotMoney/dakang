@@ -162,4 +162,14 @@ public class AdminOrderItemVo implements Serializable {
 
     @Schema(description = "卡当前剩余水量(毫升)（ws_card.BALANCE_ML 只读快照；卡缺失为空）")
     private Long cardBalanceMl;
+
+    /**
+     * 取水异常核账确认标记（E2E-04 包A）：ws_after_sale_action 存在 SOURCE_TYPE=3 且 ACTION_STATUS=3 的行。
+     *
+     * <p>由订单查询 SQL 用 EXISTS 子查询一并带出，而不是在 Service 层逐行查库——追溯与分页两条路径
+     * 都要用它做订单-指令状态矩阵判定，逐行查即是 N+1。核账会把订单从 6异常待补偿 推进到 4/7，
+     * 而指令仍停在失败/超时终态；缺了本标记，PC 追溯会把每一张已核账订单都报成 mismatch。</p>
+     */
+    @Schema(description = "是否已经过取水异常核账确认（服务端派生，用于订单-指令状态矩阵判定）")
+    private Boolean afterSaleConfirmed;
 }

@@ -1,5 +1,7 @@
 package com.jbk.serve.service.mini.recharge.impl;
 
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
+import com.jbk.serve.service.aftersale.batch.EntitlementLedger;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.jbk.serve.mapper.trade.RechargeCreditMapper;
 import com.jbk.serve.service.mini.recharge.IRechargeCreditTx;
@@ -44,6 +46,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -116,6 +119,9 @@ class RechargeCreditTxDbTest {
                     new com.baomidou.mybatisplus.core.MybatisConfiguration();
             cfg.setMapUnderscoreToCamelCase(true);
             factory.setConfiguration(cfg);
+            factory.setMapperLocations(new org.springframework.core.io.support
+                    .PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:mapper/trade/TradeCardMapper.xml"));
             return new SqlSessionTemplate(factory.getObject());
         }
 
@@ -123,6 +129,14 @@ class RechargeCreditTxDbTest {
         MapperFactoryBean<RechargeCreditMapper> creditMapper(SqlSessionTemplate template) {
             MapperFactoryBean<RechargeCreditMapper> bean = new MapperFactoryBean<>(RechargeCreditMapper.class);
             bean.setSqlSessionTemplate(template);
+            return bean;
+        }
+
+        @Bean
+        MapperFactoryBean<WsCardEntitlementBatchMapper> wsCardEntitlementBatchMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<WsCardEntitlementBatchMapper> bean = new MapperFactoryBean<>(
+                    WsCardEntitlementBatchMapper.class);
+            bean.setSqlSessionTemplate(t);
             return bean;
         }
 
@@ -138,8 +152,43 @@ class RechargeCreditTxDbTest {
 
         @Bean
         RechargeCreditTxImpl creditTx(RechargeCreditMapper mapper, RechargeLockedState locked,
-                                      RechargeLedgerVerifier ledger) {
-            return new RechargeCreditTxImpl(mapper, locked, ledger);
+                                      RechargeLedgerVerifier ledger,
+                                      WsCardEntitlementBatchMapper batchMapper,
+                                      EntitlementLedger entitlementLedger) {
+            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper> allocationMapper(
+                SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.trade.TradeCardMapper> tradeCardMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.trade.TradeCardMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.trade.TradeCardMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.trade.WsWalletFlowMapper> walletFlowMapperBean(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.trade.WsWalletFlowMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.trade.WsWalletFlowMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        EntitlementLedger entitlementLedger(WsCardEntitlementBatchMapper batchMapper,
+                                            com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper allocationMapper,
+                                            com.jbk.serve.mapper.trade.TradeCardMapper tradeCardMapper,
+                                            com.jbk.serve.mapper.trade.WsWalletFlowMapper walletFlowMapper) {
+            return new EntitlementLedger(batchMapper, allocationMapper, tradeCardMapper, walletFlowMapper);
         }
 
         @Bean
@@ -171,9 +220,35 @@ class RechargeCreditTxDbTest {
 
     @BeforeEach
     void reset() {
+        // E2E-04 包D：充值入账同事务建立权益批次，故本类的 schema 必须包含它。
+        // uk_batch_order 是「每笔充值恰好一个批次」的物理保证——本类的重放用例
+        // 正是靠它与 uk_card_issue_order 一起把「重放不得二次发权益」钉死。
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_card_entitlement_batch (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(14),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(14),
+                  CARD_ID BIGINT NOT NULL, USER_ID BIGINT NOT NULL, SOURCE_TYPE TINYINT NOT NULL,
+                  ORDER_ID BIGINT NULL, ORDER_NO VARCHAR(32) NULL, PAYMENT_ID BIGINT NULL,
+                  PACKAGE_ID BIGINT NULL, PACKAGE_SNAP TEXT NULL,
+                  PAY_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_BONUS_FEN BIGINT NOT NULL DEFAULT 0,
+                  GRANT_WATER_ML BIGINT NOT NULL DEFAULT 0,
+                  REMAIN_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  REMAIN_WATER_ML BIGINT NOT NULL DEFAULT 0,
+                  EXPIRE_TIME VARCHAR(14) NULL, SCOPE_JSON TEXT NULL,
+                  BATCH_STATUS TINYINT NOT NULL, REFUND_LOCKED_BY BIGINT NULL,
+                  REFUND_LOCK_TIME VARCHAR(14) NULL,
+                  REFUNDED_AMOUNT_FEN BIGINT NOT NULL DEFAULT 0,
+                  VERSION INT NOT NULL DEFAULT 1,
+                  UNIQUE KEY uk_batch_order (ORDER_ID),
+                  KEY idx_batch_pick (CARD_ID, BATCH_STATUS, EXPIRE_TIME, CREATE_TIME)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_card (
-                  ID BIGINT PRIMARY KEY, CARD_NO VARCHAR(50), USER_ID BIGINT,
+                  ID BIGINT PRIMARY KEY, CARD_NO VARCHAR(50), CARD_TYPE TINYINT DEFAULT 1, USER_ID BIGINT,
+                  ISSUE_ORDER_ID BIGINT NULL,
                   BALANCE_AMOUNT BIGINT NOT NULL DEFAULT 0, BALANCE_ML BIGINT NOT NULL DEFAULT 0,
                   PACKAGE_ID BIGINT NULL, PACKAGE_SNAP MEDIUMTEXT NULL, SCOPE_JSON VARCHAR(2000) NULL,
                   EXPIRE_TIME VARCHAR(20) NULL, CARD_STATUS TINYINT, DATA_STATUS TINYINT DEFAULT 0,
@@ -218,6 +293,15 @@ class RechargeCreditTxDbTest {
                   ORDER_ID BIGINT, FLOW_REMARK VARCHAR(255), BIZ_IDEMPOTENCY_KEY VARCHAR(64) NULL,
                   UNIQUE KEY uk_wallet_flow_biz_key (BIZ_IDEMPOTENCY_KEY)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        // 转正锁序 payment→order→user→card：lockUserRow 需要用户行真实存在（审计 P1-1）
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_user (
+                  ID BIGINT PRIMARY KEY, DATA_STATUS TINYINT DEFAULT 0
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.update("INSERT IGNORE INTO ws_user(ID, DATA_STATUS) VALUES(9, 0)");
+        // 包D 批次表逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键，
+        // 表现为与被测逻辑无关的 DuplicateKey，掩盖真正的断言
+        jdbc.execute("TRUNCATE TABLE ws_card_entitlement_batch");
         jdbc.execute("TRUNCATE TABLE ws_wallet_flow");
         jdbc.execute("DELETE FROM ws_payment_event");
         jdbc.execute("DELETE FROM ws_payment");
@@ -479,6 +563,16 @@ class RechargeCreditTxDbTest {
                 jdbc.queryForObject("SELECT BIZ_IDEMPOTENCY_KEY FROM ws_wallet_flow", String.class));
     }
 
+    /** 再充值批次必须锚定锁内原支付单，退款链不能依赖可错配的 ORDER_ID 单键。 */
+    @Test
+    void rechargeBatchAnchorsOriginalPayment() {
+        creditTx.credit(order(), snap(EXPIRE_DAYS), PAID_EARLY, PROCESSING);
+
+        assertEquals(PAYMENT_ID, jdbc.queryForObject(
+                "SELECT PAYMENT_ID FROM ws_card_entitlement_batch WHERE ORDER_ID=?",
+                Long.class, ORDER_ID));
+    }
+
     /** 入账成功后必须写最近 PACKAGE_ID/PACKAGE_SNAP（契约 §6.4 步骤 6），供卡详情展示最近一次充值。 */
     @Test
     void writesLatestPackageOnCard() {
@@ -497,6 +591,11 @@ class RechargeCreditTxDbTest {
         addEvent(1000L, 1);
         jdbc.update("UPDATE ws_order SET ORDER_STATUS=2, FINISH_TIME=NULL WHERE ID=?", ORDER_ID);
         jdbc.update("DELETE FROM ws_wallet_flow");
+        // 本用例人为把状态回退到「可再次入账」以模拟多事件收敛：删流水是为了绕开
+        // RECHARGE:<orderNo> 的幂等键。包D 之后批次也是这份状态的一部分
+        // （uk_batch_order 同样是一道入账幂等闸），故一并回退——
+        // 不回退的话失败原因会变成与被测收敛逻辑无关的 DuplicateKey。
+        jdbc.update("DELETE FROM ws_card_entitlement_batch");
         seedCard(CARD_EXPIRE, 1);
         jdbc.update("UPDATE ws_payment_event SET PROCESSING_STATUS=2 WHERE ID=?", EVENT_ID);
 
@@ -743,14 +842,273 @@ class RechargeCreditTxDbTest {
         p.setWaterMl(WATER_ML);
         p.setBonusAmount(0L);
         p.setUnitPriceSnap("20.00");
-        p.setExpireDays(expireDays);
+        // D-213 后 build 造不出有限期付费快照；历史旧单用 LegacySnapshots 铸造
+        p.setExpireDays(null);
         WsCard c = new WsCard();
         c.setId(CARD_ID);
+        c.setCardStatus(1);
         c.setExpireTime(expireDays == null ? null : CARD_EXPIRE);
         c.setScopeJson(SCOPE);
-        lastSnapshotJson = RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
-                p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, "20260722194200");
+        lastSnapshotJson = com.jbk.serve.service.mini.recharge.LegacySnapshots.forgeExpireDays(
+                RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
+                        p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, "20260722194200"),
+                expireDays);
         return RechargeSnapshot.parse(lastSnapshotJson);
+    }
+
+    /** 转正用例的赠卡到期时间：必须真在过去，否则「状态3但未到期」的自洽守卫先拒。 */
+    private static final String GIFT_EXPIRED_AT = "20250101120000";
+
+    /** 赠卡转正快照（D-416）：永久套餐 × 带期赠卡 + promote 标志，走 build 正门不铸造。 */
+    private RechargeSnapshot.Parsed promoteSnap() {
+        WsPackage p = new WsPackage();
+        p.setId(3L);
+        p.setPackageName("100元500升卡");
+        p.setPayAmount(PAY_AMOUNT);
+        p.setWaterMl(WATER_ML);
+        p.setBonusAmount(0L);
+        p.setUnitPriceSnap("20.00");
+        p.setExpireDays(null);
+        WsCard c = new WsCard();
+        c.setId(CARD_ID);
+        c.setCardStatus(3);
+        c.setExpireTime(GIFT_EXPIRED_AT);
+        c.setScopeJson(SCOPE);
+        lastSnapshotJson = RechargeSnapshot.build("550e8400-e29b-41d4-a716-446655440000",
+                p, c, WaterCardScope.normalize(SCOPE, "水卡"), null, "20260722194200", true);
+        return RechargeSnapshot.parse(lastSnapshotJson);
+    }
+
+    // ================= D-416：赠卡转正入账（2026-08-06 甲方确认；审计 P0-2/P1-1 整改口径） =================
+
+    /** 过期赠卡的批次种子：剩余与卡余额相等（逐卡不变式），到期日与卡一致。 */
+    private void seedExpiredGiftBatch() {
+        jdbc.update("INSERT INTO ws_card_entitlement_batch(CARD_ID, USER_ID, SOURCE_TYPE, "
+                        + "PAY_AMOUNT_FEN, GRANT_AMOUNT_FEN, GRANT_BONUS_FEN, GRANT_WATER_ML, "
+                        + "REMAIN_AMOUNT_FEN, REMAIN_WATER_ML, EXPIRE_TIME, SCOPE_JSON, BATCH_STATUS, "
+                        + "REFUNDED_AMOUNT_FEN, VERSION, DATA_STATUS, CREATE_TIME) "
+                        + "VALUES(?, ?, 4, 0, 5500, 5500, 470120, 5500, 470120, ?, ?, 6, 0, 1, 0, '20260601000000')",
+                CARD_ID, USER_ID, GIFT_EXPIRED_AT, SCOPE);
+    }
+
+    /**
+     * 审计 P0-2：过期赠卡的旧权益必须先作废再入新账——转正后的卡终值只等于本次
+     * 新充值权益（余额 0、水量 500000），绝不含过期前剩余的 5500分/470120mL。
+     * 旧批次同事务置5清零并留 EXPIRE_CLEAR 流水，新权益另建永久批次。
+     */
+    @Test
+    void promoteClearsExpiredEntitlementBeforeCreditingNew() {
+        seedCard(GIFT_EXPIRED_AT, 3);
+        seedExpiredGiftBatch();
+        assertEquals(IRechargeCreditTx.Outcome.CREDITED,
+                creditTx.credit(order(), promoteSnap(), PAID_EARLY, PROCESSING).outcome());
+        assertEquals(null, expire(), "转正后必须为永久（EXPIRE_TIME IS NULL）");
+        assertEquals(1, cardStatus(), "过期状态必须随转正恢复为正常");
+        assertEquals(500000L, ml(), "终值只含新权益：过期旧水量 470120 必须被作废");
+        assertEquals(0L, amount(), "终值只含新权益：过期旧余额 5500 必须被作废");
+        assertEquals(5, jdbc.queryForObject("SELECT BATCH_STATUS FROM ws_card_entitlement_batch "
+                + "WHERE SOURCE_TYPE = 4", Integer.class), "旧赠卡批次置5");
+        assertEquals(0L, jdbc.queryForObject("SELECT REMAIN_WATER_ML FROM ws_card_entitlement_batch "
+                + "WHERE SOURCE_TYPE = 4", Long.class), "旧批次剩余清零");
+        assertEquals(1L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow WHERE FLOW_TYPE = 6",
+                Long.class), "EXPIRE_CLEAR 流水恰一条");
+        assertEquals(1L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow WHERE FLOW_TYPE = 1",
+                Long.class), "RECHARGE 流水恰一条");
+        assertNull(jdbc.queryForObject("SELECT EXPIRE_TIME FROM ws_card_entitlement_batch "
+                + "WHERE SOURCE_TYPE <> 4 LIMIT 1", String.class), "新充值批次为永久");
+        // 账本连续：卡终值 == 全部批次剩余合计
+        assertEquals(500000L, jdbc.queryForObject("SELECT IFNULL(SUM(REMAIN_WATER_ML),0) "
+                + "FROM ws_card_entitlement_batch WHERE CARD_ID = " + CARD_ID + " AND DATA_STATUS = 0",
+                Long.class));
+    }
+
+    /** 转正重放：作废与入账都不得重复——幂等语义与普通入账同一条线。 */
+    @Test
+    void promoteReplayNeitherCreditsTwiceNorResurrectsExpiry() {
+        seedCard(GIFT_EXPIRED_AT, 3);
+        seedExpiredGiftBatch();
+        creditTx.credit(order(), promoteSnap(), PAID_EARLY, PROCESSING);
+        assertEquals(IRechargeCreditTx.Outcome.ALREADY,
+                creditTx.credit(order(), promoteSnap(), PAID_EARLY, PROCESSING).outcome(),
+                "重放应命中幂等短路");
+        assertEquals(500000L, ml(), "重放不得二次入账，也不得二次作废");
+        assertEquals(null, expire(), "转正后的永久形态不得被重放复活出到期日");
+        assertEquals(1L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow WHERE FLOW_TYPE = 6",
+                Long.class), "重放不得追加 EXPIRE_CLEAR 流水");
+    }
+
+    /**
+     * 审计 R2 P0-1：过期赠卡上存在退款锁定(2)的正余额批次——settleExpired 刻意不动它，
+     * 资格重验必须发现「批次仍有正剩余」并拒绝转正，绝不让锁定余额随转正永久化。
+     */
+    @Test
+    void promoteRejectedWhenRefundLockedBatchStillHoldsBalance() {
+        seedCard(GIFT_EXPIRED_AT, 3);
+        jdbc.update("UPDATE ws_card SET BALANCE_AMOUNT = 800, BALANCE_ML = 0 WHERE ID = " + CARD_ID);
+        jdbc.update("INSERT INTO ws_card_entitlement_batch(CARD_ID, USER_ID, SOURCE_TYPE, "
+                + "PAY_AMOUNT_FEN, GRANT_AMOUNT_FEN, GRANT_BONUS_FEN, GRANT_WATER_ML, "
+                + "REMAIN_AMOUNT_FEN, REMAIN_WATER_ML, EXPIRE_TIME, SCOPE_JSON, BATCH_STATUS, "
+                + "REFUNDED_AMOUNT_FEN, VERSION, DATA_STATUS, CREATE_TIME) "
+                + "VALUES(" + CARD_ID + ", " + USER_ID + ", 4, 0, 800, 800, 0, 800, 0, "
+                + "'" + GIFT_EXPIRED_AT + "', '" + SCOPE + "', 2, 0, 1, 0, '20260601000000')");
+        IRechargeCreditTx.CreditResult r = creditTx.credit(order(), promoteSnap(), PAID_EARLY, PROCESSING);
+        assertEquals(IRechargeCreditTx.Outcome.UNRECOVERABLE, r.outcome());
+        assertTrue(r.reason().contains("未归零"), "实际=" + r.reason());
+        assertEquals(800L, amount(), "拒绝路径零写入：锁定余额原样保留");
+        assertEquals(3, cardStatus());
+        assertEquals(2, jdbc.queryForObject("SELECT BATCH_STATUS FROM ws_card_entitlement_batch "
+                + "WHERE CARD_ID = " + CARD_ID, Integer.class), "锁定批次不被清算");
+        assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow", Long.class));
+    }
+
+    /**
+     * 审计 R2 P0-1：耗尽资格在创单时成立、入账前被退款/补偿恢复——锁内重验必须拒绝，
+     * 旧赠送权益绝不与新充值一起永久化。
+     */
+    @Test
+    void promoteRejectedWhenEntitlementRestoredAfterPlacing() {
+        seedCard(GIFT_EXPIRED_AT, 3);
+        // 模拟创单后 refundCardAssets + restoreOnRefundBack 的效果：卡与批次同步加回 500 分
+        jdbc.update("UPDATE ws_card SET BALANCE_AMOUNT = 500, BALANCE_ML = 0 WHERE ID = " + CARD_ID);
+        jdbc.update("INSERT INTO ws_card_entitlement_batch(CARD_ID, USER_ID, SOURCE_TYPE, "
+                + "PAY_AMOUNT_FEN, GRANT_AMOUNT_FEN, GRANT_BONUS_FEN, GRANT_WATER_ML, "
+                + "REMAIN_AMOUNT_FEN, REMAIN_WATER_ML, EXPIRE_TIME, SCOPE_JSON, BATCH_STATUS, "
+                + "REFUNDED_AMOUNT_FEN, VERSION, DATA_STATUS, CREATE_TIME) "
+                + "VALUES(" + CARD_ID + ", " + USER_ID + ", 4, 0, 500, 500, 0, 500, 0, "
+                + "'20991231000000', '" + SCOPE + "', 1, 0, 1, 0, '20260601000000')");
+        IRechargeCreditTx.CreditResult r = creditTx.credit(order(), promoteSnap(), PAID_EARLY, PROCESSING);
+        assertEquals(IRechargeCreditTx.Outcome.UNRECOVERABLE, r.outcome());
+        assertTrue(r.reason().contains("未归零"), "实际=" + r.reason());
+        assertEquals(500L, amount(), "恢复的权益原样保留，等待人工裁决");
+        assertEquals(500L, jdbc.queryForObject("SELECT REMAIN_AMOUNT_FEN FROM ws_card_entitlement_batch "
+                + "WHERE CARD_ID = " + CARD_ID, Long.class));
+        assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow", Long.class));
+    }
+
+    /**
+     * 审计 P1-1：入账锁内名额复查——创单到入账窗口内用户又有了付费卡时，
+     * 转正必须终止转人工（unrecoverable → 订单6/事实待对账），零权益写入。
+     */
+    @Test
+    void promoteRejectedWhenAnotherPaidCardAppearedSincePlacing() {
+        seedCard(GIFT_EXPIRED_AT, 3);
+        seedExpiredGiftBatch();
+        jdbc.update("INSERT INTO ws_card(ID,CARD_NO,USER_ID,BALANCE_AMOUNT,BALANCE_ML,SCOPE_JSON,"
+                + "EXPIRE_TIME,CARD_STATUS,ISSUE_ORDER_ID,DATA_STATUS) VALUES(?,?,?,0,0,?,NULL,1,4242,0)",
+                CARD_ID + 1, "VC-PAID-9", USER_ID, SCOPE);
+        IRechargeCreditTx.CreditResult r = creditTx.credit(order(), promoteSnap(), PAID_EARLY, PROCESSING);
+        assertEquals(IRechargeCreditTx.Outcome.UNRECOVERABLE, r.outcome());
+        assertTrue(r.reason().contains("已有正式水卡"), "实际=" + r.reason());
+        assertEquals(470120L, ml(), "拒绝路径零写入（旧权益不作废、不入账）");
+        assertEquals(3, cardStatus(), "卡状态不得被改动");
+    }
+
+    /** 形态防错：promote 快照打到永久卡上（形态不符）必须不可恢复拒绝，零写入。 */
+    @Test
+    void promoteAgainstPermanentCardIsUnrecoverable() {
+        seedCard(null, 1);
+        IRechargeCreditTx.CreditResult r = creditTx.credit(order(), promoteSnap(), PAID_EARLY, PROCESSING);
+        assertEquals(IRechargeCreditTx.Outcome.UNRECOVERABLE, r.outcome());
+        assertTrue(r.reason().contains("转正单形态不符"), "实际=" + r.reason());
+        assertEquals(470120L, ml(), "拒绝路径零写入");
+    }
+
+    /**
+     * 审计 P1-1 并发矩阵：同一用户两张过期赠卡、两笔已支付转正单并发入账。
+     * 用户行锁（payment→order→user→card 锁序）串行化两个事务：先到者转正成功，
+     * 后到者锁内名额复查发现已有付费卡 → unrecoverable（订单6/事实待对账通道），
+     * 零权益写入。最终恰一张付费卡、恰一条充值流水。
+     */
+    @Test
+    void concurrentPromotionsOfTwoGiftCardsYieldExactlyOnePaidCard() throws Exception {
+        long cardB = CARD_ID + 10;
+        long orderB = ORDER_ID + 10;
+        long paymentB = PAYMENT_ID + 10;
+        long eventB = EVENT_ID + 10;
+        String orderNoB = "RC0000000000000000000000000002";
+
+        // 卡A：reset 已建（改造成过期赠卡）+ 批次；卡B：整套另建
+        jdbc.update("UPDATE ws_card SET EXPIRE_TIME=?, CARD_STATUS=3 WHERE ID=?", GIFT_EXPIRED_AT, CARD_ID);
+        seedExpiredGiftBatch();
+        jdbc.update("INSERT INTO ws_card(ID,CARD_NO,USER_ID,BALANCE_AMOUNT,BALANCE_ML,SCOPE_JSON,"
+                + "EXPIRE_TIME,CARD_STATUS,DATA_STATUS) VALUES(?,?,?,5500,470120,?,?,3,0)",
+                cardB, "VC002", USER_ID, SCOPE, GIFT_EXPIRED_AT);
+        jdbc.update("INSERT INTO ws_card_entitlement_batch(CARD_ID, USER_ID, SOURCE_TYPE, "
+                + "PAY_AMOUNT_FEN, GRANT_AMOUNT_FEN, GRANT_BONUS_FEN, GRANT_WATER_ML, "
+                + "REMAIN_AMOUNT_FEN, REMAIN_WATER_ML, EXPIRE_TIME, SCOPE_JSON, BATCH_STATUS, "
+                + "REFUNDED_AMOUNT_FEN, VERSION, DATA_STATUS, CREATE_TIME) "
+                + "VALUES(?, ?, 4, 0, 5500, 5500, 470120, 5500, 470120, ?, ?, 6, 0, 1, 0, '20260601000000')",
+                cardB, USER_ID, GIFT_EXPIRED_AT, SCOPE);
+
+        // 两套已支付单据：快照各指各卡（promoteSnapFor 按卡生成），付款窗按转正口径（永久）
+        String promoteExpire = RechargePayExpire.compute("20260722194200", null);
+        String snapA = promoteSnapJsonFor(CARD_ID, "550e8400-e29b-41d4-a716-446655440000");
+        String snapB = promoteSnapJsonFor(cardB, "550e8400-e29b-41d4-a716-446655440001");
+        jdbc.update("UPDATE ws_order SET PACKAGE_SNAP=?, PACKAGE_ID=3, ORDER_AMOUNT=? WHERE ID=?",
+                snapA, PAY_AMOUNT, ORDER_ID);
+        jdbc.update("UPDATE ws_payment SET PAY_STATUS=2, TRANSACTION_ID='SIMTX-1', PAY_AMOUNT=?, "
+                + "PAY_EXPIRE_TIME=?, PAY_SUCCESS_TIME=? WHERE ID=?",
+                PAY_AMOUNT, promoteExpire, PAID_EARLY, PAYMENT_ID);
+        jdbc.update("UPDATE ws_payment_event SET TRANSACTION_ID='SIMTX-1', PAY_AMOUNT=?, CURRENCY='CNY', "
+                + "PAY_SUCCESS_TIME=?, PROCESSING_STATUS=2, DATA_STATUS=0 WHERE ID=?",
+                PAY_AMOUNT, PAID_EARLY, EVENT_ID);
+        jdbc.update("INSERT INTO ws_order(ID,ORDER_NO,ORDER_TYPE,USER_ID,CARD_ID,PACKAGE_ID,PACKAGE_SNAP,"
+                + "ORDER_AMOUNT,PAY_WAY,ORDER_STATUS,DATA_STATUS,CREATE_TIME) VALUES(?,?,?,?,?,?,?,?,?,?,0,?)",
+                orderB, orderNoB, 2, USER_ID, cardB, 3L, snapB, PAY_AMOUNT, 1, 2, "20260722194200");
+        jdbc.update("INSERT INTO ws_payment(ID,ORDER_ID,ORDER_NO,TRANSACTION_ID,PAY_AMOUNT,PAY_STATUS,PAY_SOURCE,"
+                + "CURRENCY,PAY_EXPIRE_TIME,PAY_SUCCESS_TIME,DATA_STATUS,CREATE_TIME) VALUES(?,?,?,?,?,?,?,?,?,?,0,?)",
+                paymentB, orderB, orderNoB, "SIMTX-2", PAY_AMOUNT, 2, 2, "CNY",
+                promoteExpire, PAID_EARLY, "20260722194200");
+        jdbc.update("INSERT INTO ws_payment_event(ID,ORDER_NO,ORDER_ID,PAYMENT_ID,PAY_SOURCE,FACT_CHANNEL,"
+                + "PROVIDER_EVENT_KEY,TRADE_STATE,TRANSACTION_ID,PAY_AMOUNT,CURRENCY,PAY_SUCCESS_TIME,"
+                + "PROCESSING_STATUS,DATA_STATUS) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,2,0)",
+                eventB, orderNoB, orderB, paymentB, 2, 3, "evt-2", "SUCCESS", "SIMTX-2",
+                PAY_AMOUNT, "CNY", PAID_EARLY);
+
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Callable<IRechargeCreditTx.CreditResult>> jobs = List.of(
+                () -> { barrier.await(10, TimeUnit.SECONDS); return actualCreditTx.credit(EVENT_ID, PROCESSING); },
+                () -> { barrier.await(10, TimeUnit.SECONDS); return actualCreditTx.credit(eventB, PROCESSING); });
+        List<Future<IRechargeCreditTx.CreditResult>> futures = pool.invokeAll(jobs);
+        IRechargeCreditTx.CreditResult r1 = futures.get(0).get(30, TimeUnit.SECONDS);
+        IRechargeCreditTx.CreditResult r2 = futures.get(1).get(30, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        long credited = List.of(r1, r2).stream()
+                .filter(r -> r.outcome() == IRechargeCreditTx.Outcome.CREDITED).count();
+        long unrecoverable = List.of(r1, r2).stream()
+                .filter(r -> r.outcome() == IRechargeCreditTx.Outcome.UNRECOVERABLE).count();
+        assertEquals(1L, credited, "恰一张赠卡转正成功");
+        assertEquals(1L, unrecoverable, "另一单进入人工处理（订单6/事实待对账）");
+        assertEquals(1L, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ws_card WHERE EXPIRE_TIME IS NULL AND CARD_STATUS = 1", Long.class),
+                "最终恰一张永久付费卡");
+        assertEquals(1L, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ws_wallet_flow WHERE FLOW_TYPE = 1", Long.class),
+                "赢单恰一条充值流水");
+        assertEquals(1L, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ws_card WHERE CARD_STATUS = 3 AND BALANCE_AMOUNT = 5500", Long.class),
+                "输单的赠卡零变动（旧权益未作废、未入账）");
+    }
+
+    /** 并发用例的按卡快照：与 promoteSnap 同一 build 正门，只是卡与请求号参数化。 */
+    private String promoteSnapJsonFor(long cardId, String requestId) {
+        WsPackage p = new WsPackage();
+        p.setId(3L);
+        p.setPackageName("100元500升卡");
+        p.setPayAmount(PAY_AMOUNT);
+        p.setWaterMl(WATER_ML);
+        p.setBonusAmount(0L);
+        p.setUnitPriceSnap("20.00");
+        p.setExpireDays(null);
+        WsCard c = new WsCard();
+        c.setId(cardId);
+        c.setCardStatus(3);
+        c.setExpireTime(GIFT_EXPIRED_AT);
+        c.setScopeJson(SCOPE);
+        return RechargeSnapshot.build(requestId, p, c,
+                WaterCardScope.normalize(SCOPE, "水卡"), null, "20260722194200", true);
     }
 
     private String lastSnapshotJson;
@@ -764,7 +1122,9 @@ class RechargeCreditTxDbTest {
 
         IRechargeCreditTx.CreditResult credit(WsOrder ignoredOrder, RechargeSnapshot.Parsed ignoredSnap,
                                                String paySuccessTime, String processingTime) {
-            String expire = RechargePayExpire.compute("20260722194200", ignoredSnap.expireTimeAtCreate());
+            // 与生产同式：转正单（D-416）付款窗按永久卡口径，不被赠卡旧到期日钳制
+            String expire = RechargePayExpire.compute("20260722194200",
+                    ignoredSnap.promoteToPermanent() ? null : ignoredSnap.expireTimeAtCreate());
             jdbc.update("UPDATE ws_order SET PACKAGE_SNAP=?, PACKAGE_ID=3, ORDER_AMOUNT=? WHERE ID=?",
                     lastSnapshotJson, PAY_AMOUNT, ORDER_ID);
             jdbc.update("UPDATE ws_payment SET PAY_STATUS=2, TRANSACTION_ID='SIMTX-1', PAY_AMOUNT=?, "

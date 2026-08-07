@@ -67,6 +67,14 @@ public class WsDevice extends BaseEntity implements Serializable {
     @TableField("SIM_CARRIER")
     private String simCarrier;
 
+    @Schema(description = "SIM状态(1368)：1正常 2未激活 3欠费 4停用；档案维护或模拟器上报，真实运营商查询未接入")
+    @TableField("SIM_STATUS")
+    private Integer simStatus;
+
+    @Schema(description = "SIM到期时间")
+    @TableField("SIM_EXPIRE_TIME")
+    private String simExpireTime;
+
     @Schema(description = "在线状态(1300)：1在线 2离线 3未激活")
     @TableField("ONLINE_STATUS")
     private Integer onlineStatus;
@@ -82,6 +90,10 @@ public class WsDevice extends BaseEntity implements Serializable {
     @Schema(description = "最近故障码(max20)")
     @TableField("LAST_FAULT_CODE")
     private String lastFaultCode;
+
+    @Schema(description = "最近一次已应用状态报文的设备时间；用于拒绝乱序补传覆盖当前状态")
+    @TableField("LAST_STATUS_DEVICE_TIME")
+    private String lastStatusDeviceTime;
 
     @Schema(description = "信号强度(dBm，负值)")
     @TableField("SIGNAL_STRENGTH")

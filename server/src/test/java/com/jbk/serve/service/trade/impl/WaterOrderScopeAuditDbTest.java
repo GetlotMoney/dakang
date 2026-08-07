@@ -2,8 +2,11 @@ package com.jbk.serve.service.trade.impl;
 
 import com.baomidou.mybatisplus.core.config.GlobalConfig;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
+import com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper;
 import com.jbk.serve.mapper.device.WsDeviceMapper;
 import com.jbk.serve.mapper.device.WsDeviceOutletMapper;
+import com.jbk.serve.mapper.device.WsFaultDictMapper;
 import com.jbk.serve.mapper.device.WsQrcodeMapper;
 import com.jbk.serve.mapper.ops.WsDomainEventMapper;
 import com.jbk.serve.mapper.station.WsStationMapper;
@@ -11,10 +14,15 @@ import com.jbk.serve.mapper.trade.TradeCardMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.mapper.trade.WsWalletFlowMapper;
 import com.jbk.serve.mapper.user.WsCardMemberMapper;
+import com.jbk.serve.service.aftersale.batch.EntitlementFixture;
+import com.jbk.serve.service.aftersale.batch.EntitlementLedger;
+import com.jbk.serve.service.delivery.impl.DeliveryDbSchema;
+import com.jbk.serve.service.device.DeviceAvailabilityGuard;
 import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.serve.service.ops.impl.WsDomainEventServiceImpl;
 import com.jbk.serve.service.trade.ITradeOrderTxService;
 import com.jbk.tool.config.system.mybatis.MpMetaObjectHandler;
+import com.jbk.tool.consts.mini.MiniRejectCode;
 import com.jbk.tool.data.mini.vo.ScanSessionInfo;
 import com.jbk.tool.data.trade.po.WsOrder;
 import com.jbk.tool.exception.JbkException;
@@ -88,6 +96,8 @@ class WaterOrderScopeAuditDbTest {
     private static final String SCOPE_MISS = "{\"scopeType\":\"specified\",\"stationIds\":[99]}";
     private static final String ORDER_NO = "WOSCOPEAUDIT0001";
     private static final String BIZ_KEY = "CARD_SCOPE_DENY:" + ORDER_NO;
+    /** S2 报价漂移拒绝的幂等键，与 {@code TradeOrderTxServiceImpl.quoteChanged} 逐字一致。 */
+    private static final String QUOTE_KEY = "SCAN_QUOTE_CHANGED:" + ORDER_NO;
 
     @Configuration
     @EnableTransactionManagement
@@ -169,6 +179,26 @@ class WaterOrderScopeAuditDbTest {
             return mapper(WsDomainEventMapper.class, t);
         }
 
+        @Bean
+        MapperFactoryBean<WsCardEntitlementBatchMapper> wsCardEntitlementBatchMapper(SqlSessionTemplate t) {
+            // 包D-4：取水扣减同事务写权益分摊，故本上下文必须提供这两个 Mapper
+            return mapper(WsCardEntitlementBatchMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<WsEntitlementAllocationMapper> wsEntitlementAllocationMapper(SqlSessionTemplate t) {
+            return mapper(WsEntitlementAllocationMapper.class, t);
+        }
+
+        @Bean
+        EntitlementLedger entitlementLedger(WsCardEntitlementBatchMapper batchMapper,
+                                            WsEntitlementAllocationMapper allocationMapper,
+                                            TradeCardMapper tradeCardMapper,
+                                            WsWalletFlowMapper walletFlowMapper) {
+            // 真实台账而不是 Mock：分摊要摊到真表上，才能验证「卡扣了、批次也扣了」
+            return new EntitlementLedger(batchMapper, allocationMapper, tradeCardMapper, walletFlowMapper);
+        }
+
         private static <M> MapperFactoryBean<M> mapper(Class<M> type, SqlSessionTemplate template) {
             MapperFactoryBean<M> bean = new MapperFactoryBean<>(type);
             bean.setSqlSessionTemplate(template);
@@ -179,6 +209,25 @@ class WaterOrderScopeAuditDbTest {
         WsDomainEventServiceImpl domainEventService() {
             // 真实实现：与业务同事务 + 唯一键幂等是被测物本身，绝不 mock
             return new WsDomainEventServiceImpl();
+        }
+
+        @Bean
+        com.jbk.serve.service.settlement.ISplitService splitService() {
+            // E2E-08 完成挂点协作方：本类锁既有资金事实，分账行为由 SettlementDbTest 用真库锁定
+            return org.mockito.Mockito.mock(com.jbk.serve.service.settlement.ISplitService.class);
+        }
+
+        @Bean
+        MapperFactoryBean<WsFaultDictMapper> wsFaultDictMapper(SqlSessionTemplate t) {
+            // B20：事务内可用性复验要读故障码字典（未登记码 fail-closed）
+            return mapper(WsFaultDictMapper.class, t);
+        }
+
+        @Bean
+        DeviceAvailabilityGuard deviceAvailabilityGuard(WsDeviceMapper d, WsDeviceOutletMapper o,
+                                                        WsFaultDictMapper f) {
+            // 真实 Guard 而不是 Mock：FOR UPDATE 当前读与判定接线必须在真库上被证明
+            return new DeviceAvailabilityGuard(d, o, f);
         }
 
         @Bean
@@ -223,6 +272,7 @@ class WaterOrderScopeAuditDbTest {
                   PLAN_ML BIGINT NULL, ACTUAL_ML BIGINT NULL, ORDER_AMOUNT BIGINT,
                   PAY_WAY TINYINT, ORDER_STATUS TINYINT, CMD_ID BIGINT NULL,
                   FINISH_TIME VARCHAR(20) NULL, CANCEL_REASON VARCHAR(500) NULL,
+                  REFERRER_USER_ID BIGINT NULL,
                   UNIQUE KEY uk_order_no (ORDER_NO)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
@@ -259,8 +309,10 @@ class WaterOrderScopeAuditDbTest {
                   DEVICE_NO VARCHAR(50), DEVICE_NAME VARCHAR(100), DEVICE_MODEL VARCHAR(50),
                   STATION_ID BIGINT, OWNER_USER_ID BIGINT NULL, CHANNEL_USER_ID BIGINT NULL,
                   FIRMWARE_VERSION VARCHAR(50), SIM_ICCID VARCHAR(50), SIM_CARRIER VARCHAR(20),
+                  SIM_STATUS TINYINT NULL, SIM_EXPIRE_TIME VARCHAR(14) NULL,
                   ONLINE_STATUS TINYINT, RUN_STATUS TINYINT, LAST_HEARTBEAT VARCHAR(20),
-                  LAST_FAULT_CODE VARCHAR(20), SIGNAL_STRENGTH INT, DEVICE_REMARK VARCHAR(255)
+                  LAST_FAULT_CODE VARCHAR(20), LAST_STATUS_DEVICE_TIME VARCHAR(14),
+                  SIGNAL_STRENGTH INT, DEVICE_REMARK VARCHAR(255)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_device_outlet (
@@ -300,7 +352,10 @@ class WaterOrderScopeAuditDbTest {
                   BIZ_IDEMPOTENCY_KEY VARCHAR(64) NULL,
                   UNIQUE KEY uk_domain_event_biz_key (BIZ_IDEMPOTENCY_KEY)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        // 包D-4：取水扣减同事务写权益分摊，建表与生产同源（SchemaParityTest 常态守卫）
+        DeliveryDbSchema.createEntitlementTables(jdbc);
         for (String table : new String[]{"ws_card_member", "ws_wallet_flow", "ws_order", "ws_command",
+                "ws_entitlement_allocation", "ws_card_entitlement_batch",
                 "ws_card", "ws_station", "ws_device", "ws_device_outlet", "ws_qrcode", "ws_domain_event"}) {
             jdbc.execute("TRUNCATE TABLE " + table);
         }
@@ -319,10 +374,17 @@ class WaterOrderScopeAuditDbTest {
         jdbc.update("INSERT INTO ws_card(ID,DATA_STATUS,CARD_NO,CARD_TYPE,USER_ID,BALANCE_AMOUNT,BALANCE_ML,"
                         + "SCOPE_JSON,EXPIRE_TIME,CARD_STATUS) VALUES(?,0,'VC-TEST-100',1,?,?,?,?,NULL,1)",
                 CARD_ID, USER_ID, BALANCE_FEN, BALANCE_ML, scopeJson);
+        // 包D-4：卡是裸 INSERT，补历史聚合批次以满足「批次剩余合计 == 卡聚合值」
+        EntitlementFixture.seedLegacyBatch(jdbc, CARD_ID, USER_ID, BALANCE_FEN, BALANCE_ML);
     }
 
     private ScanSessionInfo session() {
         return new ScanSessionInfo()
+                // S2：会话冻结报价（与 order() 的 PACKAGE_SNAP 同源，事务内三方一致校验据此比对）
+                .setScanSessionId("scan-x")
+                .setWaterTypeId(8L)
+                .setUnitPriceFenPerLiter(20)
+                .setQuotedAt(NOW)
                 .setUserId(USER_ID)
                 .setQrcodeId(QRCODE_ID)
                 .setStationId(STATION_ID)
@@ -350,6 +412,11 @@ class WaterOrderScopeAuditDbTest {
     private int denyEventCount() {
         return jdbc.queryForObject(
                 "SELECT COUNT(*) FROM ws_domain_event WHERE BIZ_IDEMPOTENCY_KEY = ?", Integer.class, BIZ_KEY);
+    }
+
+    private int quoteEventCount() {
+        return jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ws_domain_event WHERE BIZ_IDEMPOTENCY_KEY = ?", Integer.class, QUOTE_KEY);
     }
 
     private void assertZeroBusinessSideEffects() {
@@ -418,5 +485,56 @@ class WaterOrderScopeAuditDbTest {
                 "SELECT COUNT(*) FROM ws_domain_event", Integer.class), "成功下单不得留下任何拒绝审计");
         assertEquals(BALANCE_ML - 5_000L, (long) jdbc.queryForObject(
                 "SELECT BALANCE_ML FROM ws_card WHERE ID=?", Long.class, CARD_ID));
+    }
+
+    // 5. S2 报价漂移拒绝：与范围拒绝同等标准——业务整体回滚，拒绝证据独立存活恰一条。
+    //    此前这条留痕只有生产代码没有断言，把 recordReliableOnceIndependent 整段删掉全量测试仍绿，
+    //    后台调价把用户请求打回后运维侧查不到任何「因报价变化被拒」的痕迹。
+    @Test
+    void quoteChangedSubmitKeepsIndependentEvidenceWhileBusinessRollsBack() {
+        seedCard(SCOPE_MATCH);
+        // 扫码之后后台调价：会话与快照仍是 20，锁内出水口档案已是 30
+        jdbc.update("UPDATE ws_device_outlet SET OUTLET_PRICE='30' WHERE ID=?", OUTLET_ID);
+
+        JbkException ex = assertThrows(JbkException.class,
+                () -> tx.createWaterOrder(order(), session(), NOW));
+        assertTrue(ex.getMessage().contains("价格已变更"), "实际=" + ex.getMessage());
+        assertEquals(MiniRejectCode.SCAN_QUOTE_CHANGED, ex.getCode());
+
+        assertZeroBusinessSideEffects();
+        assertEquals(1, quoteEventCount(), "报价漂移拒绝证据必须独立于业务回滚存活");
+        assertEquals(0, denyEventCount(), "报价漂移不得误记成范围拒绝");
+    }
+
+    // 6. 用户连点：跨时刻重复提交同一单号，报价漂移证据全库仍恰一条（uk_domain_event_biz_key）
+    @Test
+    void repeatedQuoteChangedSubmitKeepsExactlyOneEvidence() {
+        seedCard(SCOPE_MATCH);
+        jdbc.update("UPDATE ws_device_outlet SET OUTLET_PRICE='30' WHERE ID=?", OUTLET_ID);
+
+        for (String at : new String[]{NOW, "20260723120001", "20260723120002"}) {
+            JbkException ex = assertThrows(JbkException.class,
+                    () -> tx.createWaterOrder(order(), session(), at));
+            assertEquals(MiniRejectCode.SCAN_QUOTE_CHANGED, ex.getCode(),
+                    "重复提交必须仍按报价漂移返回，实际=" + ex.getMessage());
+        }
+
+        assertEquals(1, quoteEventCount(), "一次调价不得被连点刷成多条事件");
+        assertZeroBusinessSideEffects();
+    }
+
+    // 7. 水种漂移与单价漂移共用同一幂等键与同一稳定码，不得退化成通用异常
+    @Test
+    void waterTypeChangedSubmitAlsoKeepsIndependentEvidence() {
+        seedCard(SCOPE_MATCH);
+        jdbc.update("UPDATE ws_device_outlet SET WATER_TYPE_ID=9 WHERE ID=?", OUTLET_ID);
+
+        JbkException ex = assertThrows(JbkException.class,
+                () -> tx.createWaterOrder(order(), session(), NOW));
+        assertEquals(MiniRejectCode.SCAN_QUOTE_CHANGED, ex.getCode());
+        assertTrue(ex.getMessage().contains("水种已变更"), "实际=" + ex.getMessage());
+
+        assertZeroBusinessSideEffects();
+        assertEquals(1, quoteEventCount(), "水种漂移拒绝证据同样独立存活");
     }
 }

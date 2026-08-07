@@ -1,6 +1,12 @@
 -- ============================================================
+-- 【仅限空库】本文件以 DROP TABLE IF EXISTS 开头，只能用于全新空库。
+-- 对既有库（主库 3308／验收库 3309／任何已部署环境）执行会静默删光本域全部数据，
+-- 无任何提示、不可恢复。既有库一律改走 deploy/mysql/migrations/ 下的非破坏迁移。
+-- 详见 AGENTS.md「第 1 步：数据库设计」第 5 条。
+-- ============================================================
+-- ============================================================
 -- 六维达康 · 交易域（ws_trade）
--- 表：ws_order / ws_payment / ws_refund / ws_wallet_flow / ws_split_record
+-- 表：ws_order / ws_payment / ws_refund / ws_wallet_flow / ws_split_record / ws_split_plan / ws_split_plan_item / ws_split_component
 -- 字典段：1340 订单类型、1341 订单状态、1342 支付状态、1343 退款状态、
 --        1344 流水类型、1345 分账状态、1346 支付方式
 -- 需求映射：订单管理 / 财务流水与对账 / 微信小程序JSAPI支付 / 支付回调验签与幂等 /
@@ -197,18 +203,100 @@ CREATE TABLE `ws_split_record` (
   `UPDATE_BY`        bigint       NOT NULL COMMENT '更新人ID',
   `UPDATE_TIME`      varchar(14)  NOT NULL COMMENT '更新时间',
   `ORDER_ID`         bigint       NOT NULL COMMENT '订单ID',
-  `RECEIVER_TYPE`    tinyint      NOT NULL COMMENT '接收方类型(1)：1机主 2配送员 3平台 4渠道(预留)',
-  `RECEIVER_USER_ID` bigint       COMMENT '接收方用户ID（平台时为空）',
+  `RECEIVER_TYPE`    tinyint      NOT NULL COMMENT '接收方类型(1377)：1机主 2配送员 3平台 4渠道(预留) 5推荐人(预留) 6区域服务商(预留)',
+  `RECEIVER_USER_ID` bigint       COMMENT '接收方用户ID；平台行恒 0 哨兵（NULL 不参与唯一约束会破幂等，禁止写 NULL）',
   `SPLIT_AMOUNT`     bigint       NOT NULL COMMENT '分账金额(分)',
-  `SPLIT_RATE_SNAP`  varchar(20)  NOT NULL COMMENT '分账比例快照(如"70.00")，规则变更不影响历史',
+  `SPLIT_RATE_SNAP`  varchar(20)  NOT NULL COMMENT '分账比例快照：整数万分比(如"7000")；D-419 配送分线后机主="W<水费线>+D<配送费线>"、配送员="D<配送费线>"；平台余数行="REMAINDER"；规则变更不影响历史',
   `SPLIT_STATUS`     tinyint      NOT NULL COMMENT '分账状态(1345)：1待分账 2已分账 3分账失败 4已回退',
   `WX_SPLIT_NO`      varchar(64)  COMMENT '微信分账单号(max64)',
   `SPLIT_TIME`       varchar(14)  COMMENT '分账完成时间',
   `SPLIT_REMARK`     varchar(500) COMMENT '备注(max500)',
+  `REFUND_ID`        bigint       COMMENT '触发回退的退款单ID（扩展位：退款冲减分润经甲方确认后启用，SPLIT_STATUS=4 时必填）',
   PRIMARY KEY (`ID`),
+  -- 同单同收款方恒一行：铁律②库层幂等，分账 Worker 并发/重放零重复（E2E-08 包A）
+  UNIQUE KEY `uk_split_order_receiver` (`ORDER_ID`, `RECEIVER_TYPE`, `RECEIVER_USER_ID`),
   INDEX `idx_split_order` (`ORDER_ID`),
-  INDEX `idx_split_receiver` (`RECEIVER_TYPE`, `RECEIVER_USER_ID`)
+  INDEX `idx_split_receiver` (`RECEIVER_TYPE`, `RECEIVER_USER_ID`),
+  -- D-421 R1-P2：钱包在途分润聚合（RECEIVER_USER_ID+SPLIT_STATUS 过滤、CREATE_TIME 取 MIN）
+  -- 走索引——复验 EXPLAIN 实测旧查询 type=ALL 全表扫描，随全平台分账量退化
+  INDEX `idx_split_pending_wallet` (`RECEIVER_USER_ID`, `SPLIT_STATUS`, `CREATE_TIME`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='分账记录表';
+
+-- 分账比例配置的商品线锁锚表（R1 P1-3；与 init/migration 三轨逐字一致）
+DROP TABLE IF EXISTS `ws_split_line_lock`;
+CREATE TABLE `ws_split_line_lock` (
+  `PRODUCT_LINE` tinyint NOT NULL COMMENT '商品线(1376)：1售水 2配送——每线恒一行，仅作配置写入的行锁锚',
+  PRIMARY KEY (`PRODUCT_LINE`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='分账比例配置的商品线锁锚表（配置写入串行化，无业务数据）';
+
+INSERT INTO `ws_split_line_lock` (`PRODUCT_LINE`) VALUES (1), (2);
+
+-- ============================================================
+-- 分润 V2 S1：完整计划模型与组件证据（与 migrations/2026-08-06-split-v2-s1.sql 双份逐字一致）
+-- 正式比例待甲方确认：不插任何计划种子；V2 开关两环境默认 false。
+-- ============================================================
+DROP TABLE IF EXISTS `ws_split_plan`;
+CREATE TABLE `ws_split_plan` (
+  `ID`           bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`  tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY`    bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`  varchar(14)  NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY`    bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`  varchar(14)  NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `PLAN_VERSION` varchar(20)  NOT NULL COMMENT '计划版本号，业务唯一',
+  `EFFECT_TIME`  varchar(14)  NOT NULL COMMENT '生效时间yyyyMMddHHmmss',
+  `PLAN_STATUS`  tinyint      NOT NULL COMMENT '计划状态：1草稿 2生效 3停用；整版发布，禁止半套生效',
+  `PLAN_REMARK`  varchar(200) DEFAULT NULL COMMENT '备注(max200)',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_split_plan_version` (`PLAN_VERSION`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='分润V2完整计划头：整版发布整版生效，正式比例未确认前不得有生效行';
+
+DROP TABLE IF EXISTS `ws_split_plan_item`;
+CREATE TABLE `ws_split_plan_item` (
+  `ID`           bigint      NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`  tinyint     NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY`    bigint      NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`  varchar(14) NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY`    bigint      NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`  varchar(14) NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `PLAN_ID`      bigint      NOT NULL COMMENT '所属计划ID(ws_split_plan.ID)',
+  `PRODUCT_LINE` varchar(16) NOT NULL COMMENT '基数线：WATER_SALE售水/DELIVERY_FEE配送费，两线独立绝不合并',
+  `ROLE_CODE`    varchar(32) NOT NULL COMMENT '角色：WATER_OWNER/WATER_DIRECT_REFERRER/REGION_PROVINCE/REGION_CITY/REGION_COUNTY/DELIVERY_COURIER',
+  `REGION_LEVEL` varchar(16) NOT NULL DEFAULT 'NONE' COMMENT '区域层级：NONE/PROVINCE/CITY/COUNTY，非区域角色恒NONE',
+  `RATE_BP`      int         NOT NULL COMMENT '万分比0..10000；级差模式下为该层累计上限，实得由计算器求级差',
+  `RATE_MODE`    varchar(24) NOT NULL COMMENT '比例模式：FIXED固定/REGIONAL_CUMULATIVE区域级差累计',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_split_plan_item` (`PLAN_ID`, `PRODUCT_LINE`, `ROLE_CODE`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='分润V2计划项：整版校验后发布，缺项即整版拒绝，绝不静默按0';
+
+DROP TABLE IF EXISTS `ws_split_component`;
+CREATE TABLE `ws_split_component` (
+  `ID`                 bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`        tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY`          bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`        varchar(14)  NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY`          bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`        varchar(14)  NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `ORDER_ID`           bigint       NOT NULL COMMENT '订单ID',
+  `ORDER_NO`           varchar(40)  NOT NULL COMMENT '订单号',
+  `PRODUCT_LINE`       varchar(16)  NOT NULL COMMENT '基数线：WATER_SALE/DELIVERY_FEE',
+  `BASIS_AMOUNT`       bigint       NOT NULL COMMENT '该线权威基数金额（整数分，实收口径）',
+  `ROLE_CODE`          varchar(32)  NOT NULL COMMENT '角色编码；PLATFORM_REMAINDER为平台余数行',
+  `RECEIVER_USER_ID`   bigint       NOT NULL COMMENT '收益人用户ID；平台余数行=0哨兵（NULL不参与唯一约束，沿用V1教训）',
+  `EFFECTIVE_RATE`     int          NOT NULL COMMENT '实际生效万分比；级差角色为级差后实得；平台余数行=-1',
+  `SPLIT_AMOUNT`       bigint       NOT NULL COMMENT '分得金额（整数分，非平台向下取整，余数归平台）',
+  `PLAN_VERSION`       varchar(20)  NOT NULL COMMENT '计划版本号（证据锚点）',
+  `ATTRIBUTION_SOURCE` varchar(20)  NOT NULL COMMENT '归属来源：PRIVATE_REFERRAL/PUBLIC_UNASSIGNED/PUBLIC_MANUAL',
+  `COMPONENT_KEY`      varchar(120) NOT NULL COMMENT '幂等键 SPLITV2:订单号:线:角色',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_split_component_key` (`COMPONENT_KEY`),
+  INDEX `idx_split_component_order` (`ORDER_ID`),
+  INDEX `idx_split_component_receiver` (`RECEIVER_USER_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='分润V2组件证据：计算明细留痕，不代替 ws_split_record 付款状态机';
 
 -- ----------------------------
 -- 字典

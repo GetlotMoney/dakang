@@ -97,7 +97,7 @@ class AdminOrderRechargeTraceTest {
                 .setOrderStatus(4);
         persisted.setDataStatus(0);
 
-        Mockito.when(orderMapper.selectAdminOrderById(68L)).thenReturn(admin);
+        Mockito.when(orderMapper.selectAdminOrderById(Mockito.eq(68L), Mockito.anyInt(), Mockito.anyInt())).thenReturn(admin);
         Mockito.when(identityMapper.selectOrdersByOrderNoIncludingDeleted("RC-FIRST-68"))
                 .thenReturn(List.of(persisted));
         AdminOrderServiceImpl service = new AdminOrderServiceImpl(

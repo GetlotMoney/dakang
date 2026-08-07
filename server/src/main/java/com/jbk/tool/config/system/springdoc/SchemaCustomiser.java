@@ -76,9 +76,6 @@ public class SchemaCustomiser implements OpenApiCustomizer {
     private void processHandlerMethod(String path,HandlerMethod handlerMethod, Operation operation,
                                       OpenAPI openApi, Map<String, Schema> schemaMap) {
         MethodParameter[] methodParameters = handlerMethod.getMethodParameters();
-        if(path.equals("/api/auth/loginEmployee")){
-            System.out.println();
-        }
         if (ObjectUtil.isEmpty(methodParameters)) {
             return;
         }

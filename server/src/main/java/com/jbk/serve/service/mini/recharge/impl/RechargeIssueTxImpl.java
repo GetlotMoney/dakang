@@ -2,7 +2,10 @@ package com.jbk.serve.service.mini.recharge.impl;
 
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.StrUtil;
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
 import com.jbk.serve.mapper.trade.RechargeCreditMapper;
+import com.jbk.serve.service.aftersale.batch.EntitlementBatchOrder;
+import com.jbk.serve.service.aftersale.batch.EntitlementBatchWriter;
 import com.jbk.serve.service.mini.recharge.IRechargeCreditTx;
 import com.jbk.serve.service.mini.recharge.IRechargeIssueTx;
 import com.jbk.serve.service.mini.recharge.NewCardExpiry;
@@ -16,6 +19,7 @@ import com.jbk.tool.data.trade.po.WsPayment;
 import com.jbk.tool.data.trade.po.WsPaymentEvent;
 import com.jbk.tool.data.user.po.WsCard;
 import com.jbk.tool.exception.JbkException;
+import com.jbk.tool.utils.DateUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -25,8 +29,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
@@ -59,10 +61,11 @@ public class RechargeIssueTxImpl implements IRechargeIssueTx {
     /** 卡类型(1331)：1 虚拟卡（决策 A5：一期 L2-A 固定建虚拟卡）。 */
     private static final int CARD_TYPE_VIRTUAL = 1;
     private static final int CARD_NORMAL = 1;
-    private static final DateTimeFormatter TIME = com.jbk.tool.utils.DateUtils.COMPACT_FORMATTER;
 
     private final RechargeCreditMapper mapper;
     private final RechargeLedgerVerifier ledgerVerifier;
+    /** 发卡入账同事务建立权益批次，作为退款折算的唯一基准。 */
+    private final WsCardEntitlementBatchMapper batchMapper;
 
     @Override
     /**
@@ -171,6 +174,19 @@ public class RechargeIssueTxImpl implements IRechargeIssueTx {
                 RechargeCreditTxImpl.bizKey(order.getOrderNo()), processingTime) != 1) {
             throw new JbkException("首充流水插入影响行数异常");
         }
+
+        // ── 步骤 g2：建立权益批次（E2E-04 包D，REQ-061）──
+        // 必须在<b>本事务内</b>、紧跟权益写入与流水之后：批次与卡权益同生共死。
+        // 卡加了权益而批次没建，这笔充值将永远无法退款（退款折算没有基准）；
+        // 批次建了而卡没加，退款会退出根本没发放的权益。
+        // 撞 uk_batch_order 即同一笔充值重放，整事务回滚，与流水的幂等口径一致。
+        EntitlementBatchWriter.createOnCredit(batchMapper, order, card.getId(), order.getUserId(), payment.getId(),
+                EntitlementBatchOrder.SourceType.FIRST_PURCHASE,
+                snap.payAmount(),
+                // 赠送金额取自快照而非硬编 0：赠送已消费的部分不参与退款，
+                // 这里记 0 会让部分使用后的折算把赠送当成本金退给用户。
+                credit.amountFen(), snap.bonusAmount(), credit.ml(),
+                newExpireTime, scopeJson, processingTime);
 
         // ── 步骤 h：回填 CAS。CARD_ID IS NULL 前态保证该列只被写一次，绝不覆盖既有关联 ──
         if (mapper.backfillOrderCardId(order.getId(), card.getId(), processingTime) != 1) {
@@ -413,7 +429,7 @@ public class RechargeIssueTxImpl implements IRechargeIssueTx {
                 throw new JbkException("支付事实组含不可覆盖的失败状态：" + expected);
             }
             int changed = retryable
-                    ? mapper.markEventRetryWait(row.getId(), expected, plusSeconds(now, 60), reason, now)
+                    ? mapper.markEventRetryWait(row.getId(), expected, DateUtils.plusSeconds(now, 60), reason, now)
                     : mapper.markEventReconciliation(row.getId(), expected, reason, now);
             if (changed != 1) {
                 throw new JbkException("支付事实组失败落痕影响行数异常");
@@ -508,11 +524,4 @@ public class RechargeIssueTxImpl implements IRechargeIssueTx {
         return hex.substring(0, 16).toUpperCase();
     }
 
-    private String plusSeconds(String value, long seconds) {
-        try {
-            return LocalDateTime.parse(value, TIME).plusSeconds(seconds).format(TIME);
-        } catch (RuntimeException e) {
-            throw new JbkException("业务时间格式非法，无法安排重试");
-        }
-    }
 }

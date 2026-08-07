@@ -54,13 +54,14 @@ public class DeliveryCreateBo implements Serializable {
     @Schema(description = "计划回收空桶数量", requiredMode = Schema.RequiredMode.REQUIRED)
     private Integer planReturnCount;
 
-    @NotBlank(message = "收水地址不能为空")
+    @Schema(description = "地址簿地址ID；传入时服务端解引用取地址与号码写快照（优先于直填，号码不经前端）")
+    private Long addressId;
+
     @Size(max = 200, message = "收水地址过长")
-    @Schema(description = "收水地址(max200)", requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "收水地址(max200)；与 addressId 二选一，直填时必填（服务层校验）")
     private String receiveAddress;
 
-    @NotBlank(message = "收货电话不能为空")
-    @Schema(description = "收货电话（11位手机号，服务端校验）", requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "收货电话（11位手机号）；与 addressId 二选一，直填时必填（服务层校验）")
     private String receivePhone;
 
     @NotNull(message = "配送方式不能为空")

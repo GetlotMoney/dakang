@@ -4,6 +4,7 @@ import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
 import com.jbk.serve.service.mini.recharge.IRechargePaySourceAdapter;
 import com.jbk.serve.service.mini.recharge.RechargePayExpire;
 import com.jbk.serve.service.mini.recharge.RechargePayStatus;
+import com.jbk.serve.service.mini.recharge.RechargeRefundEvidenceVerifier;
 import com.jbk.serve.service.mini.card.WaterCardScope;
 import com.jbk.serve.service.mini.recharge.RechargeSnapshot;
 import com.jbk.tool.data.mini.bo.MiniPayStatusBo;
@@ -52,6 +53,7 @@ class MiniPayStatusServiceTest {
     private static final long AMOUNT = 9900L;
 
     private RechargeIdentityMapper identityMapper;
+    private RechargeRefundEvidenceVerifier refundEvidenceVerifier;
     private MiniPayStatusServiceImpl service;
 
     private WsOrder order;
@@ -63,7 +65,8 @@ class MiniPayStatusServiceTest {
     @BeforeEach
     void setup() {
         identityMapper = Mockito.mock(RechargeIdentityMapper.class);
-        service = new MiniPayStatusServiceImpl(identityMapper);
+        refundEvidenceVerifier = Mockito.mock(RechargeRefundEvidenceVerifier.class);
+        service = new MiniPayStatusServiceImpl(identityMapper, refundEvidenceVerifier);
         order = order(CREATE_TIME, CREATE_TIME);
         payment = payment(EXPIRE_TIME);
         events = new ArrayList<>();
@@ -366,14 +369,38 @@ class MiniPayStatusServiceTest {
         assertFalse(vo.getRetryable(), "终态不得继续轮询");
     }
 
-    // 28) order=7 退款：退款合同未冻结未启用，绝不能拼成成功，也不给轮询
+    // 28) order=7/8 退款：原支付/入账与售后证据共同成立，返回不可轮询终态
     @Test
-    void refundContractNotEnabled() {
+    void refundedStatesAreTerminalAfterEvidenceVerification() {
         payment.setPayStatus(RechargePayStatus.PAY_SUCCESS);
         order.setOrderStatus(RechargePayStatus.ORDER_REFUNDED);
+        order.setFinishTime("20260722102000");
+        events.add(success().setProcessingStatus(RechargePayStatus.P_PROCESSED));
+        liveFlows = 1L;
         MiniPayStatusVo vo = run();
-        assertEquals("REFUND_CONTRACT_NOT_ENABLED", vo.getPayStatusCode());
+        assertEquals("REFUNDED", vo.getPayStatusCode());
         assertFalse(vo.getRetryable());
+
+        setup();
+        payment.setPayStatus(RechargePayStatus.PAY_SUCCESS);
+        order.setOrderStatus(RechargePayStatus.ORDER_PART_REFUNDED);
+        order.setFinishTime("20260722102000");
+        events.add(success().setProcessingStatus(RechargePayStatus.P_PROCESSED));
+        liveFlows = 1L;
+        assertEquals("PART_REFUNDED", run().getPayStatusCode());
+    }
+
+    @Test
+    void refundedStateFailsClosedWhenAfterSaleEvidenceIsInvalid() {
+        payment.setPayStatus(RechargePayStatus.PAY_SUCCESS);
+        order.setOrderStatus(RechargePayStatus.ORDER_REFUNDED);
+        order.setFinishTime("20260722102000");
+        events.add(success().setProcessingStatus(RechargePayStatus.P_PROCESSED));
+        liveFlows = 1L;
+        Mockito.doThrow(new JbkException("充值退款证据不一致：缺少售后动作"))
+                .when(refundEvidenceVerifier).requireIfRefunded(order);
+
+        assertMismatch(run(), "缺少售后动作");
     }
 
     // 29) PAY_STATUS 必须透传库里的真值。硬编码成 1 会让已支付成功的订单在前端永远显示"待支付"，

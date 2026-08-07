@@ -78,4 +78,8 @@ public class WsCommand extends BaseEntity implements Serializable {
     @Schema(description = "重试次数")
     @TableField("RETRY_COUNT")
     private Integer retryCount;
+
+    @TableField("BATCH_ID")
+    @Schema(description = "批量任务ID(ws_command_batch.ID)；单发指令为空。uk_cmd_batch_device 保证同批次同设备只有一条子指令")
+    private Long batchId;
 }

@@ -56,7 +56,7 @@ class WsPackageAdminServiceTest {
         bo.setPayAmount(10000L);
         bo.setWaterMl(500000L);
         bo.setBonusAmount(0L);
-        bo.setExpireDays(365);
+        bo.setExpireDays(null); // D-213：可售套餐一律永久
         bo.setPackageStatus(1);
         bo.setScopeJson("{\"scopeType\":\"specified\",\"stationIds\":[\"1\"]}");
         return bo;
@@ -90,6 +90,26 @@ class WsPackageAdminServiceTest {
         bo.setPayAmount(1_000_001L);
         assertThrows(JbkException.class, () -> service.saveData(bo));
         verify(mapper, never()).insert(any(WsPackage.class));
+    }
+
+    // 2b) D-213 管理端守卫：付费套餐带有效期，新增与修改一律拒绝且零写入。
+    //     这是审计驳回 P1-1 点名的缺口——此前 PC 能建出售价>0 且带 expireDays 的套餐并正常上架，
+    //     小程序判为可购，用户买完即持有一张与预付卡合规底线冲突的有限期付费卡
+    @Test
+    void paidPackageWithExpiryRejectedOnSaveAndUpdate() {
+        WsPackageBo add = validBo();
+        add.setExpireDays(365);
+        JbkException saveEx = assertThrows(JbkException.class, () -> service.saveData(add));
+        assertTrue(saveEx.getMessage().contains("付费套餐不得设置有效期"), "实际=" + saveEx.getMessage());
+        verify(mapper, never()).insert(any(WsPackage.class));
+
+        WsPackageBo upd = validBo();
+        upd.setId(1L);
+        upd.setExpireDays(365);
+        when(mapper.selectById(1L)).thenReturn(existing(1L, 1));
+        JbkException updEx = assertThrows(JbkException.class, () -> service.updateData(upd));
+        assertTrue(updEx.getMessage().contains("付费套餐不得设置有效期"), "实际=" + updEx.getMessage());
+        verify(mapper, never()).update(any(), any());
     }
 
     // 3) 合法范围通过：落库为规范化指纹（IDs 升序字符串、无展示名），单价快照服务端派生
@@ -145,7 +165,7 @@ class WsPackageAdminServiceTest {
 
         WsPackageBo bo = validBo();
         bo.setId(1L);
-        bo.setExpireDays(null); // 有限 → 永久：必须能把列清成 NULL
+        bo.setExpireDays(null); // 可空列显式清空动线保留（存量有限期数据改永久时要用）
         bo.setScopeJson(null);
         when(mapper.selectById(1L)).thenReturn(existing(1L, 1));
         when(mapper.update(any(), any())).thenReturn(1);

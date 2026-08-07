@@ -40,6 +40,7 @@ import static org.mockito.Mockito.when;
 class MiniCardDetailTest {
 
     private IWsCardService wsCardService;
+    private com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper entitlementBatchMapper;
     private WsCardMemberMapper wsCardMemberMapper;
     private IWsUserService wsUserService;
     private MiniCardServiceImpl service;
@@ -64,12 +65,15 @@ class MiniCardDetailTest {
     @BeforeEach
     void setup() {
         wsCardService = Mockito.mock(IWsCardService.class);
+        entitlementBatchMapper = Mockito.mock(com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper.class);
+        when(entitlementBatchMapper.selectList(any())).thenReturn(List.of());
         wsCardMemberMapper = Mockito.mock(WsCardMemberMapper.class);
         wsUserService = Mockito.mock(IWsUserService.class);
         // CARD-MEMBER 新增身份/订单依赖（详情链不触达，mock 仅为满足构造器）
         service = new MiniCardServiceImpl(wsCardService, wsCardMemberMapper, wsUserService,
                 Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class),
-                Mockito.mock(com.jbk.serve.mapper.trade.WsOrderMapper.class));
+                Mockito.mock(com.jbk.serve.mapper.trade.WsOrderMapper.class),
+                entitlementBatchMapper);
         when(wsCardMemberMapper.selectList(any())).thenReturn(List.of());
         dbCard = card(null, null);
         // 假库：wrapper 的等值条件与库里那一行逐列比对，全中才返回。

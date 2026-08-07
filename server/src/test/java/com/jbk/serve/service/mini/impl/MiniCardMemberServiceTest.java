@@ -76,7 +76,8 @@ class MiniCardMemberServiceTest {
         identityMapper = Mockito.mock(WsUserIdentityMapper.class);
         orderMapper = Mockito.mock(WsOrderMapper.class);
         service = new MiniCardServiceImpl(wsCardService, memberMapper, wsUserService,
-                identityMapper, orderMapper);
+                identityMapper, orderMapper,
+                Mockito.mock(com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper.class));
         dbCard = ownCard();
         when(wsCardService.getOne(any(Wrapper.class))).thenAnswer(inv -> dbCard);
         when(identityMapper.selectByPhoneIncludingDeleted(PHONE)).thenReturn(List.of(usableUser()));
@@ -155,13 +156,16 @@ class MiniCardMemberServiceTest {
         assertNoMemberWrites();
     }
 
-    // 手机号不存在：不自动创建用户，明确拒绝
+    // 手机号查不到：不自动创建用户，明确拒绝。
+    // 「仅微信身份建号」后查不到有两种成因（从未登录 / 已登录但未绑号），
+    // 文案必须同时指出绑号这条出路，否则已登录的人会被反复要求「先登录」。
     @Test
     void saveRejectsUnknownPhoneWithoutCreatingUser() {
         when(identityMapper.selectByPhoneIncludingDeleted(PHONE)).thenReturn(List.of());
 
         JbkException ex = assertThrows(JbkException.class, () -> service.saveMember(saveBo(), OWNER));
-        assertTrue(ex.getMessage().contains("尚未注册"), "实际=" + ex.getMessage());
+        assertTrue(ex.getMessage().contains("未绑定任何账号"), "实际=" + ex.getMessage());
+        assertTrue(ex.getMessage().contains("绑定"), "文案必须给出绑号出路，实际=" + ex.getMessage());
         verify(identityMapper, never()).insertIdentityUser(any());
         assertNoMemberWrites();
     }

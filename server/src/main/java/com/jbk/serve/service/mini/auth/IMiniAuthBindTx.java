@@ -17,4 +17,26 @@ public interface IMiniAuthBindTx {
      * @return 绑定成功的用户（供编排层签发会话）
      */
     BoundUser bind(String openid, String phone);
+
+    /**
+     * 在独立事务内完成「仅微信身份建号」：手机号留空（NULL），提交成功后返回。
+     *
+     * <p>用于小程序主体未通过微信认证、{@code getPhoneNumber} 组件被平台禁用因而拿不到 phoneCode 的场景。
+     * 同 openid 重复调用幂等（已存在即返回既有账号），并发由 {@code uk_user_wechat_xcx_openid} 兜底。</p>
+     *
+     * @param openid 已由 code2session 换取的微信 openid
+     * @return 建号或既有的用户（供编排层签发会话）
+     */
+    BoundUser registerByOpenid(String openid);
+
+    /**
+     * 在独立事务内为「已登录但手机号为空」的账号补绑手机号，提交成功后返回。
+     *
+     * <p>只允许 {@code USER_PHONE IS NULL} → 非空这一个方向；已绑号账号的换绑不走本路径。</p>
+     *
+     * @param userId 当前会话用户 ID
+     * @param phone  服务端解析出的手机号
+     * @return 补绑后的用户
+     */
+    BoundUser bindPhoneToCurrentUser(Long userId, String phone);
 }

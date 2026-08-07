@@ -55,7 +55,20 @@
         p.TRANSACTION_ID   AS transactionId,
         p.PAY_EXPIRE_TIME  AS payExpireTime,
         p.PAY_SUCCESS_TIME AS paySuccessTime,
-        p.DATA_STATUS      AS paymentDataStatus
+        p.DATA_STATUS      AS paymentDataStatus,
+        <!--
+          取水异常核账确认标记（E2E-04 包A）。核账确认把订单从 6异常待补偿 推进到 4已完成/7已退款，
+          却**刻意不改写指令**——指令正是核账所依据的证据。于是这类订单的指令永远停在 5执行失败/6超时，
+          订单-指令状态矩阵必须知道这件事，否则售后一上线，PC 追溯会把每一张已核账订单都报成 mismatch。
+          与订单同一条 SQL 带出（命中 idx_after_sale_order(ORDER_ID, ACTION_STATUS)），
+          不在 Service 层逐行查库（N+1）；来源/状态值由调用方以 AfterSaleEnum 传入，SQL 不写状态字面量。
+          刻意**不过滤** asa.DATA_STATUS：确认过就是确认过，删行不该让订单退回 mismatch
+          （与 uk_after_sale_source 不带 DATA_STATUS 同一条理由）。
+        -->
+        EXISTS (SELECT 1 FROM ws_after_sale_action asa
+                WHERE asa.ORDER_ID = o.ID
+                  AND asa.SOURCE_TYPE = #{afterSaleSourceType}
+                  AND asa.ACTION_STATUS = #{afterSaleSuccessStatus}) AS afterSaleConfirmed
     </sql>
 
     <sql id="Admin_Order_Joins">
@@ -104,6 +117,40 @@
         <include refid="Admin_Order_Columns"/>
         <include refid="Admin_Order_Joins"/>
         WHERE o.DATA_STATUS = 0 AND o.ID = #{id}
+    </select>
+
+    <!--
+      小程序售后进度：原订单按 ORDER_ID、补送子单按 RESULT_ORDER_ID 命中；USER_ID 是第二道本人范围闸。
+      ws_refund 通过唯一 AFTER_SALE_ID 反向关联，不能依赖动作行 REFUND_ID 已回填。
+      多次申诉会产生多条动作，订单详情展示最近一条；完整历史仍由 PC 售后台账保留。
+    -->
+    <select id="selectLatestMiniAfterSaleProgress"
+            resultType="com.jbk.tool.data.mini.vo.MiniAfterSaleProgressVo">
+        SELECT a.AFTER_SALE_NO      AS afterSaleNo,
+               a.SOURCE_TYPE        AS sourceType,
+               a.ACTION_TYPE        AS actionType,
+               a.ACTION_STATUS      AS actionStatus,
+               a.APPROVED_COUNT     AS approvedCount,
+               a.REFUND_PRODUCT_FEN AS refundProductFen,
+               a.REFUND_SERVICE_FEN AS refundServiceFen,
+               a.REFUND_PRODUCT_ML  AS refundProductMl,
+               a.REFUND_AMOUNT      AS refundAmount,
+               r.REFUND_SOURCE      AS refundSource,
+               ro.ORDER_NO          AS resendOrderNo,
+               rt.TASK_NO           AS resendTaskNo,
+               a.FINISH_TIME        AS finishTime
+        FROM ws_after_sale_action a
+        LEFT JOIN ws_refund r
+               ON r.AFTER_SALE_ID = a.ID AND r.DATA_STATUS = 0
+        LEFT JOIN ws_order ro
+               ON ro.ID = a.RESULT_ORDER_ID
+        LEFT JOIN ws_delivery_task rt
+               ON rt.ID = a.RESULT_TASK_ID
+        WHERE a.DATA_STATUS = 0
+          AND a.USER_ID = #{userId}
+          AND (a.ORDER_ID = #{orderId} OR a.RESULT_ORDER_ID = #{orderId})
+        ORDER BY a.ID DESC
+        LIMIT 1
     </select>
 
     <!--

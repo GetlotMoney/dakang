@@ -1,5 +1,7 @@
 package com.jbk.serve.service.mini.impl;
 
+import com.jbk.serve.mapper.device.WsDeviceMapper;
+import com.jbk.serve.mapper.station.WsStationMapper;
 import com.jbk.serve.mapper.user.WsCourierMapper;
 import com.jbk.tool.data.user.po.WsCourier;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,12 +23,16 @@ import static org.mockito.Mockito.when;
 class MiniCapabilityServiceTest {
 
     private WsCourierMapper courierMapper;
+    private WsDeviceMapper deviceMapper;
+    private WsStationMapper stationMapper;
     private MiniCapabilityServiceImpl service;
 
     @BeforeEach
     void setup() {
         courierMapper = Mockito.mock(WsCourierMapper.class);
-        service = new MiniCapabilityServiceImpl(courierMapper);
+        deviceMapper = Mockito.mock(WsDeviceMapper.class);
+        stationMapper = Mockito.mock(WsStationMapper.class);
+        service = new MiniCapabilityServiceImpl(courierMapper, deviceMapper, stationMapper);
     }
 
     private WsCourier courier(int status) {
@@ -42,6 +48,22 @@ class MiniCapabilityServiceTest {
         when(courierMapper.selectOne(any())).thenReturn(null);
         List<String> capabilities = service.capabilitiesOf(6L);
         assertEquals(List.of("USER_BASE", "COURIER_APPLY"), capabilities);
+    }
+
+    @Test
+    void ownerCapabilitiesAppearOnlyWithOwnedRows() {
+        when(courierMapper.selectOne(any())).thenReturn(null);
+        // 无归属：不投影机主能力
+        assertFalse(service.capabilitiesOf(6L).contains("OWNER_VIEW"));
+        // 名下有设备：两项机主能力齐发（E2E-05：入口显隐同源于归属行，逐设备归属仍由接口校验）
+        when(deviceMapper.exists(any())).thenReturn(true);
+        List<String> withDevice = service.capabilitiesOf(6L);
+        assertTrue(withDevice.contains("OWNER_VIEW"));
+        assertTrue(withDevice.contains("OWNER_SERVICE"));
+        // 只有水站归属同样投影
+        when(deviceMapper.exists(any())).thenReturn(false);
+        when(stationMapper.exists(any())).thenReturn(true);
+        assertTrue(service.capabilitiesOf(6L).contains("OWNER_VIEW"));
     }
 
     @Test

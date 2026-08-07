@@ -1,6 +1,7 @@
 package com.jbk.tool.config.system;
 
 import cn.dev33.satoken.interceptor.SaInterceptor;
+import com.jbk.tool.interceptor.PwdChangeGuardInterceptor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
@@ -34,6 +35,9 @@ public class MyWebMvcConfigurer implements WebMvcConfigurer {
                         "/knife4j-openapi3-jakarta/**",
                         "/csrf"
                 );
+        // 首改密码强制门：注册在 SaInterceptor 之后，仅约束携带强改标记的 MANAGE 会话（R-201）
+        registry.addInterceptor(new PwdChangeGuardInterceptor())
+                .addPathPatterns("/**");
     }
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {

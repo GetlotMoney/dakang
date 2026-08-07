@@ -2,8 +2,12 @@ package com.jbk.tool.interceptor;
 
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.StrUtil;
+import com.jbk.tool.utils.MaskUtils;
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
 import com.jbk.tool.config.system.RequestWrapper;
+import com.jbk.tool.domain.R;
 import com.jbk.tool.utils.IpUtils;
 import com.jbk.tool.utils.satoken.StpKit;
 import com.wujiuye.flow.FlowHelper;
@@ -28,6 +32,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.servlet.http.HttpServletRequest;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -42,6 +47,9 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 @Order(50)
 public class RequestAspect {
+
+    private static final String REDACTED = "***";
+    private static final int MAX_REQUEST_LOG_LENGTH = 4096;
 
     public ConcurrentHashMap<String, FlowHelper> concurrentHashMap = new ConcurrentHashMap<>();
 
@@ -84,10 +92,10 @@ public class RequestAspect {
             url = url.substring(contextPath.length());
         }
         String reqParam;
-        if (StrUtil.isNotEmpty(request.getContentType()) && request.getContentType().equals("application/json")) {
-            reqParam = ((RequestWrapper) request).getRequestBody();
+        if (StrUtil.startWithIgnoreCase(request.getContentType(), "application/json")) {
+            reqParam = sanitizeRequestForLog(((RequestWrapper) request).getRequestBody());
         } else {
-            reqParam = preHandle(joinPoint, request);
+            reqParam = sanitizeRequestForLog(preHandle(joinPoint, request));
         }
         long userId = -1L;
         if (StpKit.KH_USER.isLogin()) {
@@ -110,7 +118,7 @@ public class RequestAspect {
         }
         try {
             result = joinPoint.proceed();
-            String respParam = postHandle(result);
+            String respParam = responseSummaryForLog(result);
             long rt = System.currentTimeMillis() - begin;
             log.info("用户：【{}】, 请求IP:【{}】, 耗时：【{}ms】,请求URL:【{}】,请求参数:【{}】,返回参数:【{}】", userId, ipAddr, rt, url, reqParam, respParam);
             if (ObjectUtil.isNotNull(totalFlowHelper)) {
@@ -164,10 +172,92 @@ public class RequestAspect {
      * @param retVal
      * @return
      */
-    private String postHandle(Object retVal) {
+    static String responseSummaryForLog(Object retVal) {
         if (null == retVal) {
             return "";
         }
-        return JSON.toJSONString(retVal);
+        if (retVal instanceof R<?> response) {
+            JSONObject summary = new JSONObject(true);
+            summary.put("code", response.getCode());
+            summary.put("msg", response.getMsg());
+            summary.put("data", "<omitted>");
+            return summary.toJSONString();
+        }
+        return "{\"type\":\"" + retVal.getClass().getSimpleName() + "\",\"data\":\"<omitted>\"}";
+    }
+
+    /**
+     * 请求日志只保留排障所需的非敏感业务键。登录凭据、会话票据、手机号、地址与原始报文
+     * 无论位于哪一层都统一脱敏；无法解析的正文直接省略，禁止在异常分支回落打印原文。
+     */
+    static String sanitizeRequestForLog(String raw) {
+        if (StrUtil.isBlank(raw)) {
+            return "";
+        }
+        try {
+            Object parsed = JSON.parse(raw);
+            redactSensitiveNode(parsed);
+            String sanitized = JSON.toJSONString(parsed);
+            if (sanitized.length() <= MAX_REQUEST_LOG_LENGTH) {
+                return sanitized;
+            }
+            return sanitized.substring(0, MAX_REQUEST_LOG_LENGTH) + "...<truncated>";
+        } catch (RuntimeException ignored) {
+            return "<unparseable request body omitted>";
+        }
+    }
+
+    private static void redactSensitiveNode(Object node) {
+        if (node instanceof JSONObject object) {
+            for (String key : object.keySet()) {
+                if (isSensitiveLogKey(key)) {
+                    object.put(key, REDACTED);
+                } else {
+                    Object child = object.get(key);
+                    // 值级兜底：键名白名单对新增业务字段天然滞后（审计导出的 operatorKeyword
+                    // 就曾把手机号原文写进操作日志），故凡长得像手机号的值一律脱敏，
+                    // 不论它挂在哪个键名下
+                    if (child instanceof String text) {
+                        String masked = MaskUtils.maskPhoneLike(text);
+                        if (!masked.equals(text)) {
+                            object.put(key, masked);
+                        }
+                    } else {
+                        redactSensitiveNode(child);
+                    }
+                }
+            }
+            return;
+        }
+        if (node instanceof JSONArray array) {
+            for (int i = 0; i < array.size(); i++) {
+                Object item = array.get(i);
+                if (item instanceof String text) {
+                    array.set(i, MaskUtils.maskPhoneLike(text));
+                } else {
+                    redactSensitiveNode(item);
+                }
+            }
+        }
+    }
+
+    private static boolean isSensitiveLogKey(String key) {
+        String normalized = key == null ? ""
+                : key.replace("_", "").replace("-", "").toLowerCase(Locale.ROOT);
+        return normalized.equals("code")
+                || normalized.contains("password")
+                || normalized.contains("pwd")
+                || normalized.contains("token")
+                || normalized.contains("sessionkey")
+                || normalized.contains("openid")
+                || normalized.contains("unionid")
+                || normalized.contains("phone")
+                || normalized.contains("mobile")
+                || normalized.contains("address")
+                || normalized.contains("secret")
+                || normalized.contains("signature")
+                || normalized.contains("rawbody")
+                || normalized.contains("ticket")
+                || normalized.contains("authorization");
     }
 }

@@ -29,7 +29,7 @@ class AdminOrderTraceMismatchTest {
         IWsCommandService commandService = Mockito.mock(IWsCommandService.class);
         RechargeIdentityMapper rechargeIdentityMapper = Mockito.mock(RechargeIdentityMapper.class);
         RechargeDetailVerifier rechargeDetailVerifier = Mockito.mock(RechargeDetailVerifier.class);
-        Mockito.when(orderMapper.selectAdminOrderById(order.getId())).thenReturn(order);
+        Mockito.when(orderMapper.selectAdminOrderById(Mockito.eq(order.getId()), Mockito.anyInt(), Mockito.anyInt())).thenReturn(order);
         Mockito.when(commandService.getById(order.getCmdId())).thenReturn(cmd);
         Mockito.when(flowMapper.selectList(Mockito.any())).thenReturn(new ArrayList<>());
         return new AdminOrderServiceImpl(orderMapper, flowMapper, commandService,

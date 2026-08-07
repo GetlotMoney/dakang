@@ -1,10 +1,15 @@
 package com.jbk.serve.controller.mini;
 
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import com.jbk.serve.service.mini.IMiniAuthService;
+import com.jbk.tool.annotation.MySaCheckOr;
 import com.jbk.tool.data.mini.bo.MiniBindPhoneBo;
+import com.jbk.tool.data.mini.bo.MiniBindPhoneSelfBo;
 import com.jbk.tool.data.mini.bo.MiniLoginBo;
+import com.jbk.tool.data.mini.vo.MiniAccountContextVo;
 import com.jbk.tool.data.mini.vo.MiniAuthResultVo;
 import com.jbk.tool.domain.R;
+import com.jbk.tool.utils.satoken.StpKit;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -43,5 +48,16 @@ public class MiniAuthController {
     @Operation(summary = "绑定手机号并建立 KH_USER 会话")
     public R<MiniAuthResultVo> bindPhone(@RequestBody @Valid MiniBindPhoneBo bo) {
         return R.ok(miniAuthService.bindPhone(bo));
+    }
+
+    /**
+     * 仅微信身份建号后的自助补绑：由已有会话授权，不收 userId（铁律6），号码仍由服务端换取。
+     */
+    @PostMapping("/bind-phone-self")
+    @Operation(summary = "已登录用户补绑手机号（返回刷新后的账号上下文，不换发会话）")
+    @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_KH_USER) })
+    public R<MiniAccountContextVo> bindPhoneSelf(@RequestBody @Valid MiniBindPhoneSelfBo bo) {
+        Long userId = StpKit.KH_USER.getLoginIdAsLong();
+        return R.ok(miniAuthService.bindPhoneForCurrentUser(userId, bo));
     }
 }

@@ -1,0 +1,302 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.jbk.serve.mapper.aftersale.WsAfterSaleActionMapper">
+
+    <!--
+      ============================ 本文件的两条硬约束 ============================
+      ① 没有任何状态字面量。前态集合 <foreach> 自 AfterSaleTransitions.requireSources(to)，
+         目标态、SUCCESS 判定值一律由参数传入。状态机改一处，CAS 跟着改——不存在「Java 一份、
+         WHERE 一份」的两份真相（既有 DeliveryTransitions.allowed() 就是被这样架空的）。
+      ② 没有任何重试上限魔数。RETRY_COUNT 的上限由参数 maxRetryCount 传入，单一出处在 Java 常量。
+      三条 CAS 的 WHERE 一律带 ID + DATA_STATUS=0 + ACTION_STATUS IN(前态) + VERSION，
+      影响行必须 == 1；SET 一律 VERSION = VERSION + 1（禁止把 Java 侧算好的版本号写回，
+      那等于把并发裁决权从数据库交还给应用层）。
+      ==========================================================================
+    -->
+
+    <!--
+      绕过 @TableLogic 的两条单行读。@TableLogic 只作用于 MP 生成的语句，XML 自定义语句天然不带
+      DATA_STATUS 过滤——但这里必须写明是「刻意」而非「遗漏」：
+      uk_after_sale_source / uk_after_sale_no 都不含 DATA_STATUS（删了再建绕不过唯一约束重复返还），
+      因此撞键后的幂等核验若读不到删除行，就会出现「键被占用但行查不到」的无解分支；
+      落 5需人工对账 后的运营排查同理。
+    -->
+    <select id="selectByIdIncludingDeleted" resultType="com.jbk.tool.data.aftersale.po.WsAfterSaleAction">
+        SELECT *
+        FROM ws_after_sale_action
+        WHERE ID = #{id}
+    </select>
+
+    <select id="selectByAfterSaleNoIncludingDeleted" resultType="com.jbk.tool.data.aftersale.po.WsAfterSaleAction">
+        SELECT *
+        FROM ws_after_sale_action
+        WHERE AFTER_SALE_NO = #{afterSaleNo}
+    </select>
+
+    <!--
+      claim：PENDING 或到点的 RETRY_WAIT → PROCESSING，两条边共用一条 CAS（两份状态判定就是两个真相）。
+      非状态条件留在 SQL：NEXT_RETRY_TIME IS NULL（PENDING 行该列恒为 NULL）OR 已到点。
+      刻意不加 RETRY_COUNT 闸——末次重试必须能被认领，它失败后由 markTerminal(4) 影响 0 行升级为 5。
+      LAST_ERROR 置空：本次认领的成败要由本次结果决定，留着上一轮的错因会让 PC 误读。
+      ACTION_TYPE 不进 WHERE：该列建行后无任何 SQL 改写，不存在并发漂移，准入判定属 Java 侧单一出处；
+      把不可变列塞进 CAS 只会让「影响行 0」的归因从「状态已变」变成一团模糊。
+      NEXT_RETRY_TIME 置空：认领即消费掉这次重试排期。留着它，成功行会永久带一个已失效的
+      「下次可重试时间」，而该列既是 idx_after_sale_status 的 Worker 预筛条件、也在 PC 台账上
+      直接展示，运营在一条「已完成」的行上看到未来的重试时间会做出错误判断。理由同 LAST_ERROR。
+
+      注释一律写在这里而不是语句体内：Druid WallFilter 默认 comment-not-allow，
+      写在语句体内的 SQL 行注释会随 SQL 发到服务端并被判为注入，运行期直接 500，
+      而单测走 Testcontainers 不经 Druid 墙，抓不到这类问题。
+      XML 注释由 MyBatis 在解析期剥离，不进 SQL 文本。
+    -->
+    <update id="claimForExecute">
+        UPDATE ws_after_sale_action
+        SET ACTION_STATUS   = #{toStatus},
+            VERSION         = VERSION + 1,
+            LAST_ERROR      = NULL,
+            NEXT_RETRY_TIME = NULL,
+            UPDATE_BY       = #{opUserId},
+            UPDATE_TIME     = #{now}
+        WHERE ID = #{id}
+          AND DATA_STATUS = 0
+          AND VERSION = #{expectedVersion}
+          AND ACTION_STATUS IN
+          <foreach collection="sources" item="src" open="(" separator="," close=")">
+              #{src}
+          </foreach>
+          AND (NEXT_RETRY_TIME IS NULL OR NEXT_RETRY_TIME &lt;= #{now})
+    </update>
+
+    <!--
+      markSuccess：PROCESSING → SUCCESS，与资金写入同事务、排在流水插入之后。
+      四元额度在 WHERE 里二次钉死：创建时算定的分项在执行期不得漂移。四列全带而不是只兜总额——
+      总额相等而分项不同的行会让「水品 / 配送费」两维封顶各自的基准对不上，而分列的全部意义就在这里
+      （payWay=2 时水费与配送费都从余额扣，只看混合总额会让连续的配送费返还从水费额度里挪钱）。
+      核账确认路径零资金变化，四个期望值均传 0，同样能精确命中。
+    -->
+    <update id="markSuccess">
+        UPDATE ws_after_sale_action
+        SET ACTION_STATUS = #{toStatus},
+            VERSION       = VERSION + 1,
+            FINISH_TIME   = #{now},
+            LAST_ERROR    = NULL,
+            UPDATE_BY     = #{opUserId},
+            UPDATE_TIME   = #{now}
+        WHERE ID = #{id}
+          AND DATA_STATUS = 0
+          AND VERSION = #{expectedVersion}
+          AND ACTION_STATUS IN
+          <foreach collection="sources" item="src" open="(" separator="," close=")">
+              #{src}
+          </foreach>
+          AND REFUND_PRODUCT_FEN = #{expectedProductFen}
+          AND REFUND_SERVICE_FEN = #{expectedServiceFen}
+          AND REFUND_PRODUCT_ML  = #{expectedProductMl}
+          AND REFUND_AMOUNT      = #{expectedAmount}
+    </update>
+
+    <!--
+      markTerminal：落 4可重试 / 5需人工对账 / 6已终止。4、5 由编排层在 catch 里经 REQUIRES_NEW 调用——
+      主事务必须回滚（钱不能动），失败证据必须独立提交存活（铁律④后半句）。
+      前提是 claim 已在此前的独立事务中提交：否则主事务回滚会把 ACTION_STATUS 复原成 PENDING，
+      这条 CAS 影响 0 行，动作永远停在「待执行」、PC 上看不到任何失败痕迹。
+
+      分支由参数而非状态数字驱动（本文件不出现状态字面量）：
+        nextRetryTime != null → 可重试落点：RETRY_COUNT+1、写 NEXT_RETRY_TIME、不写 FINISH_TIME，
+                                并叠加 RETRY_COUNT < maxRetryCount；影响 0 行即重试耗尽，编排层改落 5。
+        nextRetryTime == null → 终态落点：写 FINISH_TIME、不动 RETRY_COUNT。
+      VERSION 是前态条件，调用方须在独立事务内先 selectByIdIncludingDeleted 重读再传入
+      （绝不沿用已回滚事务里的对象，照 RechargeCreditFailureTxImpl 的做法）。
+    -->
+    <update id="markTerminal">
+        UPDATE ws_after_sale_action
+        SET ACTION_STATUS   = #{toStatus},
+            VERSION         = VERSION + 1,
+            <if test="nextRetryTime != null">
+            RETRY_COUNT     = RETRY_COUNT + 1,
+            NEXT_RETRY_TIME = #{nextRetryTime},
+            </if>
+            <if test="nextRetryTime == null">
+            FINISH_TIME     = #{now},
+            </if>
+            LAST_ERROR      = #{lastError},
+            UPDATE_BY       = #{opUserId},
+            UPDATE_TIME     = #{now}
+        WHERE ID = #{id}
+          AND DATA_STATUS = 0
+          AND VERSION = #{expectedVersion}
+          AND ACTION_STATUS IN
+          <foreach collection="sources" item="src" open="(" separator="," close=")">
+              #{src}
+          </foreach>
+          <!--
+            上限闸必须与「计数递增」同源（都挂 nextRetryTime != null），不能自成一个
+            maxRetryCount != null 分支：两个条件各自成立时，调用方只要传了 nextRetryTime
+            而漏传 maxRetryCount，SQL 就变成无上限地 RETRY_COUNT+1 并续期——重试永不耗尽、
+            永不升级为 5需人工对账，失败动作被无限重放（claimForExecute 刻意不带 RETRY_COUNT 闸，
+            拦不住）。同源之后漏传即谓词为 NULL → 影响 0 行 → 编排层按重试耗尽升级，是 fail-closed。
+          -->
+          <if test="nextRetryTime != null">
+          AND RETRY_COUNT &lt; #{maxRetryCount}
+          </if>
+    </update>
+
+    <!--
+      R0-3/R0-7 累计封顶的已用额度（锁定读）。
+
+      为什么必须 FOR UPDATE：MySQL 默认 REPEATABLE READ 下，一致性读视图在事务首条普通 SELECT 时固定，
+      而返还事务必然先普通读订单快照与原扣款流水——读视图因此冻结在锁卡之前。后到者在卡行锁上醒来后，
+      普通聚合读仍走旧视图、看不见赢家刚提交的 SUCCESS 行，于是 used=0、封顶放行，同一订单被重复全额返还
+      （uk_after_sale_source 不同 appealId、uk_wallet_flow_biz_key 不同 afterSaleNo，两把唯一键都拦不住）。
+      同型教训见 WsOrderMapper.selectMemberDayWaterOrdersForUpdate 与 RechargeIssueTxImpl。
+
+      为什么还要求调用事务 READ_COMMITTED：本查询走二级索引 idx_after_sale_order 做范围锁定读，
+      RR 下会留 gap 锁，两笔无关订单的并发售后可能在同一间隙上插入意向互等死锁；
+      READ_COMMITTED 不加 gap 锁，只锁命中的既有行——正是要串行化的那些行。
+
+      调用位置固定在 selectByIdForUpdate 锁卡之后：锁卡把同一张卡的返还串行化，醒来后的当前读
+      才必然看得见赢家的 SUCCESS 行；放在锁卡之前，FOR UPDATE 也只是把竞态提前。
+
+      刻意不过滤 DATA_STATUS：逻辑删除的成功动作，钱早已真实打进卡里，过滤它等于让删行成为绕过封顶的后门。
+      COALESCE 保证零成功动作时仍返回一行三个 0（聚合空集返回一行 NULL），调用方无需处理 null 分支。
+      只返回三项分维已用额度：REFUND_AMOUNT 是前两者之和，封顶判定不看它（看混合总额正是要避免的错）。
+    -->
+    <select id="sumSuccessRefundByOrderForUpdate" resultType="com.jbk.tool.data.aftersale.po.WsAfterSaleAction">
+        SELECT COALESCE(SUM(REFUND_PRODUCT_FEN), 0) AS refundProductFen,
+               COALESCE(SUM(REFUND_SERVICE_FEN), 0) AS refundServiceFen,
+               COALESCE(SUM(REFUND_PRODUCT_ML), 0)  AS refundProductMl
+        FROM ws_after_sale_action
+        WHERE ORDER_ID = #{orderId}
+          AND ACTION_STATUS = #{successStatus}
+        FOR UPDATE
+    </select>
+
+    <!--
+      PC 售后台账：售后动作为主表，LEFT JOIN 派生展示列（均为主键 join，不放大行数）。
+      列显式别名为小驼峰映射 AdminAfterSaleActionItemVo，不依赖 mapUnderscoreToCamelCase。
+      手机号取原值别名 userPhoneRaw，由 Service 统一 PhoneMask 脱敏（Vo @JsonIgnore 兜底），明文不出接口。
+      STRATEGY_CODE 原样透出，中文名由 Service 按 AfterSaleEnum.StrategyCode 映射，不在 SQL 里翻译。
+      订单侧不过滤删除态：被删订单挂着一条售后动作属必须让运营看见的异常，列表不静默吞掉。
+    -->
+    <sql id="Admin_Action_Columns">
+        a.ID                 AS id,
+        a.AFTER_SALE_NO      AS afterSaleNo,
+        a.SOURCE_TYPE        AS sourceType,
+        a.SOURCE_ID          AS sourceId,
+        a.ORDER_ID           AS orderId,
+        o.ORDER_NO           AS orderNo,
+        o.ORDER_TYPE         AS orderType,
+        o.ORDER_STATUS       AS orderStatus,
+        o.PAY_WAY            AS payWay,
+        p.PAY_SOURCE         AS paySource,
+        o.ORDER_AMOUNT       AS orderAmount,
+        a.USER_ID            AS userId,
+        u.USER_NAME          AS userName,
+        u.USER_PHONE         AS userPhoneRaw,
+        a.CARD_ID            AS cardId,
+        c.CARD_NO            AS cardNo,
+        a.ACTION_TYPE        AS actionType,
+        a.STRATEGY_CODE      AS strategyCode,
+        a.APPROVED_COUNT     AS approvedCount,
+        a.REFUND_PRODUCT_FEN AS refundProductFen,
+        a.REFUND_SERVICE_FEN AS refundServiceFen,
+        a.REFUND_PRODUCT_ML  AS refundProductMl,
+        a.REFUND_AMOUNT      AS refundAmount,
+        a.ACTION_STATUS      AS actionStatus,
+        a.VERSION            AS version,
+        a.RETRY_COUNT        AS retryCount,
+        a.NEXT_RETRY_TIME    AS nextRetryTime,
+        a.APPROVE_BY         AS approveBy,
+        e.EMPLOYEE_NAME      AS approveByName,
+        a.APPROVE_TIME       AS approveTime,
+        a.FINISH_TIME        AS finishTime,
+        a.LAST_ERROR         AS lastError,
+        a.CREATE_TIME        AS createTime
+    </sql>
+
+    <sql id="Admin_Action_Joins">
+        FROM ws_after_sale_action a
+        LEFT JOIN ws_order o ON o.ID = a.ORDER_ID
+        LEFT JOIN ws_payment p ON p.ORDER_ID = o.ID
+        LEFT JOIN ws_user u ON u.ID = a.USER_ID
+        LEFT JOIN ws_card c ON c.ID = a.CARD_ID
+        LEFT JOIN api_employee e ON e.ID = a.APPROVE_BY
+    </sql>
+
+    <!--
+      列表只出 DATA_STATUS=0：售后执行事实本不该被逻辑删除，真出现了属数据事故，
+      排查走 selectByIdIncludingDeleted / selectByAfterSaleNoIncludingDeleted，而不是让台账混入删除行。
+      排序固定 CREATE_TIME DESC, ID DESC（确定性，分页不跳行）。
+    -->
+    <select id="pageAdminActions" resultType="com.jbk.tool.data.aftersale.vo.AdminAfterSaleActionItemVo">
+        SELECT
+        <include refid="Admin_Action_Columns"/>
+        <include refid="Admin_Action_Joins"/>
+        WHERE a.DATA_STATUS = 0
+        <if test="bo.actionStatus != null">
+            AND a.ACTION_STATUS = #{bo.actionStatus}
+        </if>
+        <if test="bo.sourceType != null">
+            AND a.SOURCE_TYPE = #{bo.sourceType}
+        </if>
+        <if test="bo.actionType != null">
+            AND a.ACTION_TYPE = #{bo.actionType}
+        </if>
+        <if test="bo.keyword != null and bo.keyword != ''">
+            AND (a.AFTER_SALE_NO LIKE CONCAT('%', #{bo.keyword}, '%')
+                 OR o.ORDER_NO LIKE CONCAT('%', #{bo.keyword}, '%')
+                 OR u.USER_NAME LIKE CONCAT('%', #{bo.keyword}, '%')
+                 OR u.USER_PHONE LIKE CONCAT('%', #{bo.keyword}, '%'))
+        </if>
+        ORDER BY a.CREATE_TIME DESC, a.ID DESC
+    </select>
+
+    <select id="selectAdminActionById" resultType="com.jbk.tool.data.aftersale.vo.AdminAfterSaleActionItemVo">
+        SELECT
+        <include refid="Admin_Action_Columns"/>
+        <include refid="Admin_Action_Joins"/>
+        WHERE a.DATA_STATUS = 0 AND a.ID = #{id}
+    </select>
+
+    <!--
+      补送结果回填。三道防重复生成的闸各自独立，见 Mapper 接口上的说明。
+      刻意不把 VERSION 之外的业务列写进 SET：补送不动任何额度，
+      四元额度在登记时就恒为 0，这里再碰它们只会制造「补送也退了钱」的错觉。
+    -->
+    <update id="linkResendResult">
+        UPDATE ws_after_sale_action
+        SET RESULT_ORDER_ID = #{resultOrderId},
+            RESULT_TASK_ID  = #{resultTaskId},
+            VERSION         = VERSION + 1,
+            UPDATE_BY       = #{opUserId},
+            UPDATE_TIME     = #{now}
+        WHERE ID = #{id}
+          AND DATA_STATUS = 0
+          AND VERSION = #{expectedVersion}
+          AND ACTION_TYPE = 4
+          AND ACTION_STATUS = 1
+          AND RESULT_ORDER_ID IS NULL
+          AND RESULT_TASK_ID IS NULL
+    </update>
+
+    <!--
+      补送回签成功 → 动作完成。RESULT_TASK_ID 必须与签收的那条任务一致，
+      否则任意一次签收都能把某条补送动作标成完成（共键错位）。
+      FINISH_TIME 取签收事务的业务时间，与订单、任务、审计同一个时钟。
+    -->
+    <update id="markResendSucceeded">
+        UPDATE ws_after_sale_action
+        SET ACTION_STATUS = 3,
+            FINISH_TIME   = #{now},
+            VERSION       = VERSION + 1,
+            LAST_ERROR    = NULL,
+            UPDATE_BY     = #{opUserId},
+            UPDATE_TIME   = #{now}
+        WHERE ID = #{id}
+          AND DATA_STATUS = 0
+          AND ACTION_TYPE = 4
+          AND ACTION_STATUS IN (1, 2)
+          AND RESULT_TASK_ID = #{resultTaskId}
+    </update>
+
+</mapper>
