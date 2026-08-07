@@ -42,8 +42,10 @@ if [ -n "$leaked_vars" ]; then
 fi
 
 # ---------- 3. 私钥块不得入库 ----------
+# tools/package-source.sh 是交付包的独立凭据扫描门（查 rsync 出的工作树内容，
+# 本脚本只查 git 跟踪文件，两道门互补），其中的扫描模式字符串不是私钥——对称豁免
 leaked_keys=$(git grep -nI -- '-----BEGIN .*PRIVATE KEY-----' \
-  -- ':!.github/scripts/check-secrets.sh' 2>/dev/null || true)
+  -- ':!.github/scripts/check-secrets.sh' ':!tools/package-source.sh' 2>/dev/null || true)
 if [ -n "$leaked_keys" ]; then
   report "私钥块已入库："
   echo "$leaked_keys" >&2
@@ -51,7 +53,7 @@ fi
 
 # ---------- 4. 数据库连接串不得内联口令 ----------
 leaked_dsn=$(git grep -nIE 'jdbc:mysql://[^"'"'"' ]*[?&]password=[^&"'"'"' ]+' \
-  -- ':!.github/scripts/check-secrets.sh' 2>/dev/null || true)
+  -- ':!.github/scripts/check-secrets.sh' ':!tools/package-source.sh' 2>/dev/null || true)
 if [ -n "$leaked_dsn" ]; then
   report "JDBC 连接串内联了口令："
   echo "$leaked_dsn" >&2
