@@ -12,6 +12,16 @@
  *   node sim.js DK-DEV-0001 fault            # 附带上报严重故障码 E003（验证故障告警）
  *   node sim.js DK-DEV-0001 fail-result      # 回 ack 后回执行失败（验证 REQ-033 失败结果）
  *
+ * E2E-05 扩展模式：
+ *   reject-ack        ACK 带 ackCode=rejected（平台按设备拒绝转失败）
+ *   busy-ack          ACK 带 ackCode=busy（同上）
+ *   partial-result    result success=true + partial=true（平台判 7 部分完成，不得显示成功）
+ *   result-before-ack 先发 result 再补 ack（乱序：终态后迟到 ACK 只审计不回退）
+ *   no-heartbeat      连接但不发心跳（配合离线扫描验证）
+ *   hold-dispense     出水指令(1)只回 ACK 不回 result（订单停在出水中，供紧急停止锚定活动链）
+ *   lock-model        锁机状态建模：锁(4)/解锁(5)成功后随 status 上报 runStatus 5/1，
+ *                     价格同步(8)记录版本号并在 result 回带 priceVersion
+ *
  * 环境变量：BROKER=tcp://localhost:1883
  */
 import mqtt from 'mqtt'
@@ -47,9 +57,11 @@ client.on('connect', () => {
   console.log(`[${ts()}] 已连接 ${broker}，设备=${deviceNo}，模式=${[...modes].join(',') || '正常'}`)
   client.subscribe(`down/${deviceNo}/cmd`, { qos: 1 })
 
-  // 心跳：立即一次 + 每 30s
-  up('heartbeat', { ts: ts() })
-  setInterval(() => up('heartbeat', { ts: ts() }), 30_000)
+  // 心跳：立即一次 + 每 30s（no-heartbeat 模式静默——离线扫描场景专用）
+  if (!modes.has('no-heartbeat')) {
+    up('heartbeat', { ts: ts() })
+    setInterval(() => up('heartbeat', { ts: ts() }), 30_000)
+  }
 
   // 遥测：立即一次 + 每 60s
   const telemetry = () =>
@@ -74,6 +86,11 @@ client.on('connect', () => {
   }
 })
 
+// 锁机状态建模（lock-model）：锁/解锁成功后设备自身运行状态随之翻转并主动上报
+let modeledRunStatus = 1
+// 价格同步建模：记录最近一次同步版本，result 回带（平台侧可核对参数落地）
+let priceVersion = null
+
 client.on('message', (topic, buf) => {
   const cmd = JSON.parse(buf.toString())
   console.log(`[${ts()}] ↓ ${topic}`, buf.toString())
@@ -87,13 +104,57 @@ client.on('message', (topic, buf) => {
   // 非目标设备模式：使用其他设备主题发送回执；平台仅记录审计事件，不推进指令状态。
   const ackDevice = modes.has('wrong-device') ? 'DK-DEV-0002' : deviceNo
   const ackTopic = `up/${ackDevice}/ack`
-  const ack = { msgId: nextMsgId(), cmdNo, ackTs: ts() }
-  client.publish(ackTopic, JSON.stringify(ack), { qos: 1 })
-  console.log(`[${ts()}] ↑ ${ackTopic}`, JSON.stringify(ack))
+  const buildResult = () => {
+    const failMode = modes.has('fail-result')
+    const result = {
+      msgId: nextMsgId(),
+      cmdNo,
+      success: !failMode,
+      finishTs: ts()
+    }
+    if (failMode) result.reason = '阀门卡滞，执行失败（模拟）'
+    if (modes.has('partial-result')) {
+      result.success = true
+      result.partial = true
+      result.reason = '部分出水口执行成功（模拟）'
+    }
+    // 出水指令附带实际水量；当前模拟器的运维指令不使用该字段。
+    if (cmdType === 1) result.actualMl = 4980
+    if (cmdType === 3) result.status = { onlineStatus: 1, runStatus: modeledRunStatus }
+    if (cmdType === 8 && priceVersion) result.priceVersion = priceVersion
+    return result
+  }
+  const sendAck = () => {
+    // ackCode 必填：平台只认非空 accepted 为已受理，缺省不再兼容为接受（fail-open 已移除）
+    const ack = { msgId: nextMsgId(), cmdNo, ackTs: ts(), ackCode: 'accepted' }
+    if (modes.has('reject-ack')) {
+      ack.ackCode = 'rejected'
+      ack.reason = '设备拒绝执行（模拟）'
+    }
+    else if (modes.has('busy-ack')) {
+      ack.ackCode = 'busy'
+      ack.reason = '设备忙（模拟）'
+    }
+    client.publish(ackTopic, JSON.stringify(ack), { qos: 1 })
+    console.log(`[${ts()}] ↑ ${ackTopic}`, JSON.stringify(ack))
+  }
+
+  // 乱序模式：先 result 后 ack（平台终态后迟到 ACK 只审计不回退）
+  if (modes.has('result-before-ack')) {
+    up('result', buildResult())
+    setTimeout(sendAck, 2_000)
+    return
+  }
+
+  sendAck()
+  if (modes.has('reject-ack') || modes.has('busy-ack')) {
+    console.log('  （拒绝/忙 ACK：不再回结果，平台应已按失败终态）')
+    return
+  }
 
   if (modes.has('dup-ack')) {
     setTimeout(() => {
-      const dup = { msgId: nextMsgId(), cmdNo, ackTs: ts() }
+      const dup = { msgId: nextMsgId(), cmdNo, ackTs: ts(), ackCode: 'accepted' }
       client.publish(ackTopic, JSON.stringify(dup), { qos: 1 })
       console.log(`[${ts()}] ↑ ${ackTopic}（重复 ACK）`, JSON.stringify(dup))
     }, 2_000)
@@ -103,21 +164,41 @@ client.on('message', (topic, buf) => {
     console.log('  （no-result 模式：不回结果，等平台 120s 判超时）')
     return
   }
+  if (modes.has('hold-dispense') && cmdType === 1) {
+    console.log('  （hold-dispense 模式：出水指令扣住 result，订单保持出水中）')
+    return
+  }
 
-  // 2 秒后回执行结果
-  setTimeout(() => {
-    const failMode = modes.has('fail-result')
-    const result = {
-      msgId: nextMsgId(),
-      cmdNo,
-      success: !failMode,
-      finishTs: ts()
+  if (cmdType === 8) {
+    // payload 在下行报文里已经是**对象**（服务端 downPayload.set("payload", JSONUtil.parse(...))），
+    // 对对象调 JSON.parse 会先转成 "[object Object]" 再抛 SyntaxError，被 catch 吞掉后
+    // priceVersion 恒为 null —— 于是「价格同步在 result 回带 priceVersion」这条声称验收过的
+    // 能力从来没有真正执行过，且看不出任何失败迹象。兼容两种形态。
+    try {
+      const raw = cmd.payload
+      const parsed = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw || {})
+      priceVersion = parsed.priceVersion || null
     }
-    if (failMode) result.reason = '阀门卡滞，执行失败（模拟）'
-    // 出水指令附带实际水量；当前模拟器的运维指令不使用该字段。
-    if (cmdType === 1) result.actualMl = 4980
-    if (cmdType === 3) result.status = { onlineStatus: 1, runStatus: 1 }
+    catch { priceVersion = null }
+  }
+
+  // 2 秒后回执行结果（wrong-device 模式连 result 一起走错误设备主题——
+  // 目标指令必须零推进，只发错 ack 而 result 走对主题等于没模拟错设备）
+  setTimeout(() => {
+    const result = buildResult()
+    if (modes.has('wrong-device')) {
+      const wrongTopic = `up/DK-DEV-0002/result`
+      client.publish(wrongTopic, JSON.stringify(result), { qos: 1 })
+      console.log(`[${ts()}] ↑ ${wrongTopic}（错设备 result）`, JSON.stringify(result))
+      return
+    }
     up('result', result)
+
+    // 锁机建模：锁/解锁成功后运行状态翻转并主动 status 上报（PC/机主端读到一致投影）
+    if (modes.has('lock-model') && result.success && (cmdType === 4 || cmdType === 5)) {
+      modeledRunStatus = cmdType === 4 ? 5 : 1
+      setTimeout(() => up('status', { msgId: nextMsgId(), runStatus: modeledRunStatus, faultCode: '', ts: ts() }), 500)
+    }
 
     // 补传模式：同 msgId 经 replay 主题重发（平台应按 uk_msg_id 去重丢弃）
     if (modes.has('replay')) {

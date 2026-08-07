@@ -64,6 +64,10 @@ public class ApiEmployee extends BaseEntity implements Serializable {
     @Schema(description = "是否被禁用1")
     @TableField("DISABLED_FLAG")
     private Integer disabledFlag;
+
+    @Schema(description = "是否需强制修改密码1：建号/重置后为2是，本人改密后回1否")
+    @TableField("PWD_CHANGE_FLAG")
+    private Integer pwdChangeFlag;
 }
 
 

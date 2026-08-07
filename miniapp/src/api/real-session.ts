@@ -14,7 +14,7 @@ import { getToken } from './request'
  */
 export async function withRealSession<T>(run: () => Promise<T>): Promise<T> {
   if (!getToken()) {
-    throw new ContractError('UNAUTHORIZED', '尚未建立真实微信会话，不能访问真实业务接口')
+    throw new ContractError('UNAUTHORIZED', '请先登录后再使用')
   }
   return run()
 }

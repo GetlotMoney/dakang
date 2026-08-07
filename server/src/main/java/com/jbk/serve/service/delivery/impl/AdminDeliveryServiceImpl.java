@@ -584,18 +584,22 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
     }
 
     /**
-     * 状态-时间矩阵核验：只接受当前配送状态机（1→2→3→4→5⇄7）能产生的组合。
+     * 状态-时间矩阵核验：只接受当前配送状态机（1→2→3→4→5⇄7，1→6）能产生的组合。
      * 时间单调、状态必备时间、订单-任务耦合、总额恒等式、三照齐全、申诉锁步逐项核对，
      * 任一不满足即整块 mismatch——宁可显示数据异常，不拼凑履约证据。
+     *
+     * <p><b>6已取消 是 E2E-04 包A 起的合法终态</b>：待接单取消把任务落 6、订单原路返还落 7已退款。
+     * 此前本矩阵把 6 当作「外力改库」整块拒绝，且订单-任务耦合只有「已签收→订单4 / 其余→订单2」两段，
+     * 取消单会在第一行就报 mismatch。放宽仅限取消这一格，其余判定强度一律不动。</p>
      */
     static String deliveryStateMismatch(WsOrder order, WsDeliveryTask task, long pendingAppealCount) {
         Integer status = task.getTaskStatus();
         if (ObjectUtil.isNull(status)) {
             return "任务状态为空，无法核验履约阶段";
         }
-        boolean known = status == 1 || status == 2 || status == 3 || status == 4 || status == 5 || status == 7;
+        boolean known = status == 1 || status == 2 || status == 3 || status == 4
+                || status == 5 || status == 6 || status == 7;
         if (!known) {
-            // 6已取消当前状态机不产生（无取消动作），出现即属外力改库
             return "任务状态（" + status + "）不属于当前配送状态机可产生的状态";
         }
         if (ObjectUtil.isNull(task.getVersion()) || task.getVersion() < 1) {
@@ -638,6 +642,21 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
                     return "已送达任务必须具备接单/离站/送达时间且未产生签收时间";
                 }
                 break;
+            case 6:
+                // 6已取消（E2E-04 包A）：取消只允许发生在 1待接单，因此取消态在履约维度上必须与待接单
+                // 完全一致——没有配送员、没有任何节点时间，也没有签收才会产生的三照与实际数量。
+                // 带着履约痕迹的"取消"意味着有人在履约中途改库，绝不能当成合法取消放行。
+                if (hasCourier || hasAccept || hasDepart || hasArrive || hasSign) {
+                    return "已取消任务不得携带配送员或任何履约节点时间";
+                }
+                if (StrUtil.isNotBlank(task.getSignPhotos())) {
+                    return "已取消任务不得携带签收三照";
+                }
+                if (ObjectUtil.isNotNull(task.getActualDeliveryCount())
+                        || ObjectUtil.isNotNull(task.getActualReturnCount())) {
+                    return "已取消任务不得携带实际配送/回收数量";
+                }
+                break;
             default:
                 // 5已签收 / 7申诉中：完整履约证据缺一不可
                 if (!hasCourier || !hasAccept || !hasDepart || !hasArrive || !hasSign) {
@@ -672,12 +691,16 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
             }
             previous = current;
         }
-        // 订单-任务耦合：签收事务保证「任务签收 ↔ 订单完成」同事务推进，脱钩即异常
+        // 订单-任务耦合三段：签收事务保证「任务签收 ↔ 订单完成」、取消事务保证「任务取消 ↔ 订单退款」
+        // 同事务推进，脱钩即异常。取消段是 E2E-04 包A 新增的第三段——没有它，取消单会因为
+        // 订单已是 7已退款、任务不在签收侧而被要求订单=2已支付，整块报 mismatch。
         Integer orderStatus = order.getOrderStatus();
         boolean signedSide = status == 5 || status == 7;
-        boolean orderPaid = ObjectUtil.equal(orderStatus, TradeEnum.OrderStatus.PAID.getValue());
-        boolean orderFinished = ObjectUtil.equal(orderStatus, TradeEnum.OrderStatus.FINISHED.getValue());
-        if (signedSide ? !orderFinished : !orderPaid) {
+        boolean cancelled = status == 6;
+        int expectedOrderStatus = signedSide ? TradeEnum.OrderStatus.FINISHED.getValue()
+                : cancelled ? TradeEnum.OrderStatus.REFUNDED.getValue()
+                : TradeEnum.OrderStatus.PAID.getValue();
+        if (!ObjectUtil.equal(orderStatus, expectedOrderStatus)) {
             return "订单状态（" + orderStatus + "）与任务状态（" + status + "）不属于当前配送状态机可产生的组合";
         }
         // 申诉锁步：申诉创建 5→7 与裁决 7→5 均与申诉状态同事务变更

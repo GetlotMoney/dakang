@@ -55,6 +55,9 @@ import {
   projectDisplayMenu
 } from '../core'
 
+// 首改密码页路径（R-201）：与 staticRoutes 中的定义保持一致
+const PWD_CHANGE_PATH = '/auth/change-password'
+
 // 路由注册器实例
 let routeRegistry: RouteRegistry | null = null
 
@@ -167,6 +170,23 @@ async function handleRouteGuard(
       query: { redirect: to.fullPath },
       replace: true
     })
+    return
+  }
+
+  // 1.5 首改密码强制门（R-201）：服务端在改密前拒绝一切业务接口，
+  // 前端必须同步钉在改密页，否则用户可进入空壳后台并被每个请求的失败提示淹没，
+  // 且无处得知该回哪里（改密页没有菜单入口）。
+  // 目标已是改密页时必须 next() 直接放行，不能继续往下走：第 3 步的动态路由注册
+  // 对尚未分配角色的新员工必然失败（菜单为空 → validateMenuList 抛错 → 500），
+  // 而改密恰恰是这类账号唯一能做的事
+  if (userStore.isLogin && userStore.info?.pwdChangeRequired) {
+    closeLoading()
+    if (to.path === PWD_CHANGE_PATH) {
+      setPageTitle(to)
+      next()
+    } else {
+      next({ path: PWD_CHANGE_PATH, replace: true })
+    }
     return
   }
 

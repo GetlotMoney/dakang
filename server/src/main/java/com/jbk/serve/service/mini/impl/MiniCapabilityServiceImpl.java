@@ -2,7 +2,11 @@ package com.jbk.serve.service.mini.impl;
 
 import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.jbk.serve.mapper.device.WsDeviceMapper;
+import com.jbk.serve.mapper.station.WsStationMapper;
 import com.jbk.serve.mapper.user.WsCourierMapper;
+import com.jbk.tool.data.device.po.WsDevice;
+import com.jbk.tool.data.station.po.WsStation;
 import com.jbk.serve.service.mini.IMiniCapabilityService;
 import com.jbk.tool.consts.user.UserEnum;
 import com.jbk.tool.data.user.po.WsCourier;
@@ -27,6 +31,8 @@ import java.util.List;
 public class MiniCapabilityServiceImpl implements IMiniCapabilityService {
 
     private final WsCourierMapper courierMapper;
+    private final WsDeviceMapper deviceMapper;
+    private final WsStationMapper stationMapper;
 
     @Override
     public List<String> capabilitiesOf(Long userId) {
@@ -45,6 +51,37 @@ public class MiniCapabilityServiceImpl implements IMiniCapabilityService {
                 && ObjectUtil.equal(courier.getCourierStatus(), UserEnum.CourierStatus.ENABLED.getValue())) {
             capabilities.add("COURIER_WORK");
         }
+        // 机主能力（E2E-05 包E）：以名下归属行判定（ws_device/ws_station OWNER_USER_ID），
+        // 与 /mini/owner/* 的数据范围同源——投影只决定入口显隐，逐设备归属仍由接口逐条校验
+        boolean ownsDevice = deviceMapper.exists(Wrappers.lambdaQuery(WsDevice.class)
+                .eq(WsDevice::getOwnerUserId, userId));
+        boolean ownsStation = stationMapper.exists(Wrappers.lambdaQuery(WsStation.class)
+                .eq(WsStation::getOwnerUserId, userId));
+        if (ownsDevice || ownsStation) {
+            capabilities.add("OWNER_VIEW");
+            capabilities.add("OWNER_SERVICE");
+        }
         return capabilities;
+    }
+
+    @Override
+    public com.jbk.tool.data.mini.vo.MiniOwnerScopeVo ownerScopeOf(Long userId) {
+        if (ObjectUtil.isNull(userId) || userId <= 0) {
+            return null;
+        }
+        java.util.List<String> stationIds = stationMapper.selectList(Wrappers.lambdaQuery(WsStation.class)
+                        .eq(WsStation::getOwnerUserId, userId)).stream()
+                .map(station -> String.valueOf(station.getId()))
+                .collect(java.util.stream.Collectors.toList());
+        java.util.List<String> deviceNos = deviceMapper.selectList(Wrappers.lambdaQuery(WsDevice.class)
+                        .eq(WsDevice::getOwnerUserId, userId)).stream()
+                .map(WsDevice::getDeviceNo)
+                .collect(java.util.stream.Collectors.toList());
+        if (stationIds.isEmpty() && deviceNos.isEmpty()) {
+            return null;
+        }
+        return new com.jbk.tool.data.mini.vo.MiniOwnerScopeVo()
+                .setStationIds(stationIds)
+                .setDeviceNos(deviceNos);
     }
 }

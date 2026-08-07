@@ -54,6 +54,12 @@ OBSOLETE_REPORTS = [
     ROOT / "docs/miniapp-demo-blueprint.md",
     ROOT / "docs/requirements/requirements-catalog.md",
     ROOT / "docs/acceptance/card-lifecycle/latest.md",
+    # 2026-08-06 删除：两份内容已过时且互相矛盾的历史文档。
+    # TECH_STACK_HISTORY.md 的「已知限制」仍写着后端无法独立编译、员工密码可逆、小程序全域 Mock，
+    # 三条都已不成立；DOC-PROJECT-ANALYSIS-V1.md 的 5 条结论亦全部处置完毕或已在风险表跟踪。
+    # 一次性分析报告属中间产物，不应长期驻留仓库——其历史由 git 保留。
+    ROOT / "docs/TECH_STACK_HISTORY.md",
+    ROOT / "docs/reviews/DOC-PROJECT-ANALYSIS-V1.md",
 ]
 
 HANDOFF_FILES = {
@@ -180,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     if duplicate_ids:
         fail(errors, f"产品需求被重复映射：{duplicate_ids}")
 
-    expected_statuses = Counter({"闭环候选": 6, "部分": 15, "契约": 3})
+    expected_statuses = Counter({"闭环候选": 6, "部分": 16, "契约": 2})
     actual_statuses = Counter(whole_statuses)
     if actual_statuses != expected_statuses:
         fail(errors, f"整链状态应为 {dict(expected_statuses)}，实际为 {dict(actual_statuses)}")
@@ -285,6 +291,38 @@ def main(argv: list[str] | None = None) -> int:
     for generated_report in card_run_dir.glob("*/report.md"):
         fail(errors, f"水卡验收批次仍含重复 Markdown 报告：{generated_report.relative_to(ROOT)}")
 
+    # 人读文档不得复制业务链状态（AGENTS.md「读者分工」铁律 1）。
+    # README.md 曾自建一张 E2E 状态表，因不在任何 agent 必读链上而无人更新，
+    # 长期写着「完成 3 条、E2E-04~08 待开工」而实际 8 条全部验收。这里只做**行级**判定，
+    # 且只对人读文档生效——矩阵与状态源必须保留「待开工」作为受控状态词。
+    # 覆盖 AGENTS.md「读者分工」表列出的**全部**人读文档，不只根 README 两份：
+    # 验收类 README 同样是人在读，同样会悄悄长出一份过期状态副本。
+    human_docs = [ROOT / "README.md", ROOT / "miniapp/README.md",
+                  ROOT / "miniapp/e2e/README.md",
+                  ROOT / "deploy/acceptance/smoke/README.md"]
+    human_docs += sorted(ROOT.glob("docs/acceptance/*/README.md"))
+    human_docs += sorted(ROOT.glob("docs/requirements/pending-*.md"))
+
+    # 判定「完成度声明」而不是「出现了状态词」——后者误伤面太大：
+    # `既有已完成单号`（操作占位）、`已验收的接口契约`（泛指）都不是业务链状态副本。
+    # 必须同时满足：① 出现业务链语境；② 出现一个完成度断言。
+    CHAIN_CTX = re.compile(r"E2E-0\d|业务链|条链|整链")
+    DONE_CLAIM = re.compile(
+        r"待开工|待实施|全部完成|均已完成|已完成|已验收|验收通过|全部通过|已跑通|全部跑通")
+    # 计数副本：「8 条」「3/8」这类数字进度，即使不带状态词也会过期
+    COUNT_CLAIM = re.compile(r"\d+\s*条(业务链|链)|\d+\s*/\s*\d+\s*条")
+    for doc in human_docs:
+        if not doc.is_file():
+            fail(errors, f"人读文档缺失：{display_path(doc)}")
+            continue
+        for lineno, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            has_ctx = bool(CHAIN_CTX.search(line))
+            if (has_ctx and DONE_CLAIM.search(line)) or COUNT_CLAIM.search(line):
+                fail(errors,
+                     f"{display_path(doc)}:{lineno} 复制了业务链状态或计数；人读文档只写指针，"
+                     f"状态以 docs/requirements/demo-business-chain-matrix.md 为唯一来源"
+                     f"（AGENTS.md 铁律 1）。原文：{line.strip()[:60]}")
+
     handoff_text = {name: path.read_text(encoding="utf-8") for name, path in HANDOFF_FILES.items()}
     if "pnpm install --frozen-lockfile" not in handoff_text["README.md"]:
         fail(errors, "README.md 缺少无依赖源码包的前端首次安装步骤")
@@ -317,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print("一期基线检查通过：110 总需求；55 MVP/骨架；48 产品业务 + 7 工程治理；24 条 B 链 = 6 闭环候选 + 15 部分 + 3 契约；8 条宏观业务链校验通过。")
+    print("一期基线检查通过：110 总需求；55 MVP/骨架；48 产品业务 + 7 工程治理；24 条 B 链 = 6 闭环候选 + 16 部分 + 2 契约；8 条宏观业务链校验通过。")
     return 0
 
 

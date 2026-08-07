@@ -34,4 +34,7 @@ public class MiniUsableCardVo extends MiniCardSummaryVo {
 
     @Schema(description = "成员今日剩余限额(毫升)；仅 MEMBER 且配置了 DAY_LIMIT_ML 时非空，空=不限或非成员")
     private Long remainingDailyLimitMl;
+
+    @Schema(description = "是否可合并入正式水卡（D-415：OWNER 的赠卡且名下有正式水卡；展示投影，服务端另行强制校验）")
+    private Boolean canMergeToPaidCard;
 }

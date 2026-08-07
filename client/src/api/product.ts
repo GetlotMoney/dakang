@@ -174,7 +174,7 @@ const adaptPackageRow = (row: RawPackageRow): PackageItem => ({
   deviceIds: row.deviceIds ?? [],
   outletIds: row.outletIds ?? [],
   scopeValid: row.scopeValid === true,
-  scopeSummary: row.scopeSummary || '未配置（首次购卡不可选，充值不加限制）',
+  scopeSummary: row.scopeSummary || '未配置（首次购卡不可选）',
   createTime: row.createTime,
   updateTime: row.updateTime
 })

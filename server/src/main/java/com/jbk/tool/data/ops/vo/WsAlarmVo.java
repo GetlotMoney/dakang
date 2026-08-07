@@ -45,4 +45,19 @@ public class WsAlarmVo extends BaseEntityVo implements Serializable {
 
     @Schema(description = "恢复时间")
     private String recoverTime;
+
+    @Schema(description = "设备编号（联查）")
+    private String deviceNo;
+
+    @Schema(description = "转出的工单ID")
+    private Long workOrderId;
+
+    @Schema(description = "转出的工单号（详情联查，告警中心回看关联工单）")
+    private String workOrderNo;
+
+    @Schema(description = "处置人（忽略/转工单时回填）")
+    private Long handleBy;
+
+    @Schema(description = "处置时间")
+    private String handleTime;
 }

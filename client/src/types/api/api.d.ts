@@ -127,6 +127,8 @@ declare namespace Api {
       tokenValue?: string
       token: string
       refreshToken: string
+      /** 是否需先修改初始密码：true 时服务端拒绝除改密/退出外的接口，前端直接进入改密页 */
+      pwdChangeRequired?: boolean
     }
 
     /** 用户信息 */
@@ -147,6 +149,8 @@ declare namespace Api {
       userName?: string
       userId?: string
       email?: string
+      /** 是否需先修改初始密码：true 时服务端拒绝除改密/退出外的接口，前端守卫钉在改密页 */
+      pwdChangeRequired?: boolean
     }
   }
 
@@ -169,6 +173,12 @@ declare namespace Api {
       updateTime: string
       tagIdList: { id: string; tagName: string }[]
       tagList: { id: string; tagName: string }[]
+    }
+
+    /** 新增员工/重置密码的一次性初始密码回执：明文仅本次响应可见，库内只存哈希 */
+    interface EmployeeInitPwd {
+      id: string
+      initialPwd: string
     }
 
     /** 用户表单数据 */
@@ -394,6 +404,33 @@ declare namespace Api {
           logExecuteTimeBegin: string | null
           logExecuteTimeEnd: string | null
         }
+    >
+  }
+
+  /** 站内消息记录（E2E-07 REQ-087「后台记录」，只读） */
+  namespace Message {
+    /** 消息记录列表 */
+    type MessageRecordList = Api.Common.PaginatedResponse<MessageRecordItem>
+
+    /** 消息记录列表项（对齐服务端 WsMessage Po；金额类字段无，时间为 yyyyMMddHHmmss） */
+    interface MessageRecordItem {
+      id: string
+      userId: string
+      msgDomain: number
+      msgTitle: string
+      msgContent: string
+      msgChannel: number
+      sendStatus: number
+      sendTime?: string
+      readFlag: number
+      objectType?: string
+      objectId?: string
+      createTime: string
+    }
+
+    /** 消息记录搜索参数 */
+    type MessageRecordSearchParams = Partial<
+      Pick<MessageRecordItem, 'userId' | 'msgDomain' | 'sendStatus'> & Api.Common.CommonSearchParams
     >
   }
 }

@@ -17,7 +17,6 @@ import {
   deliveryWaterMl,
   newDeliveryRequestId,
 } from '@/api/delivery'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { consumeDeliveryDraft } from '@/store/delivery-draft'
@@ -35,9 +34,6 @@ type ContainerSpec = DeliveryTask['containerSpec']
 
 const toast = useToast()
 const message = useMessage()
-
-/** delivery 域接真：下单/卡/水种/水站全部走真实后端；Mock 构建行为保持原样。 */
-const isDeliveryReal = currentMode('delivery') === 'real'
 
 /** 容器规格选项直接取自契约价目表键，保证费用预览与下单快照同源（REQ-060 / api/delivery.ts）。 */
 const CONTAINER_SPECS = Object.keys(CONTAINER_WATER_PRICE_FEN) as ContainerSpec[]
@@ -68,6 +64,8 @@ const payWay = ref<DeliveryPayWay>(2)
 // real 无地址簿域（包A 冻结为快照式输入）：收水地址与电话随单直填，服务端最终校验。
 const receiveAddress = ref('')
 const receivePhone = ref('')
+/** 手动填写模式：默认走地址簿（addressId 服务端解引用）；无地址或用户主动切换时直填。 */
+const manualAddress = ref(false)
 
 /**
  * 幂等键在一次提交意图内保持不变：失败重试复用同一 requestId（服务端恒返回同单，
@@ -75,9 +73,10 @@ const receivePhone = ref('')
  */
 const requestId = ref(newDeliveryRequestId())
 
-const noticeText = isDeliveryReal
-  ? '配送下单已接真实接口：提交将从水卡余额真实扣款并生成配送任务；价格为一期占位价目。'
-  : '原型演示数据：不触发真实支付、设备指令或微信消息，刷新后重置。'
+// 出货三份 env 的 delivery 恒为 real，「演示数据，不会真实扣款」这条回落分支不可达；
+// 且它一旦可达就会对着一个真扣水卡余额的构建说不扣款，与 runtime-notice 拆除的
+// mock 回落是同一类事故，故不保留分支，只留唯一成立的这句。
+const noticeText = '提交后从水卡扣款，无法撤销。'
 
 const selectedAddress = computed(() =>
   addresses.value.find(item => item.addressId === selectedAddressId.value),
@@ -89,7 +88,7 @@ const waterTypeColumns = computed(() =>
   waterTypes.value.map(item => ({ label: item.name, value: item.id })),
 )
 
-// 费用预览实时计算，复用契约导出的价目常量与水量换算表，不另抄数字（蓝图 S06.2 / D-214）。
+// 费用预览实时计算，复用契约导出的价目常量与水量换算表，不另抄数字（D-214）。
 const waterAmountFen = computed(
   () => deliveryCount.value * CONTAINER_WATER_PRICE_FEN[containerSpec.value],
 )
@@ -181,7 +180,7 @@ async function loadData() {
   try {
     // real 模式不读 Mock 地址簿（地址随单直填），其余数据源走真实接口；Mock 流程保持原样。
     const [addressList, stationList, waterTypeList, card] = await Promise.all([
-      isDeliveryReal ? Promise.resolve<DeliveryAddress[]>([]) : cardApi.listDeliveryAddresses(),
+      cardApi.listDeliveryAddresses().catch(() => [] as DeliveryAddress[]),
       catalogApi.listStations(),
       catalogApi.listWaterTypes(),
       cardApi.getPrimaryCard(),
@@ -190,15 +189,17 @@ async function loadData() {
     stations.value = stationList
     waterTypes.value = waterTypeList.filter(item => item.enabled)
     primaryCard.value = card
-    // 参数/草稿指向的对象不存在时清空回退；地址默认选 isDefault（蓝图 §6.3 U08）。
-    if (!isDeliveryReal) {
-      if (!addresses.value.some(item => item.addressId === selectedAddressId.value)) {
-        selectedAddressId.value = ''
-      }
-      if (!selectedAddressId.value) {
-        const fallback = addresses.value.find(item => item.isDefault) ?? addresses.value[0]
-        selectedAddressId.value = fallback?.addressId ?? ''
-      }
+    // 参数/草稿指向的对象不存在时清空回退；地址默认选 isDefault。
+    if (!addresses.value.some(item => item.addressId === selectedAddressId.value)) {
+      selectedAddressId.value = ''
+    }
+    if (!selectedAddressId.value) {
+      const fallback = addresses.value.find(item => item.isDefault) ?? addresses.value[0]
+      selectedAddressId.value = fallback?.addressId ?? ''
+    }
+    // 地址簿为空时自动进入手动填写，避免用户面对一个空选择器
+    if (!addresses.value.length) {
+      manualAddress.value = true
     }
     if (!stations.value.some(item => item.id === selectedStationId.value)) {
       selectedStationId.value = ''
@@ -229,8 +230,8 @@ async function handleSubmit() {
   if (submitting.value) {
     return
   }
-  if (isDeliveryReal) {
-    // real：地址/电话随单直填（无地址簿域）；形态校验只给友好提示，最终校验在服务端
+  if (manualAddress.value) {
+    // 手动填写：形态校验只给友好提示，最终校验在服务端
     if (!receiveAddress.value.trim()) {
       toast.show('请填写收水地址')
       return
@@ -265,7 +266,7 @@ async function handleSubmit() {
   submitting.value = true
   try {
     const { order } = await deliveryApi.createDeliveryOrder({
-      addressId: selectedAddressId.value,
+      addressId: manualAddress.value ? undefined : selectedAddressId.value,
       stationId: selectedStationId.value,
       waterTypeId: waterTypeId.value,
       containerSpec: containerSpec.value,
@@ -279,28 +280,22 @@ async function handleSubmit() {
         ? autoRefillIntervalDays.value
         : undefined,
       requestId: requestId.value,
-      receiveAddress: isDeliveryReal ? receiveAddress.value.trim() : undefined,
-      receivePhone: isDeliveryReal ? receivePhone.value.trim() : undefined,
+      receiveAddress: manualAddress.value ? receiveAddress.value.trim() : undefined,
+      receivePhone: manualAddress.value ? receivePhone.value.trim() : undefined,
       payWay: payWay.value,
     })
     // 本次提交意图已完成：换新幂等键，防止下一单误复用旧键命中旧订单。
     requestId.value = newDeliveryRequestId()
     // 成功后不复位 submitting：确认弹框关闭即 redirectTo 离开本页，避免二次提交。
     const paidByMl = payWay.value === 3
+    // 同上：不留「演示下单，未真实扣款」的回落文案——扣款已经发生，说没扣就是假话。
     message
-      .alert(isDeliveryReal
-        ? {
-            title: '下单成功',
-            msg: paidByMl
-              ? `已按水量抵扣 ${formatMl(waterMlPreview.value)} 并从余额扣除配送费，可在订单详情跟踪配送与签收进度。`
-              : '已从水卡余额扣款并生成配送任务，可在订单详情跟踪配送与签收进度。',
-          }
-        : {
-            title: '下单成功（原型）',
-            msg: paidByMl
-              ? '订单已按水量抵扣+余额配送费原型支付并生成配送任务（不改变卡面余额与水量，不发生真实结算）'
-              : '订单已按水卡余额原型支付并生成配送任务（不改变卡面余额，不发生真实结算）',
-          })
+      .alert({
+        title: '下单成功',
+        msg: paidByMl
+          ? `已抵扣水量 ${formatMl(waterMlPreview.value)}，配送费从余额扣除。`
+          : '已从水卡余额扣款。',
+      })
       .then(() => redirectTo('U06', { orderNo: order.order.orderNo }))
   }
   catch (error) {
@@ -326,8 +321,24 @@ async function handleSubmit() {
     <template v-else>
       <view class="page-section">
         <wd-cell-group title="收货与水站" border>
-          <!-- real：无地址簿域（包A 快照式输入），地址与电话随单直填；Mock 保持地址簿选择 -->
-          <template v-if="isDeliveryReal">
+          <!-- 地址簿已接服务端（2026-08-02）：选地址传 addressId，号码由服务端解引用写快照、不经前端；
+               也可切手动填写（快照式直填，服务端校验）。 -->
+          <wd-cell
+            v-if="!manualAddress"
+            title="收货地址"
+            icon="location"
+            required
+            is-link
+            center
+            :value="selectedAddress
+              ? `${selectedAddress.contactName} ${selectedAddress.maskedPhone}`
+              : '请选择收货地址'"
+            :label="selectedAddress
+              ? `${selectedAddress.region}${selectedAddress.detail}`
+              : undefined"
+            @click="goTo('U14', { returnTo: 'delivery' })"
+          />
+          <template v-else>
             <wd-textarea
               v-model="receiveAddress"
               label="收水地址"
@@ -346,19 +357,11 @@ async function handleSubmit() {
             />
           </template>
           <wd-cell
-            v-else
-            title="收货地址"
-            icon="location"
-            required
+            :title="manualAddress ? '改用地址簿选择' : '改为手动填写'"
+            icon="edit-outline"
             is-link
             center
-            :value="selectedAddress
-              ? `${selectedAddress.contactName} ${selectedAddress.maskedPhone}`
-              : '请选择收货地址'"
-            :label="selectedAddress
-              ? `${selectedAddress.region}${selectedAddress.detail}`
-              : '可在地址列表新增水配送地址'"
-            @click="goTo('U14', { returnTo: 'delivery' })"
+            @click="manualAddress = !manualAddress"
           />
           <wd-cell
             title="配送水站"
@@ -367,7 +370,7 @@ async function handleSubmit() {
             is-link
             center
             :value="selectedStation ? selectedStation.stationName : '请选择水站'"
-            :label="selectedStation ? selectedStation.address : '从附近水站选择供水站点'"
+            :label="selectedStation ? selectedStation.address : undefined"
             @click="goTo('U07', { selectMode: 'delivery' })"
           />
         </wd-cell-group>
@@ -393,13 +396,10 @@ async function handleSubmit() {
           <wd-cell title="配送数量" required center>
             <wd-input-number v-model="deliveryCount" :min="1" />
           </wd-cell>
-          <wd-cell title="预计回收空桶" label="回收数量为结构化字段（REQ-060）" center>
+          <wd-cell title="预计回收空桶" center>
             <wd-input-number v-model="plannedReturnCount" :min="0" />
           </wd-cell>
         </wd-cell-group>
-        <view class="field-note muted-text">
-          水种名称为占位名，实际供水水种待甲方确认。
-        </view>
       </view>
 
       <view class="page-section">
@@ -427,7 +427,7 @@ async function handleSubmit() {
           <wd-cell
             v-if="deliveryMode === 'auto-refill'"
             title="补货周期（天）"
-            label="按用户配置的固定周期补货，非 AI 预测（REQ-011），支持 3~90 天"
+            label="3~90 天"
             center
           >
             <wd-input-number v-model="autoRefillIntervalDays" :min="3" :max="90" />
@@ -445,11 +445,6 @@ async function handleSubmit() {
           >
             <view>{{ line.label }}</view>
             <view>{{ line.value }}</view>
-          </view>
-          <view class="field-note muted-text">
-            {{ isDeliveryReal
-              ? '一期占位价目，正式价格待商业确认；提交即按所选支付方式从水卡真实扣减。'
-              : '原型价目，正式价格待确认；提交即按所选支付方式完成原型支付（不改变卡面余额与水量，不发生真实结算）。' }}
           </view>
         </wd-card>
       </view>
@@ -472,20 +467,15 @@ async function handleSubmit() {
           </wd-radio-group>
           <wd-cell :title="PAY_WAY_LABELS[1]" center>
             <wd-tag plain>
-              待接入
+              暂不支持
             </wd-tag>
           </wd-cell>
         </wd-cell-group>
-        <view class="field-note muted-text">
-          配送费为上门服务费，仅支持余额支付；水量抵扣按 3L袋=3L、5L桶=5L、10L桶=10L、20L桶=20L 折算。
-        </view>
       </view>
 
       <view class="page-section">
         <wd-button block size="large" :loading="submitting" @click="handleSubmit">
-          {{ payWay === 3
-            ? (isDeliveryReal ? '提交配送订单（水量抵扣+余额配送费）' : '提交配送订单（水量抵扣原型支付）')
-            : (isDeliveryReal ? '提交配送订单（水卡余额支付）' : '提交配送订单（水卡余额原型支付）') }}
+          {{ payWay === 3 ? '提交配送订单（水量抵扣+余额配送费）' : '提交配送订单（水卡余额支付）' }}
         </wd-button>
       </view>
     </template>
@@ -493,12 +483,6 @@ async function handleSubmit() {
 </template>
 
 <style scoped lang="scss">
-.field-note {
-  margin-top: 8px;
-  padding: 0 4px;
-  line-height: 1.6;
-}
-
 .fee-row {
   display: flex;
   align-items: center;

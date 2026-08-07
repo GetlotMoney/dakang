@@ -2,12 +2,10 @@
 import type { CardDetail, CardMember } from '@/api/card'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
-import { useToast } from 'wot-design-uni'
+import { useMessage, useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { ContractError } from '@/api/common'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   CARD_STATUS_LABELS,
   CARD_STATUS_TONES,
@@ -25,25 +23,18 @@ definePage({
 })
 
 const toast = useToast()
+const message = useMessage()
 
 const cardId = ref('')
 const loading = ref(true)
 const loadError = ref('')
 const detail = ref<CardDetail | null>(null)
-const cardMode = currentMode('card')
-const rechargeMode = currentMode('recharge')
-const cardBoundaryText = rechargeMode === 'real'
-  ? cardMode === 'real'
-    ? '水卡余额、水量、有效期及成员列表来自真实接口；确认 Pay-Sim 会写入测试库权益，成员新增与撤销仍为原型操作。'
-    : '当前水卡详情为 Mock/固定快照；确认 Pay-Sim 仍会写入测试库权益，成员新增与撤销为原型操作。'
-  : cardMode === 'real'
-    ? '水卡余额、水量、有效期及成员列表来自真实接口；充值、成员新增与撤销均为 Mock，不修改真实权益。'
-    : '水卡、充值与成员均为 Mock/固定快照；页面仅用于业务流转定型，刷新后重置。'
+const merging = ref(false)
 
 onLoad((query) => {
   cardId.value = query?.cardId ?? ''
   if (!cardId.value) {
-    loadError.value = '缺少必填参数 cardId，无法展示水卡详情'
+    loadError.value = '未指定水卡，无法展示详情'
     loading.value = false
   }
 })
@@ -80,6 +71,37 @@ function copyCardNo() {
   })
 }
 
+/** D-415：赠卡合并入正式水卡。二次确认后调用；成功即刷新（赠卡已注销，余额到期以刷新结果为准）。 */
+async function confirmMerge() {
+  if (!detail.value || merging.value) {
+    return
+  }
+  const d = detail.value
+  const msg = `将把本卡余额 ${formatFen(d.balanceFen)}、水量 ${formatMl(d.balanceMl)} 并入正式水卡，`
+    + `并入部分沿用本卡有效期（${formatBizTime(d.expireTime)} 前有效），本卡随后注销。是否继续？`
+  const agreed = await message.confirm({ title: '合并入正式水卡', msg }).then(() => true).catch(() => false)
+  if (!agreed) {
+    return
+  }
+  merging.value = true
+  try {
+    const result = await cardApi.mergeGiftCard(d.cardId)
+    if (result.expiredCleared) {
+      toast.show('赠卡已过期，权益作废并完成注销')
+    }
+    else {
+      toast.success(`已并入正式水卡${result.mainCardNo ? ` ${result.mainCardNo}` : ''}`)
+    }
+    await refresh()
+  }
+  catch (error) {
+    toast.error(error instanceof ContractError ? error.message : '合并失败，请稍后重试')
+  }
+  finally {
+    merging.value = false
+  }
+}
+
 function memberLimitText(member: CardMember) {
   return member.dayLimitMl !== undefined ? formatMl(member.dayLimitMl) : '不限'
 }
@@ -98,7 +120,7 @@ function memberPeriodText(member: CardMember) {
   <view class="page-shell">
     <AppNavbar title="水卡详情" back-to="U03" />
     <wd-toast />
-    <AppPrototypeNotice :text="cardBoundaryText" />
+    <wd-message-box />
 
     <template v-if="loadError">
       <view class="page-section">
@@ -178,6 +200,22 @@ function memberPeriodText(member: CardMember) {
               {{ formatBizTime(detail.expireTime) }}
             </view>
           </view>
+          <view v-for="(bundle, index) in detail.expiringBundles" :key="index" class="card-info-row">
+            <view class="muted-text">
+              {{ index === 0 ? '权益到期' : '' }}
+            </view>
+            <view class="card-info-value">
+              {{ formatFen(bundle.remainFen) }} + {{ formatMl(bundle.remainMl) }} · {{ formatBizTime(bundle.expireTime) }}前有效
+            </view>
+          </view>
+          <view v-if="detail.canMergeToPaidCard" class="merge-action">
+            <wd-button block :loading="merging" @click="confirmMerge">
+              合并入正式水卡
+            </wd-button>
+            <view class="muted-text merge-hint">
+              余额与水量并入正式水卡，沿用本卡有效期，合并后本卡注销
+            </view>
+          </view>
         </wd-card>
       </view>
 
@@ -221,10 +259,6 @@ function memberPeriodText(member: CardMember) {
           <wd-cell title="充值" icon="wallet" is-link @click="goTo('U10', { cardId })" />
           <wd-cell title="家庭资料" icon="usergroup" is-link @click="goTo('U13')" />
         </wd-cell-group>
-      </view>
-
-      <view class="muted-text boundary-note">
-        成员授权仅更新平台契约；设备端白名单与离线授权不在本期范围。
       </view>
     </template>
   </view>
@@ -285,9 +319,13 @@ function memberPeriodText(member: CardMember) {
   word-break: break-all;
 }
 
-.boundary-note {
-  margin-top: 16px;
-  padding: 0 4px;
-  line-height: 1.6;
+.merge-action {
+  margin-top: 12px;
+}
+
+.merge-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  text-align: center;
 }
 </style>

@@ -5,9 +5,7 @@ import { onLoad, onUnload } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { orderApi } from '@/api/order'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   formatBizTime,
   formatFen,
@@ -34,16 +32,10 @@ const TONE_COLORS: Record<TagTone, string> = {
   success: '#34d19d',
 }
 
-/** 订单终态集合（蓝图 §9.1）；出水中(3)等待设备回传，不算终态。 */
+/** 订单终态集合；出水中(3)等待设备回传，不算终态。 */
 const TERMINAL_STATUSES = [4, 5, 6, 7, 8]
 
 const PLAYBACK_INTERVAL_MS = 700
-const isRealWaterFlow = [currentMode('device'), currentMode('order'), currentMode('card')]
-  .every(mode => mode === 'real')
-const progressNotice = isRealWaterFlow
-  ? '取水进度来自真实订单与设备回执；仅在正式微信会话下才构成真实扣款与设备履约证据。'
-  : '取水进度为 Mock/固定快照回放：用于验证页面链路，不代表本次发生真实扣款或设备出水。'
-
 const pageState = ref<'loading' | 'ready' | 'error'>('loading')
 const errorMessage = ref('')
 const errorImage = ref<'content' | 'network'>('network')
@@ -103,7 +95,7 @@ onLoad((query?: Record<string, string | undefined>) => {
   if (!orderNo) {
     pageState.value = 'error'
     errorImage.value = 'content'
-    errorMessage.value = '缺少订单号参数，请从订单列表进入'
+    errorMessage.value = '请从订单列表进入'
     return
   }
   void load(orderNo)
@@ -128,7 +120,7 @@ async function load(orderNo: string) {
 }
 
 /**
- * 播放策略（蓝图 U05）：新建原型单（evidenceMode=prototype）按 700ms 逐节点回放；
+ * 播放策略：新建原型单（evidenceMode=prototype）按 700ms 逐节点回放；
  * 固定快照单直接静态全量展示。数据本身已是终态，回放只是展示层动画，无人工推进。
  */
 function startPlayback() {
@@ -168,7 +160,6 @@ function goDetail() {
 <template>
   <view class="page-shell">
     <AppNavbar title="取水进度" back-to="U01" />
-    <AppPrototypeNotice :text="progressNotice" />
 
     <view v-if="pageState === 'loading'" class="page-section loading-box">
       <wd-loading />
@@ -194,15 +185,12 @@ function goDetail() {
         <wd-card custom-class="block-card">
           <view class="progress-status">
             <view class="progress-status-text" :style="{ color: statusColor }">
-              {{ playbackDone ? ORDER_STATUS_LABELS[detail.order.orderStatus] : '出水流程回放中…' }}
+              {{ playbackDone ? ORDER_STATUS_LABELS[detail.order.orderStatus] : '取水处理中…' }}
             </view>
-            <view v-if="!playbackDone" class="muted-text">
-              按固定证据逐节点展示，无人工推进入口
+            <view v-if="playbackDone && detail.order.orderStatus === 3" class="muted-text">
+              等待设备回传结果
             </view>
-            <view v-else-if="detail.order.orderStatus === 3" class="muted-text">
-              等待设备回传结果（固定快照，无人工推进）
-            </view>
-            <view v-else-if="abnormalReason" class="muted-text">
+            <view v-else-if="playbackDone && abnormalReason" class="muted-text">
               {{ abnormalReason }}
             </view>
           </view>
@@ -267,9 +255,6 @@ function goDetail() {
           <wd-button block plain size="large" @click="switchToTab('U02')">
             稍后在订单列表查看
           </wd-button>
-          <view class="muted-text action-note">
-            设备回传结果由固定快照决定，本页不提供人工推进按钮。
-          </view>
         </template>
       </view>
     </template>
@@ -308,10 +293,5 @@ function goDetail() {
   flex-direction: column;
   gap: 2px;
   font-size: 12px;
-}
-
-.action-note {
-  margin-top: 8px;
-  text-align: center;
 }
 </style>

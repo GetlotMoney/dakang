@@ -50,4 +50,10 @@ public class MiniCardDetailVo implements Serializable {
 
     @Schema(description = "授权成员列表（含已解除，enabled 标识生效与否）")
     private List<MiniCardMemberVo> members;
+
+    @Schema(description = "是否可合并入正式水卡（D-415：本人赠卡且名下有正式水卡；展示投影，服务端另行强制校验）")
+    private Boolean canMergeToPaidCard;
+
+    @Schema(description = "带到期时间的权益批次摘要（按到期升序；合并转入的权益到期展示来源）")
+    private List<MiniCardBundleVo> expiringBundles;
 }

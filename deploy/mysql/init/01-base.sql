@@ -79,6 +79,7 @@ CREATE TABLE `api_employee` (
   `DEPT_ID` bigint NOT NULL COMMENT '部门ID',
   `POSITION_ID` bigint DEFAULT NULL COMMENT '职务ID',
   `DISABLED_FLAG` tinyint NOT NULL COMMENT '是否被禁用1',
+  `PWD_CHANGE_FLAG` tinyint NOT NULL DEFAULT 1 COMMENT '是否需强制修改密码1：1否 2是；建号/重置置2，本人改密回1',
   PRIMARY KEY (`ID`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci ROW_FORMAT=DYNAMIC COMMENT='员工';
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -293,7 +294,7 @@ CREATE TABLE `ws_user` (
   `DATA_STATUS` tinyint NOT NULL COMMENT '状态',
   `USER_NAME` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户名称',
   `USER_GENDER` tinyint NULL COMMENT '用户性别10000（L2-AUTH：微信登录建户可空）',
-  `USER_PHONE` varchar(11) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户联系方式',
+  `USER_PHONE` varchar(11) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '用户联系方式；未绑定时为 NULL（唯一键忽略 NULL，多个未绑用户可共存）。禁止写空串——空串会互撞唯一键',
   `USER_IDENTITY_CIPHER` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '身份信息密文（禁止存明文）',
   `USER_AVATAR` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT '用户头像',
   `DISABLED_FLAG` tinyint NOT NULL COMMENT '是否被禁用1',
@@ -303,10 +304,12 @@ CREATE TABLE `ws_user` (
   `CHANNEL_USER_ID` bigint DEFAULT NULL COMMENT '归属渠道用户ID（一期预留）',
   `REFERRER_USER_ID` bigint DEFAULT NULL COMMENT '推荐人用户ID（一期预留）',
   `PROMO_CODE` varchar(20) DEFAULT NULL COMMENT '注册推广码(max20，一期预留)',
+  `OWN_INVITE_CODE` varchar(12) DEFAULT NULL COMMENT '本人邀请码（E2E-08，确定性派生唯一）；与推送码是否合一属外部确认项，语义保持中性',
   PRIMARY KEY (`ID`) USING BTREE,
   -- L2-AUTH 身份唯一约束（fresh init 已是权威结构，新部署无需再跑迁移；迁移仅用于既有库升级）。
   UNIQUE KEY `uk_user_phone` (`USER_PHONE`) USING BTREE,
   UNIQUE KEY `uk_user_wechat_xcx_openid` (`WECHAT_XCX_OPENID`) USING BTREE,
+  UNIQUE KEY `uk_user_invite_code` (`OWN_INVITE_CODE`) USING BTREE,
   KEY `identity` (`USER_IDENTITY_CIPHER`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -360,7 +363,9 @@ LOCK TABLES `api_employee` WRITE;
 -- 保留它是为了让全新环境 `docker compose up` 后能直接登录 PC 走通 Demo。
 -- **生产部署必须**：先换 RSA 密钥对（含前端 client/.env 的 VITE_ACCESS_LOGIN_KEY 同步换成新公钥），
 -- 再用新密钥对重置管理员口令覆盖本行密文——只做其中一步会导致管理员账号登不上。
-INSERT IGNORE INTO `api_employee` (`ID`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `DATA_STATUS`, `LOGIN_NAME`, `LOGIN_PWD`, `EMPLOYEE_NAME`, `EMPLOYEE_GENDER`, `EMPLOYEE_PHONE`, `DEPT_ID`, `POSITION_ID`, `DISABLED_FLAG`) VALUES (1,1,'20260520120000',1,'20260520120000',0,'admin','B51yw4neAThtpTnUhsmvp+Ikho2Cu6ToTXw3c3iDtbTR7HSOfPIk6vY0cHjGRQzy6UdINaYqQbKpKeBOYSYAw/d1oQM2OmevVJ2UgCUTi3eVopeNXL5YHk+Uyx6JDV61M0M3kymmNn5ZLPaaqZeYMH0YHRKQMdDHXDpNl05IkhQ=','超级管理员',1,'13800000001',1,1,1);
+-- 口令为 BCrypt 单向哈希（R-201）：不再依赖部署环境的 RSA 密钥对，跨环境可移植；
+-- 演示口令本体见 client/.env.demo（VITE_DEMO_LOGIN_PASSWORD），正式发布前必须重置
+INSERT IGNORE INTO `api_employee` (`ID`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `DATA_STATUS`, `LOGIN_NAME`, `LOGIN_PWD`, `EMPLOYEE_NAME`, `EMPLOYEE_GENDER`, `EMPLOYEE_PHONE`, `DEPT_ID`, `POSITION_ID`, `DISABLED_FLAG`, `PWD_CHANGE_FLAG`) VALUES (1,1,'20260520120000',1,'20260520120000',0,'admin','$2a$10$Yfm0okt.fJ0qBFH0JQ5./Ou2Gll6UPxRCtUlr7jLdn2dhkrWRjzzS','超级管理员',1,'13800000001',1,1,1,1);
 /*!40000 ALTER TABLE `api_employee` ENABLE KEYS */;
 UNLOCK TABLES;
 

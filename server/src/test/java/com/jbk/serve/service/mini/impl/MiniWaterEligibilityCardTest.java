@@ -74,6 +74,15 @@ class MiniWaterEligibilityCardTest {
         domainEventService = Mockito.mock(com.jbk.serve.service.ops.IWsDomainEventService.class);
         ReflectionTestUtils.setField(service, "domainEventService", domainEventService);
         ReflectionTestUtils.setField(service, "redis", redis);
+        // 预检的可用性判定与下单事务、指令准备共用同一个 Guard（含故障字典重复配置 fail-closed），
+        // 这里给真实 Guard 覆在 mock Mapper 上，接线本身也被这批用例带着跑
+        com.jbk.serve.mapper.device.WsFaultDictMapper faultDictMapper =
+                Mockito.mock(com.jbk.serve.mapper.device.WsFaultDictMapper.class);
+        when(faultDictMapper.selectByCodeForShare(org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(java.util.List.of());
+        ReflectionTestUtils.setField(service, "availabilityGuard",
+                new com.jbk.serve.service.device.DeviceAvailabilityGuard(
+                        deviceMapper, outletMapper, faultDictMapper));
         when(deviceMapper.selectById(21L)).thenReturn(
                 new WsDevice().setId(21L).setStationId(41L).setOnlineStatus(1).setRunStatus(1));
         when(outletMapper.selectById(31L)).thenReturn(

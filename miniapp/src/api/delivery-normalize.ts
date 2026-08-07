@@ -69,8 +69,14 @@ function optionalText(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+/**
+ * field 只用于定位，<b>不进 message</b>——message 会被页面直接 toast 给用户，
+ * 而「价格快照总额 缺失或不合法」对用户是一份后端字段体检报告，他既看不懂也做不了什么。
+ * 排障线索在错误码 DELIVERY_CONTRACT_BROKEN 与抛出点代码里。
+ */
 function broken(field: string): ContractError {
-  return new ContractError('DELIVERY_CONTRACT_BROKEN', `配送数据异常：${field} 缺失或不合法`)
+  void field
+  return new ContractError('DELIVERY_CONTRACT_BROKEN', '配送数据异常，请稍后重试')
 }
 
 // ==================== 契约码映射（唯一映射点） ====================
@@ -153,6 +159,8 @@ export interface DeliveryTaskRaw {
   appealDeadline?: string | null
   locationStatus?: number | null
   signPhotos?: SignPhotoRaw[] | null
+  /** 补送任务标识（E2E-04）：由售后动作 RESULT_TASK_ID 派生；缺省即普通任务。 */
+  isResend?: boolean | null
 }
 
 export interface CourierAdmissionRaw {
@@ -307,6 +315,8 @@ export function normalizeDeliveryTask(raw: DeliveryTaskRaw): DeliveryTask {
     signTime: optionalBizTime(raw.signTime),
     appealDeadline: optionalBizTime(raw.appealDeadline),
     signPhotos: photos,
+    // 补送标识只认显式 true：任何"真值"或特征推断都可能把普通任务标成补送单（E2E-04 包E）
+    isResend: raw.isResend === true ? true : undefined,
     // 1353：1已记录 2未记录；未知值一律按未记录呈现（声明不得超出证据）
     locationStatus: raw.locationStatus == null
       ? undefined

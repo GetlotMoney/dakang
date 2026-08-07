@@ -59,7 +59,7 @@
               active-text="是"
               inactive-text="否"
             />
-            <ElTooltip content="全局仅一个默认水种，设为默认将自动取消其他水种的默认标记">
+            <ElTooltip content="设为默认将取消其他水种的默认标记">
               <ElIcon class="ml-2 text-secondary"><QuestionFilled /></ElIcon>
             </ElTooltip>
           </ElFormItem>

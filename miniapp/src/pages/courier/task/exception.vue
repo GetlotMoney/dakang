@@ -54,7 +54,7 @@ onLoad(async (query) => {
 
 async function refresh() {
   if (!taskNo.value) {
-    errorMessage.value = '缺少任务参数 taskNo'
+    errorMessage.value = '无法识别该任务，请返回任务列表重新打开'
     status.value = 'error'
     return
   }
@@ -83,7 +83,7 @@ async function handleSubmit() {
   try {
     await message.confirm({
       title: '上报配送异常',
-      msg: '异常上报只登记原因、说明与凭证，不改变金额、不退款、不改设备状态。确认上报？',
+      msg: '上报不会退款或改金额。确认上报？',
     })
   }
   catch {
@@ -149,7 +149,7 @@ async function handleSubmit() {
     <view v-else-if="status === 'blocked'" class="page-section">
       <wd-status-tip
         image="content"
-        :tip="`当前任务状态不能上报配送异常（需已接单/配送中/待确认，当前：${task ? TASK_STATUS_LABELS[task.taskStatus] : '未知'}）`"
+        :tip="`当前状态不能上报异常：${task ? TASK_STATUS_LABELS[task.taskStatus] : '未知'}`"
       >
         <template #bottom>
           <view class="status-actions">
@@ -164,7 +164,7 @@ async function handleSubmit() {
     <template v-else-if="task">
       <view class="page-section">
         <wd-cell-group title="任务摘要" border>
-          <wd-cell title="任务号" :value="`${task.taskNo}（状态版本 v${task.version}）`" />
+          <wd-cell title="任务号" :value="task.taskNo" />
           <wd-cell title="当前状态" :value="TASK_STATUS_LABELS[task.taskStatus]" />
           <wd-cell title="收货地址" :label="task.receiveAddress" />
         </wd-cell-group>
@@ -194,13 +194,10 @@ async function handleSubmit() {
               :rules="[{ required: true, message: '请填写异常说明' }]"
             />
             <wd-cell title="现场凭证" vertical>
-              <EvidencePicker v-model="model.photos" domain="delivery" />
+              <EvidencePicker v-model="model.photos" />
             </wd-cell>
           </wd-cell-group>
 
-          <view class="muted-text form-hint">
-            异常上报不改变金额、不退款、不改设备状态（配送红线）；材料供 PC 运营与用户回看。
-          </view>
           <view class="submit-row">
             <wd-button block size="large" :loading="submitting" @click="handleSubmit">
               提交异常上报
@@ -225,11 +222,6 @@ async function handleSubmit() {
   display: flex;
   justify-content: center;
   margin-top: 16px;
-}
-
-.form-hint {
-  padding: 8px 4px 0;
-  line-height: 1.6;
 }
 
 .submit-row {

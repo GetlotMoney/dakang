@@ -26,7 +26,12 @@ public interface IDeliveryAppealTxService {
     /** 配送员追加举证（限任务归属配送员；任务须 7申诉中、订单已完成、申诉待处理）。 */
     WsDeliveryAppeal appendCourierEvidence(DeliveryAppealEvidenceBo bo, Long actorUserId, String now);
 
-    /** PC 裁决（outcome ∈ {3,5,2}；处理说明必填；申诉转终态、任务 7→5，订单保持已完成）。 */
+    /**
+     * PC 裁决（E2E-04 包A：策略码驱动）。入参只有 strategyCode 一个真相源，申诉终态由
+     * {@code AfterSaleStrategy.deriveOutcome} 派生；数量边界由 {@code requireApprovedCount} 判定；
+     * 申诉转终态、任务 7→5，订单保持已完成。资金策略与 RESEND 在<b>同事务</b>登记一条待执行售后动作
+     * （REJECT 不登记），实际返还由售后返还内核在独立事务执行——本方法仍然一分钱不动。
+     */
     boolean decideAppeal(DeliveryAppealDecideBo bo, Long adminUserId, String now);
 
     /** 配送员查看本人任务的申诉（未分配/他人任务/共键错位 fail-closed；无申诉返回 null）。 */

@@ -36,4 +36,19 @@ public interface IDeliveryMediaService {
      */
     void claimForTask(List<String> mediaKeys, Long taskId, Long ownerUserId,
                       DeliveryEnum.MediaPurpose purpose, String failMessage);
+
+    /**
+     * 门户显式的登记（E2E-05 工单证据）：员工与小程序用户的 ID 数值可能相同，
+     * 工单证据必须携带登记人门户（1管理端/2用户）参与键派生与归属校验。
+     * 旧用途（1-3）继续走 {@link #register}（隐含门户=2），键派生不变，E2E-03 证据不受影响。
+     */
+    String registerAs(int ownerPortal, Long ownerUserId, DeliveryEnum.MediaPurpose purpose,
+                      byte[] content, String mimeType, String now);
+
+    /**
+     * 门户显式的原子绑定：WHERE 追加 OWNER_PORTAL 匹配，防跨身份空间挪用同键媒体。
+     * 工单场景 taskId 传工单ID（BOUND_TASK_ID 语义按用途区分，purpose 已在 WHERE 内隔离）。
+     */
+    void claimForTaskAs(int ownerPortal, List<String> mediaKeys, Long taskId, Long ownerUserId,
+                        DeliveryEnum.MediaPurpose purpose, String failMessage);
 }

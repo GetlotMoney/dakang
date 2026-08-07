@@ -2,7 +2,6 @@ const assert = require('node:assert/strict')
 const { test } = require('node:test')
 const { DOMAIN_ORDER, formatRuntimeModes, parseRuntimeModes, checkRuntimeModes } = require('./runtime-modes')
 const { EXPECTED_REAL_MODES, EXPECTED_REAL_MODE_MAP } = require('./e1b-core')
-const { EXPECTED_BEHAVIOR_COUNT, countBusinessAssertions, evaluateBehaviorPass } = require('./d4-gate')
 
 /**
  * 取证链安全闸的静态可运行性证明（链路一 S0-R1 / A-3）。
@@ -11,18 +10,18 @@ const { EXPECTED_BEHAVIOR_COUNT, countBusinessAssertions, evaluateBehaviorPass }
 
 const ALL_MOCK_MAP = Object.fromEntries(DOMAIN_ORDER.map(d => [d, 'mock']))
 
-test('段序单一来源：7 段且顺序固定', () => {
-  assert.deepEqual(DOMAIN_ORDER, ['GLOBAL', 'DEVICE', 'ORDER', 'CARD', 'RECHARGE', 'AUTH', 'DELIVERY'])
+test('段序单一来源：8 段且顺序固定', () => {
+  assert.deepEqual(DOMAIN_ORDER, ['GLOBAL', 'DEVICE', 'ORDER', 'CARD', 'RECHARGE', 'AUTH', 'DELIVERY', 'MESSAGE'])
 })
 
-test('D4 正确构建（全域 mock，7 段）→ 放行', () => {
+test('D4 正确构建（全域 mock，8 段）→ 放行', () => {
   const actual = formatRuntimeModes(ALL_MOCK_MAP)
-  assert.equal(actual, 'GLOBAL=mock;DEVICE=mock;ORDER=mock;CARD=mock;RECHARGE=mock;AUTH=mock;DELIVERY=mock')
+  assert.equal(actual, 'GLOBAL=mock;DEVICE=mock;ORDER=mock;CARD=mock;RECHARGE=mock;AUTH=mock;DELIVERY=mock;MESSAGE=mock')
   assert.deepEqual(checkRuntimeModes(actual, ALL_MOCK_MAP), [])
 })
 
-test('E1b 正确构建（device/order/card=real、recharge/delivery=mock、auth=real）→ 放行', () => {
-  assert.equal(EXPECTED_REAL_MODES, 'GLOBAL=mock;DEVICE=real;ORDER=real;CARD=real;RECHARGE=mock;AUTH=real;DELIVERY=mock')
+test('E1b 正确构建（device/order/card=real、recharge/delivery/message=mock、auth=real）→ 放行', () => {
+  assert.equal(EXPECTED_REAL_MODES, 'GLOBAL=mock;DEVICE=real;ORDER=real;CARD=real;RECHARGE=mock;AUTH=real;DELIVERY=mock;MESSAGE=mock')
   assert.deepEqual(checkRuntimeModes(EXPECTED_REAL_MODES, EXPECTED_REAL_MODE_MAP), [])
 })
 
@@ -57,44 +56,4 @@ test('空串/畸形指纹 → 拦截', () => {
 
 test('parseRuntimeModes 解析为逐域映射', () => {
   assert.deepEqual(parseRuntimeModes('A=1;B=2'), { A: '1', B: '2' })
-})
-
-// ---- D4 behaviorPass 计数口径 ----
-
-function businessResults(n, ok = true) {
-  return Array.from({ length: n }, (_, i) => ({ step: `s${i}`, ok, viaStepError: false }))
-}
-
-test('behaviorPass：业务断言数等于常量且全过 → true', () => {
-  const results = businessResults(EXPECTED_BEHAVIOR_COUNT)
-  assert.equal(countBusinessAssertions(results), EXPECTED_BEHAVIOR_COUNT)
-  assert.equal(evaluateBehaviorPass(results, ''), true)
-})
-
-test('behaviorPass：少一项 → false（完备性守卫生效）', () => {
-  assert.equal(evaluateBehaviorPass(businessResults(EXPECTED_BEHAVIOR_COUNT - 1), ''), false)
-})
-
-test('behaviorPass：多一项 → false', () => {
-  assert.equal(evaluateBehaviorPass(businessResults(EXPECTED_BEHAVIOR_COUNT + 1), ''), false)
-})
-
-test('behaviorPass：异常路径补记项不计入完备性，且因 ok=false 判 false', () => {
-  const results = [
-    ...businessResults(EXPECTED_BEHAVIOR_COUNT - 1),
-    { step: '某步抛错', ok: false, viaStepError: true },
-  ]
-  // 异常项不计数 → 业务断言只有 25 项，缺项被识别
-  assert.equal(countBusinessAssertions(results), EXPECTED_BEHAVIOR_COUNT - 1)
-  assert.equal(evaluateBehaviorPass(results, ''), false)
-})
-
-test('behaviorPass：有 fatalError 一律 false', () => {
-  assert.equal(evaluateBehaviorPass(businessResults(EXPECTED_BEHAVIOR_COUNT), 'WATCHDOG'), false)
-})
-
-test('behaviorPass：任一断言 ok=false → false', () => {
-  const results = businessResults(EXPECTED_BEHAVIOR_COUNT)
-  results[3].ok = false
-  assert.equal(evaluateBehaviorPass(results, ''), false)
 })

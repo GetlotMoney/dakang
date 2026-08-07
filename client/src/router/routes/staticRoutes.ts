@@ -25,6 +25,14 @@ export const staticRoutes: AppRouteRecordRaw[] = [
     meta: { title: 'menus.login.title', isHideTab: true }
   },
   {
+    // 首次登录强制改密页（R-201）：登录响应 pwdChangeRequired=true 时进入；
+    // 服务端拦截器已拒绝除改密/退出外的接口，本页是唯一可用出口
+    path: '/auth/change-password',
+    name: 'ChangePassword',
+    component: () => import('@views/auth/change-password/index.vue'),
+    meta: { title: 'menus.changePassword.title', isHideTab: true }
+  },
+  {
     path: '/403',
     name: 'Exception403',
     component: () => import('@views/exception/403/index.vue'),

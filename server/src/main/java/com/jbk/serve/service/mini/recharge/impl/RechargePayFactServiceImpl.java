@@ -22,8 +22,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 
 /**
  * 支付事实处理编排（L2-T）。
@@ -41,7 +39,6 @@ public class RechargePayFactServiceImpl implements IRechargePayFactService {
 
     private static final int ORDER_TYPE_RECHARGE = 2;
     private static final String CURRENCY_CNY = "CNY";
-    private static final DateTimeFormatter TIME = com.jbk.tool.utils.DateUtils.COMPACT_FORMATTER;
 
     private final RechargeCreditMapper creditMapper;
     private final RechargeIdentityMapper identityMapper;
@@ -72,7 +69,7 @@ public class RechargePayFactServiceImpl implements IRechargePayFactService {
             return parkUnknownState(event, now);
         }
         // CAS 认领：并发下只有一个处理者能把 1待处理 改成 2处理中
-        if (creditMapper.claimEvent(eventId, now, plusSeconds(now, 300)) != 1) {
+        if (creditMapper.claimEvent(eventId, now, DateUtils.plusSeconds(now, 300)) != 1) {
             // 认领不到分三种：已处理完（重复通知的常态）、待对账、正被别人处理。
             // 必须分开答——把"已经入过账了"和"暂时没抢到"混成一句，会让重复通知看起来像失败。
             WsPaymentEvent current = creditMapper.selectEventById(eventId);
@@ -282,7 +279,7 @@ public class RechargePayFactServiceImpl implements IRechargePayFactService {
      * 也不会把订单推到 6。哪怕判定失败，动的也只有事实自己的处理态。</p>
      */
     private Outcome processQueryFact(WsPaymentEvent event, String now) {
-        if (creditMapper.claimQueryEvent(event.getId(), now, plusSeconds(now, 300)) != 1) {
+        if (creditMapper.claimQueryEvent(event.getId(), now, DateUtils.plusSeconds(now, 300)) != 1) {
             WsPaymentEvent current = creditMapper.selectEventById(event.getId());
             Integer status = current == null ? null : current.getProcessingStatus();
             if (ObjectUtil.equals(status, RechargePayStatus.P_PROCESSED)) {
@@ -424,7 +421,4 @@ public class RechargePayFactServiceImpl implements IRechargePayFactService {
         }
     }
 
-    private String plusSeconds(String value, long seconds) {
-        return LocalDateTime.parse(value, TIME).plusSeconds(seconds).format(TIME);
-    }
 }

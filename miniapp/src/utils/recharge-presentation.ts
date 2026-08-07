@@ -54,49 +54,35 @@ export function rechargeNotice(
     case 1:
       return {
         tone: 'info',
-        text: isRealRecharge
-          ? '本订单仍待支付。可在付款截止时间前从本页继续支付；超过截止时间后该订单不再可支付，也不会自动扣款或到账。'
-          : '本地原型订单停留在待支付，不会发起真实扣款或到账。',
+        text: '请在付款截止时间前完成支付，逾期不可再支付。',
       }
     case 2:
       return {
         tone: 'info',
-        text: '支付成功，权益处理中：到账结果以本页入账信息为准，稍后刷新查看。',
+        text: '支付成功，权益处理中，请稍后刷新查看。',
       }
     case 3:
       return {
         tone: 'danger',
-        text: '充值订单出现不适用的“出水中”状态，请联系客服核对订单。',
+        text: '订单状态异常，请联系客服核对。',
       }
     case 4:
       return settled
         ? null
         : {
             tone: isRealRecharge ? 'danger' : 'warning',
-            text: isRealRecharge
-              ? '订单标记为已完成，但缺少完整一致的双维入账流水证据，请联系客服核对。'
-              : '固定历史快照显示订单已完成；本地 Mock 不包含可证明本次真实入账的完整流水。',
+            text: '到账结果待核实，请联系客服核对。',
           }
     case 5:
-      return {
-        tone: 'warning',
-        text: '订单已取消，不会继续支付或自动发放充值权益。',
-      }
+      return null
     case 6:
       return {
         tone: 'danger',
-        text: '支付成功，权益待人工处理：本单已转人工对账，请联系客服，不会自动重复扣款。',
+        text: '支付成功，权益待人工处理，请联系客服。',
       }
     case 7:
-      return {
-        tone: 'warning',
-        text: '订单已退款；退款结果及权益回收以订单和流水证据为准。',
-      }
     case 8:
-      return {
-        tone: 'warning',
-        text: '订单已部分退款；保留权益和退款金额以订单及流水证据为准。',
-      }
+      return null
   }
 }
 
@@ -109,7 +95,7 @@ export function rechargePaySourceLabel(
     return '微信支付'
   }
   if (paySource === 2) {
-    return 'Pay-Sim 模拟支付'
+    return '模拟支付'
   }
   if (payWay === 2) {
     return '水卡余额'
@@ -117,7 +103,7 @@ export function rechargePaySourceLabel(
   if (payWay === 3) {
     return '水卡水量'
   }
-  return isRealRecharge ? '支付来源待核对' : '微信支付（Mock 未接入）'
+  return isRealRecharge ? '支付来源待核对' : '微信支付'
 }
 
 const PROCESSING_STATUS_LABELS: Record<string, string> = {
@@ -133,5 +119,5 @@ export function rechargeProcessingStatusLabel(status?: string): string | undefin
   if (!status) {
     return undefined
   }
-  return PROCESSING_STATUS_LABELS[status] ?? `未知处理态（${status}）`
+  return PROCESSING_STATUS_LABELS[status] ?? '未知状态'
 }

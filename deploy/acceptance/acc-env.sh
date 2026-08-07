@@ -111,6 +111,9 @@ cmd_backend_start() {
   fi
   export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
   # 与生产同 profile；数据源/Redis/MQTT/端口/开关全部指向验收容器（命令行参数优先级最高）。
+  # Refund-Sim 与 Pay-Sim 是**两个独立开关**：退款是出账，比收款危险一个量级，
+  # 任何为了跑通支付而开模拟的环境不该连模拟退款一起打开。验收环境两者都要开，
+  # 但必须各自显式写出来——生产 application-prod.yml 里两者都显式 false。
   # Pay-Sim 与测试登录同开关（mini.pay-sim.enabled）；设备监控关闭：验收场景不依赖离线/超时兜底，
   # 且避免无模拟器的 ACC-DEV-0002 在长跑中被翻离线，污染 S6「因范围被拒」的语义。
   TZ=Asia/Shanghai nohup "${JAVA_HOME}/bin/java" -Xms256m -Xmx512m -Dfile.encoding=UTF-8 \
@@ -129,7 +132,9 @@ cmd_backend_start() {
     --mqtt.broker-url=tcp://127.0.0.1:1884 \
     --mqtt.client-id=dakang-server-acc \
     --mini.pay-sim.enabled=true \
-    --dakang.device.monitor-enabled=false \
+    --mini.refund-sim.enabled=true \
+    --dakang.device.monitor-enabled="${ACC_MONITOR_ENABLED:-false}" \
+    --dakang.device.control-ticket-ttl-seconds="${ACC_CONTROL_TICKET_TTL:-120}" \
     > "${RUN_DIR}/backend.log" 2>&1 &
   echo $! > "${RUN_DIR}/backend.pid"
   echo "验收后端启动中（pid $(cat "${RUN_DIR}/backend.pid")），等待端口 ${BACKEND_PORT} ..."
@@ -154,23 +159,40 @@ cmd_backend_stop() {
   fi
 }
 
+# sim-start [deviceNo] [模式...]：默认 ACC-DEV-0001 正常模式（心跳+遥测+ack/result，
+# 出水指令回 actualMl=4980，卡链 S7 退差断言依赖该值）。E2E-05 设备运营 runner 以
+# 不同设备/模式多次调用，pid 按设备落盘互不影响。
 cmd_sim_start() {
-  if [ -f "${RUN_DIR}/sim.pid" ] && kill -0 "$(cat "${RUN_DIR}/sim.pid")" 2>/dev/null; then
-    echo "设备模拟器已在运行（pid $(cat "${RUN_DIR}/sim.pid")）"
+  local dev="${1:-ACC-DEV-0001}"
+  shift 2>/dev/null || true
+  local pid_file="${RUN_DIR}/sim-${dev}.pid"
+  if [ -f "${pid_file}" ] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
+    echo "设备模拟器已在运行（${dev}，pid $(cat "${pid_file}")）"
     return 0
   fi
-  # 正常模式：心跳 + 遥测 + ack/result（出水指令回 actualMl=4980，S7 退差断言依赖该值）
-  BROKER=tcp://127.0.0.1:1884 nohup node "${SIM}" ACC-DEV-0001 > "${RUN_DIR}/sim.log" 2>&1 &
-  echo $! > "${RUN_DIR}/sim.pid"
-  echo "设备模拟器已启动（ACC-DEV-0001 → tcp://127.0.0.1:1884，pid $(cat "${RUN_DIR}/sim.pid")）"
+  BROKER=tcp://127.0.0.1:1884 nohup node "${SIM}" "${dev}" "$@" > "${RUN_DIR}/sim-${dev}.log" 2>&1 &
+  echo $! > "${pid_file}"
+  echo "设备模拟器已启动（${dev} 模式=[$*] → tcp://127.0.0.1:1884，pid $(cat "${pid_file}")）"
 }
 
+# sim-stop [deviceNo]：不带参数停全部
 cmd_sim_stop() {
-  if [ -f "${RUN_DIR}/sim.pid" ]; then
-    kill "$(cat "${RUN_DIR}/sim.pid")" 2>/dev/null || true
-    rm -f "${RUN_DIR}/sim.pid"
-    echo "设备模拟器已停止。"
+  local dev="${1:-}"
+  if [ -n "${dev}" ]; then
+    local pid_file="${RUN_DIR}/sim-${dev}.pid"
+    if [ -f "${pid_file}" ]; then
+      kill "$(cat "${pid_file}")" 2>/dev/null || true
+      rm -f "${pid_file}"
+      echo "设备模拟器已停止（${dev}）。"
+    fi
+    return 0
   fi
+  for pid_file in "${RUN_DIR}"/sim*.pid; do
+    [ -f "${pid_file}" ] || continue
+    kill "$(cat "${pid_file}")" 2>/dev/null || true
+    rm -f "${pid_file}"
+    echo "设备模拟器已停止（$(basename "${pid_file}")）。"
+  done
 }
 
 cmd_status() {
@@ -192,14 +214,19 @@ case "${1:-}" in
   rebuild)       cmd_rebuild ;;
   backend-start) cmd_backend_start ;;
   backend-stop)  cmd_backend_stop ;;
-  sim-start)     cmd_sim_start ;;
-  sim-stop)      cmd_sim_stop ;;
+  sim-start)     shift; cmd_sim_start "$@" ;;
+  sim-stop)      shift; cmd_sim_stop "$@" ;;
   status)        cmd_status ;;
   *)
     echo "用法：$0 <rebuild|up|down|migrate|seed|backend-start|backend-stop|sim-start|sim-stop|status>"
     echo "  rebuild        每轮验收前重建验收库（down -v → up → init 等待 → migrations → seed）"
     echo "  backend-start  以验收数据源/Redis/EMQX + Pay-Sim 开启启动后端（端口 ${BACKEND_PORT}）"
-    echo "  sim-start      启动 tools/device-sim（ACC-DEV-0001，连验收 EMQX 1884）"
+    echo "  sim-start      启动 tools/device-sim（默认 ACC-DEV-0001；可带设备号与模式参数，连验收 EMQX 1884）"
+    echo ""
+    echo "E2E-05 设备运营验收（run-device-ops.js）环境变量："
+    echo "  ACC_MONITOR_ENABLED=true      开启离线扫描/指令超时任务（S2/S8/S11 依赖）"
+    echo "  ACC_CONTROL_TICKET_TTL=8      高风险控制凭据时效调短（S12 过期拒绝依赖）"
+    echo "  模拟器由 runner 自管，请勿预先 sim-start"
     exit 2
     ;;
 esac

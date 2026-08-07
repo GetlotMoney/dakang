@@ -19,6 +19,7 @@ import com.jbk.tool.data.mini.vo.ScanSessionInfo;
 import com.jbk.tool.data.mini.vo.WaterEligibilityVo;
 import com.jbk.tool.data.trade.bo.CreateWaterOrderBo;
 import com.jbk.tool.data.trade.po.WsOrder;
+import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.data.trade.po.WsWalletFlow;
 import com.jbk.tool.data.trade.vo.OrderDetailVo;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -102,6 +103,9 @@ class MiniOrderEnsureDispatchTest {
         ReflectionTestUtils.setField(service, "deviceMapper", deviceMapper);
         ReflectionTestUtils.setField(service, "domainEventService", domainEventService);
         ReflectionTestUtils.setField(service, "redis", redis);
+        // E2E-08 归因快照协作方：mock 恒返回 null 推荐人（归因行为由 AttributionDbTest 锁定）
+        ReflectionTestUtils.setField(service, "inviteService",
+                Mockito.mock(com.jbk.serve.service.settlement.IInviteService.class));
     }
 
     private CreateWaterOrderBo request() {
@@ -135,6 +139,9 @@ class MiniOrderEnsureDispatchTest {
 
     private void stubFreshCreationPath() {
         when(miniDeviceService.loadScanSession(REQUEST_ID, USER_ID)).thenReturn(new ScanSessionInfo()
+                // S2：会话冻结报价——下单装配的单价/水种唯一来源
+                .setScanSessionId(REQUEST_ID).setWaterTypeId(WATER_TYPE_ID)
+                .setUnitPriceFenPerLiter(20).setQuotedAt("20260723120000")
                 .setUserId(USER_ID).setQrcodeId(11L).setStationId(41L).setDeviceId(21L).setOutletId(31L));
         when(miniDeviceService.checkEligibility(REQUEST_ID, CARD_ID, USER_ID))
                 .thenReturn(new WaterEligibilityVo().setAvailability("AVAILABLE"));
@@ -202,6 +209,26 @@ class MiniOrderEnsureDispatchTest {
         assertEquals(TradeEnum.OrderStatus.ABNORMAL.getValue(), detail.getOrder().getOrderStatus());
         verify(wsOrderMapper, times(1)).update(isNull(), any());
         verify(domainEventService, times(1)).record(any(), anyString(), any(), anyString());
+    }
+
+    // 3b. B20：扣款提交后、指令创建前设备已不可用 → 指令层拒绝下发，兜底把已扣款订单收敛到 6，
+    //     绝不停留在「订单 2、CMD_ID 空、无指令」的悬挂态（拒绝本身由 DispenseDeviceGuardTest 钉）
+    @Test
+    void deviceUnavailableBeforeDispatchStillConvergesToAbnormal() {
+        WsOrder pending = paidOrder(null);
+        WsOrder abnormal = paidOrder(null).setOrderStatus(TradeEnum.OrderStatus.ABNORMAL.getValue())
+                .setCancelReason("出水指令下发失败且未生成指令，转异常待补偿：设备当前不可用，不下发出水指令：设备离线，请稍后再试");
+        when(wsOrderMapper.selectOne(any())).thenReturn(pending, abnormal);
+        when(wsOrderMapper.selectById(ORDER_ID)).thenReturn(paidOrder(null));
+        when(commandMapper.selectCount(any())).thenReturn(0L);
+        when(wsOrderMapper.update(isNull(), any())).thenReturn(1);
+        Mockito.doThrow(new JbkException("设备当前不可用，不下发出水指令：设备离线，请稍后再试"))
+                .when(commandService).sendDispenseForOrder(ORDER_ID);
+
+        OrderDetailVo detail = service.createWaterOrder(request(), USER_ID);
+
+        assertEquals(TradeEnum.OrderStatus.ABNORMAL.getValue(), detail.getOrder().getOrderStatus());
+        verify(wsOrderMapper, times(1)).update(isNull(), any());
     }
 
     // 4. 已绑定 CMD_ID 或已推进状态：不重复触发下发（既有指令状态机负责）

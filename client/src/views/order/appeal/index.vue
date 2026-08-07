@@ -1,16 +1,11 @@
-<!-- 申诉处理（REQ-017，E2E-03 包C 已接真）：PC 核验证据后登记裁决，事务由后端包A 收口。 -->
+<!--
+  申诉处理（REQ-017，E2E-03 包C 已接真）：PC 核验证据后登记裁决，事务由后端包A 收口。
+  E2E-04 包E 起，本页同时是「裁决 → 售后执行」的落点：裁决只登记一笔待执行的售后动作，
+  真正的资金返还／外部退款／补送生成在同一个抽屉里完成，运营不必再跳到别处找这笔动作。
+-->
 <template>
   <div class="appeal-page art-full-height">
     <BusinessModuleNav module-key="order" />
-
-    <ElAlert
-      class="mb-3"
-      type="info"
-      :closable="false"
-      show-icon
-      title="申诉由用户端在签收后 24 小时内发起；列表按订单（配送任务）聚合，一行即一个申诉案件"
-      description="裁决结果只有三种：不成立驳回 / 补送待执行 / 成立待补偿。资金补偿仅登记待处理，真实退款不在本页发生；照片以受控媒体元数据呈现。状态筛选按案件当前状态命中，历史出现过的状态不参与筛选。"
-    />
 
     <ElCard class="art-table-card" shadow="never">
       <div class="mb-3 flex flex-wrap items-center gap-3">
@@ -28,7 +23,6 @@
           @input="applyFiltersDebounced"
         />
         <ElButton @click="handleReset" v-ripple>重置</ElButton>
-        <ElTag type="success" effect="plain" class="ml-auto">申诉数据来自真实后端</ElTag>
       </div>
 
       <!-- 一行 = 一个案件（taskId）；同订单的多次申诉由后端聚合，行内展示代表申诉 -->
@@ -42,13 +36,9 @@
         <!-- 反复申诉是运营信号：必须在列表一眼可见，不能只藏在抽屉里 -->
         <ElTableColumn label="申诉次数" width="100" align="center">
           <template #default="{ row }">
-            <ElTooltip
-              v-if="appealTimes(row) > 1"
-              content="该订单被多次申诉，点击查看完整往来"
-              placement="top"
-            >
-              <ElTag type="warning" effect="dark">{{ appealTimes(row) }} 次</ElTag>
-            </ElTooltip>
+            <ElTag v-if="appealTimes(row) > 1" type="warning" effect="dark">
+              {{ appealTimes(row) }} 次
+            </ElTag>
             <span v-else>{{ appealTimes(row) }} 次</span>
           </template>
         </ElTableColumn>
@@ -214,11 +204,11 @@
             :closable="false"
             show-icon
             title="申诉关联数据异常"
-            :description="`${evidence.linkReason || '申诉与任务/订单共键核验未通过'}。已隐藏关联任务与举证媒体，禁止在异常数据上裁决，请人工核查。`"
+            :description="`${evidence.linkReason || '申诉与任务、订单的数据不一致'}。请人工核查后再裁决。`"
           />
 
           <template v-else>
-            <div class="section-title">用户申诉举证（受控媒体元数据）</div>
+            <div class="section-title">用户申诉举证</div>
             <div v-if="evidence.appealPhotos && evidence.appealPhotos.length" class="media-grid">
               <MediaRefCard v-for="ref in evidence.appealPhotos" :key="ref.mediaKey" :media="ref" />
             </div>
@@ -262,7 +252,7 @@
                 :closable="false"
                 show-icon
                 title="履约任务数据异常"
-                :description="`${evidence.task.linkReason || '任务共键核验未通过'}。已隐藏履约正向证据。`"
+                :description="evidence.task.linkReason || '任务与订单的数据不一致'"
               />
               <template v-else>
                 <ElDescriptions :column="2" border label-width="96px">
@@ -313,7 +303,7 @@
                   }}</ElDescriptionsItem>
                 </ElDescriptions>
 
-                <div class="section-title">配送签收三照元数据</div>
+                <div class="section-title">配送签收三照</div>
                 <div
                   v-if="evidence.task.signPhotos && evidence.task.signPhotos.length"
                   class="media-grid"
@@ -352,6 +342,86 @@
             </template>
           </template>
 
+          <!--
+            本次申诉产生的售后动作（E2E-04 包E）。按 sourceType=配送申诉 且 sourceId=本申诉ID
+            精确匹配：同一订单可能有多轮申诉、也可能同时挂着配送取消的返还，
+            用订单号一把抓会把别的动作摆到这次裁决下面，运营会照着它去执行。
+          -->
+          <template v-if="canQueryAfterSale && appealActions.length">
+            <div class="section-title section-title--between">
+              <span>本次裁决产生的售后动作</span>
+              <ElButton type="primary" size="small" link @click="goAfterSaleLedger">
+                在售后台账中查看
+              </ElButton>
+            </div>
+            <div v-loading="appealActionsLoading">
+              <div v-for="action in appealActions" :key="action.id" class="after-sale-card">
+                <div class="flex flex-wrap items-center gap-2">
+                  <ElTag size="small" :type="afterSaleStatusTagType(action.actionStatus)">
+                    {{ afterSaleStatusLabel(action.actionStatus) }}
+                  </ElTag>
+                  <span class="font-medium">{{ afterSaleTypeLabel(action.actionType) }}</span>
+                  <ElTag size="small" effect="plain">
+                    {{ afterSaleStrategyLabel(action.strategyCode) }}
+                  </ElTag>
+                  <span v-if="action.approvedCount != null" class="text-xs text-secondary">
+                    批准 {{ action.approvedCount }} 桶
+                  </span>
+                  <span class="ml-auto text-xs text-secondary">{{ action.afterSaleNo }}</span>
+                </div>
+                <!-- 四元额度只读展示，全部由服务端在登记时算定并冻结 -->
+                <div class="mt-2 text-sm">
+                  返还合计 <span class="font-medium">{{ fenText(action.refundAmount) }}</span>
+                  <span class="ml-2 text-xs text-secondary">
+                    水品 {{ fenText(action.refundProductFen) }} · 配送费
+                    {{ fenText(action.refundServiceFen) }}
+                    <template v-if="action.refundProductMl">
+                      · 水品水量 {{ mlToLiter(action.refundProductMl) }}
+                    </template>
+                  </span>
+                </div>
+                <div v-if="action.lastError" class="mt-1 text-xs text-danger">
+                  最近失败原因：{{ action.lastError }}
+                </div>
+                <div class="mt-2 flex items-center gap-2">
+                  <template v-if="executeEntryOf(action)">
+                    <ElTooltip
+                      v-if="!canUseExecuteEntry(executeEntryOf(action)!)"
+                      content="当前账号没有该操作权限"
+                      placement="top"
+                    >
+                      <span>
+                        <ElButton size="small" type="danger" plain disabled>
+                          {{ executeEntryOf(action)?.label }}
+                        </ElButton>
+                      </span>
+                    </ElTooltip>
+                    <ElTooltip
+                      v-else-if="!executeEntryOf(action)?.enabled"
+                      :content="executeEntryOf(action)?.disabledReason"
+                      placement="top"
+                    >
+                      <span>
+                        <ElButton size="small" type="danger" plain disabled>
+                          {{ executeEntryOf(action)?.label }}
+                        </ElButton>
+                      </span>
+                    </ElTooltip>
+                    <ElButton
+                      v-else
+                      size="small"
+                      type="danger"
+                      @click="openExecute(action, executeEntryOf(action)!)"
+                    >
+                      {{ executeEntryOf(action)?.label }}
+                    </ElButton>
+                  </template>
+                  <span v-else class="text-xs text-secondary">该动作不在此处执行</span>
+                </div>
+              </div>
+            </div>
+          </template>
+
           <div
             v-if="
               evidence.appeal.appealStatus === 1 &&
@@ -360,12 +430,7 @@
             "
             class="decision-bar"
           >
-            <div>
-              <div class="font-medium">确认已完成证据核验</div>
-              <div class="text-xs text-secondary mt-1">
-                裁决写入后端申诉状态机并通知用户；资金补偿仅登记待处理，本页不发生退款。
-              </div>
-            </div>
+            <div class="font-medium">确认已完成证据核验</div>
             <ElButton type="primary" @click="openDecision(evidence.appeal)">登记裁决</ElButton>
           </div>
         </template>
@@ -378,20 +443,32 @@
         type="warning"
         :closable="false"
         show-icon
-        title="裁决只有三种确定结果，均不产生退款成功"
-        description="不成立驳回=任务归档；补送待执行=登记补送（后续端执行）；成立待补偿=资金进入待处理（退款审批属后续链路）。"
+        title="裁决不直接退款，返还需另行执行"
       />
       <ElForm label-width="96px">
         <ElFormItem label="关联订单">
           <ElInput :model-value="decisionTarget?.orderNo || '-'" disabled />
         </ElFormItem>
-        <ElFormItem label="裁决结果" required>
-          <!-- 与后端包A 白名单一字不差：只允许 3 / 5 / 2，无其他伪造终态 -->
-          <ElRadioGroup v-model="decisionForm.outcome">
-            <ElRadio :value="3">不成立驳回</ElRadio>
-            <ElRadio :value="5">补送待执行</ElRadio>
-            <ElRadio :value="2">成立待补偿</ElRadio>
+        <ElFormItem label="处理策略" required>
+          <!--
+            只提交策略码：申诉终态由服务端从策略码唯一派生（REJECT→不成立驳回、
+            RESEND→补送待执行、其余→成立待补偿）。前端不再选终态，避免出现
+            "驳回却带补偿策略"这种自相矛盾的组合。
+          -->
+          <!--
+            D-414（2026-08-06 甲方确认）：履约后的售后不退配送费，只退水品——
+            「只退配送费」「水品+配送费」两个策略从新裁决入口移除，服务端同样拒绝。
+            类型与标签常量保留：历史裁决记录仍要渲染旧策略名。
+          -->
+          <ElRadioGroup v-model="decisionForm.strategyCode">
+            <ElRadio value="REJECT">不成立驳回</ElRadio>
+            <ElRadio value="RESEND">补送待执行</ElRadio>
+            <ElRadio value="PRODUCT_ONLY">只补水品</ElRadio>
           </ElRadioGroup>
+        </ElFormItem>
+        <ElFormItem v-if="needsApprovedCount" label="受影响数量" required>
+          <ElInputNumber v-model="decisionForm.approvedCount" :min="1" :step="1" step-strictly />
+          <span class="ml-2 text-xs text-secondary">单位：桶，超出可补偿数量会被拒绝</span>
         </ElFormItem>
         <ElFormItem label="裁决依据" required>
           <ElInput
@@ -411,11 +488,20 @@
         </ElButton>
       </template>
     </ElDialog>
+
+    <AfterSaleExecuteDialog
+      v-model:visible="executeVisible"
+      :action="executeTarget"
+      :mode="executeMode"
+      :action-type-label="afterSaleTypeLabel"
+      :action-status-label="afterSaleStatusLabel"
+      @done="reloadAppealActions"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-  import { defineComponent, h, type PropType } from 'vue'
+  import { computed, defineComponent, h, type PropType } from 'vue'
   import { ElMessage, ElTag } from 'element-plus'
   import {
     fetchAppealEvidence,
@@ -423,12 +509,26 @@
     fetchDecideAppeal,
     type AdminMediaRef,
     type AppealAdminEvidence,
-    type AppealAdminItem
+    type AppealAdminItem,
+    type AppealStrategyCode
   } from '@/api/order'
+  import {
+    afterSaleExecuteEntry,
+    afterSaleStrategyLabel,
+    AfterSaleActionStatus,
+    AfterSalePerms,
+    AfterSaleSourceType,
+    canUseAfterSaleExecuteEntry,
+    fetchAfterSaleActionPage,
+    type AfterSaleActionItem,
+    type AfterSaleExecuteEntry,
+    type AfterSaleExecuteMode
+  } from '@/api/after-sale'
   import { fetchDictOptions, toDictOptions } from '@/utils/dict'
-  import { fenToYuan } from '@/utils/format'
+  import { fenToYuan, mlToLiter } from '@/utils/format'
   import { DictTypeEnum } from '@/constants/dict'
   import BusinessModuleNav from '@/components/business/business-module-nav/index.vue'
+  import AfterSaleExecuteDialog from '../modules/after-sale-execute-dialog.vue'
   import { useUserStore } from '@/store/modules/user'
 
   defineOptions({ name: 'OrderAppeal' })
@@ -500,10 +600,25 @@
   const decisionVisible = ref(false)
   const decisionSubmitting = ref(false)
   const decisionTarget = ref<AppealAdminItem | null>(null)
-  const decisionForm = reactive<{ outcome: 2 | 3 | 5; handleResult: string }>({
-    outcome: 3,
+  const decisionForm = reactive<{
+    strategyCode: AppealStrategyCode
+    approvedCount: number
+    handleResult: string
+  }>({
+    strategyCode: 'REJECT',
+    approvedCount: 1,
     handleResult: ''
   })
+
+  /**
+   * 除驳回外都需要批准数量。
+   *
+   * 资金类策略用它算返还额度；补送用它定「补几桶」——同样是必填。
+   * 唯一豁免的是 REJECT：服务端 AfterSaleStrategy.requireApprovedCount 只为它提前返回 0，
+   * 其余策略（含 RESEND）走到非空校验，不传即以「批准数量必须在 1 到 N 之间，实际 null」400。
+   * 本项一旦漏掉某个策略，该策略的裁决就 100% 提交失败，且运营在页面上没有补值入口。
+   */
+  const needsApprovedCount = computed(() => decisionForm.strategyCode !== 'REJECT')
 
   const appealStatusOptions = ref<{ label: string; value: number }[]>([
     { label: '待处理', value: 1 },
@@ -512,6 +627,16 @@
     { label: '已撤销', value: 4 },
     { label: '补送待执行', value: 5 }
   ])
+  // ===== 售后动作（E2E-04 包E） =====
+  const canQueryAfterSale = computed(() => hasPermission(AfterSalePerms.query))
+  const appealActions = ref<AfterSaleActionItem[]>([])
+  const appealActionsLoading = ref(false)
+  const executeVisible = ref(false)
+  const executeMode = ref<AfterSaleExecuteMode>('execute')
+  const executeTarget = ref<AfterSaleActionItem | null>(null)
+  const afterSaleTypeOptions = ref<{ label: string; value: number }[]>([])
+  const afterSaleStatusOptions = ref<{ label: string; value: number }[]>([])
+
   const taskStatusOptions = ref<{ label: string; value: number }[]>([
     { label: '待接单', value: 1 },
     { label: '已接单', value: 2 },
@@ -524,14 +649,18 @@
 
   onMounted(async () => {
     try {
-      const [appealStatuses, taskStatuses] = await Promise.all([
+      const [appealStatuses, taskStatuses, afterSaleTypes, afterSaleStatuses] = await Promise.all([
         fetchDictOptions(DictTypeEnum.申诉状态),
-        fetchDictOptions(DictTypeEnum.配送任务状态)
+        fetchDictOptions(DictTypeEnum.配送任务状态),
+        fetchDictOptions(DictTypeEnum.售后动作类型),
+        fetchDictOptions(DictTypeEnum.售后执行状态)
       ])
       const remoteAppealStatuses = toDictOptions(appealStatuses)
       const remoteTaskStatuses = toDictOptions(taskStatuses)
       if (remoteAppealStatuses.length) appealStatusOptions.value = remoteAppealStatuses
       if (remoteTaskStatuses.length) taskStatusOptions.value = remoteTaskStatuses
+      afterSaleTypeOptions.value = toDictOptions(afterSaleTypes)
+      afterSaleStatusOptions.value = toDictOptions(afterSaleStatuses)
     } catch {
       // 字典接口暂不可用时保留本地兜底选项，列表仍可查询。
     }
@@ -614,15 +743,86 @@
 
   async function showEvidence(row: AppealAdminItem) {
     evidence.value = null
+    appealActions.value = []
     evidenceVisible.value = true
     evidenceLoading.value = true
     try {
       evidence.value = await fetchAppealEvidence(row.appealId)
+      await reloadAppealActions()
     } catch (error) {
       ElMessage.error(error instanceof Error ? error.message : '加载申诉证据失败')
     } finally {
       evidenceLoading.value = false
     }
+  }
+
+  const afterSaleDictLabel = (options: { label: string; value: number }[], value?: number) =>
+    options.find((item) => item.value === value)?.label || (value == null ? '-' : String(value))
+  const afterSaleTypeLabel = (value?: number) =>
+    afterSaleDictLabel(afterSaleTypeOptions.value, value)
+  const afterSaleStatusLabel = (value?: number) =>
+    afterSaleDictLabel(afterSaleStatusOptions.value, value)
+  const afterSaleStatusTagType = (value?: number) =>
+    value === AfterSaleActionStatus.SUCCESS
+      ? 'success'
+      : value === AfterSaleActionStatus.RECONCILIATION_REQUIRED ||
+          value === AfterSaleActionStatus.TERMINATED
+        ? 'danger'
+        : value === AfterSaleActionStatus.RETRY_WAIT
+          ? 'warning'
+          : value === AfterSaleActionStatus.PROCESSING
+            ? 'primary'
+            : 'info'
+  const fenText = (fen?: number) => (fen == null ? '-' : `￥${fenToYuan(fen)}`)
+  const executeEntryOf = (action: AfterSaleActionItem) => afterSaleExecuteEntry(action)
+  const canUseExecuteEntry = (entry: AfterSaleExecuteEntry) =>
+    canUseAfterSaleExecuteEntry(entry, hasPermission)
+
+  /**
+   * 拉取本次申诉产生的售后动作。
+   *
+   * 台账 keyword 是模糊匹配，故先按订单号检索、再按「来源=配送申诉 且 来源ID=本申诉ID」精确过滤。
+   * 用 taskId 或订单号当来源键都不行：uk_appeal_active_task 只约束「待处理」申诉，
+   * 同一任务可以合法产生多条已裁决申诉，混在一起会让运营照着上一轮的动作执行这一轮的补偿。
+   */
+  async function reloadAppealActions() {
+    const appeal = evidence.value?.appeal
+    if (!canQueryAfterSale.value || !appeal?.appealId || !appeal.orderNo) {
+      appealActions.value = []
+      return
+    }
+    appealActionsLoading.value = true
+    try {
+      const result = await fetchAfterSaleActionPage({
+        current: 1,
+        size: 50,
+        keyword: appeal.orderNo,
+        sourceType: AfterSaleSourceType.DELIVERY_APPEAL
+      })
+      appealActions.value = result.list.filter((item) => item.sourceId === appeal.appealId)
+    } catch {
+      // 售后台账不可用不应挡住证据核验：保持空态，运营仍可在售后台账页处理。
+      appealActions.value = []
+    } finally {
+      appealActionsLoading.value = false
+    }
+  }
+
+  function openExecute(action: AfterSaleActionItem, entry: AfterSaleExecuteEntry) {
+    if (!canUseExecuteEntry(entry)) {
+      ElMessage.warning('当前账号没有该操作权限')
+      return
+    }
+    executeTarget.value = action
+    executeMode.value = entry.mode
+    executeVisible.value = true
+  }
+
+  function goAfterSaleLedger() {
+    const orderNo = evidence.value?.appeal.orderNo
+    if (!orderNo) return
+    evidenceVisible.value = false
+    router.push({ path: '/order/index', query: { view: 'aftersale', afterSaleKeyword: orderNo } })
   }
 
   function openOrderTrace() {
@@ -647,7 +847,8 @@
       return
     }
     decisionTarget.value = row
-    decisionForm.outcome = 3
+    decisionForm.strategyCode = 'REJECT'
+    decisionForm.approvedCount = 1
     decisionForm.handleResult = ''
     decisionVisible.value = true
   }
@@ -662,12 +863,23 @@
     try {
       await fetchDecideAppeal({
         id: decisionTarget.value.appealId,
-        outcome: decisionForm.outcome,
+        strategyCode: decisionForm.strategyCode,
+        // 非资金策略不带数量：后端 requireApprovedCount 只在资金策略下校验上界
+        approvedCount: needsApprovedCount.value ? decisionForm.approvedCount : undefined,
         handleResult: decisionForm.handleResult.trim()
       })
-      ElMessage.success('裁决已登记')
+      ElMessage.success('裁决已登记，返还需在下方售后动作中单独执行')
       decisionVisible.value = false
-      evidenceVisible.value = false
+      // 裁决只登记一笔待执行的售后动作。抽屉保持打开并回表刷新，
+      // 让运营立刻看到这笔动作并在同一屏执行；关掉抽屉等于把「还没执行」这件事藏起来。
+      const appealId = decisionTarget.value.appealId
+      try {
+        evidence.value = await fetchAppealEvidence(appealId)
+        await reloadAppealActions()
+      } catch {
+        // 回读失败不影响裁决结果本身，抽屉退回列表由运营重新打开
+        evidenceVisible.value = false
+      }
       await loadData()
     } finally {
       decisionSubmitting.value = false
@@ -770,6 +982,18 @@
 
   .text-secondary {
     color: var(--el-text-color-secondary);
+  }
+
+  .text-danger {
+    color: var(--el-color-danger);
+  }
+
+  .after-sale-card {
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    background: var(--el-fill-color-lighter);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 8px;
   }
 
   @media (width <= 768px) {

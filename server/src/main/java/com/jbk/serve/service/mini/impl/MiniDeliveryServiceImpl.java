@@ -25,7 +25,9 @@ import com.jbk.tool.consts.trade.TradeEnum;
 import com.jbk.tool.consts.user.UserEnum;
 import com.jbk.tool.data.delivery.bo.DeliveryAppealCreateBo;
 import com.jbk.tool.data.delivery.bo.DeliveryAppealEvidenceBo;
+import com.jbk.serve.service.mini.IMiniFamilyService;
 import com.jbk.tool.data.delivery.bo.DeliveryCreateBo;
+import com.jbk.tool.data.user.po.WsUserAddress;
 import com.jbk.tool.data.delivery.bo.DeliveryExceptionReportBo;
 import com.jbk.tool.data.delivery.bo.DeliverySignBo;
 import com.jbk.tool.data.delivery.po.WsDeliveryAppeal;
@@ -70,6 +72,10 @@ import java.util.stream.Collectors;
  */
 @Service
 public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
+
+    @Autowired
+    private com.jbk.serve.mapper.aftersale.WsAfterSaleActionMapper afterSaleActionMapper;
+
 
     /** 任务列表视图（接口入参形态，非落库状态，不注册字典）。 */
     private static final String VIEW_AVAILABLE = "available";
@@ -116,11 +122,20 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
     private WsStationMapper stationMapper;
     @Autowired
     private WsCourierMapper courierMapper;
+    @Autowired
+    private IMiniFamilyService familyService;
 
     // ==================== 用户侧 ====================
 
     @Override
     public MiniDeliveryCreateVo createOrder(DeliveryCreateBo bo, Long userId) {
+        // 地址簿引用优先：服务端按归属解引用取地址与号码写入任务快照（号码不经前端回流，铁律6）。
+        // 快照语义不变——任务仍存文本，后续改地址簿不影响已下单。
+        if (ObjectUtil.isNotNull(bo.getAddressId())) {
+            WsUserAddress address = familyService.requireOwnAddress(userId, bo.getAddressId());
+            bo.setReceiveAddress(StrUtil.trim(address.getRegion()) + ' ' + StrUtil.trim(address.getAddressDetail()));
+            bo.setReceivePhone(address.getContactPhone());
+        }
         IDeliveryOrderService.CreatedDelivery created = deliveryOrderService.createDeliveryOrder(bo, userId);
         // 订单区块复用 mini 订单读模型（同一 OrderDetailVo 契约），不为配送另拼订单结构
         MiniOrderDetailBo detailBo = new MiniOrderDetailBo().setOrderNo(created.order().getOrderNo());
@@ -333,6 +348,7 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
         long fee = ObjectUtil.defaultIfNull(task.getDeliveryFee(), 0L);
         WsOrder linked = ObjectUtil.isNull(order) ? orderOf(task.getOrderId()) : order;
         return new MiniDeliveryTaskVo()
+                .setIsResend(resolveIsResend(task.getId()))
                 .setTaskId(task.getId())
                 .setTaskNo(task.getTaskNo())
                 .setOrderId(task.getOrderId())
@@ -543,6 +559,29 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
             return Long.parseLong(raw.trim());
         } catch (NumberFormatException e) {
             throw new JbkException(field + " 越界");
+        }
+    }
+
+    /**
+     * 补送标识：由 {@code ws_after_sale_action.RESULT_TASK_ID} 反查得出。
+     *
+     * <p>刻意<b>不</b>按「金额为 0 / 无回收桶」推断——那会把任何零金额任务误标成补送
+     * （例如将来的赠送活动单），而补送标识直接影响用户对「这趟水要不要再付钱」的理解。</p>
+     *
+     * <p>依赖缺失或查询异常时返回 {@code false} 而不是抛出：这是一个纯展示标识，
+     * 让它拖垮整个任务详情是错误的失败方向。少一个标签用户还能看单，
+     * 详情整页 500 就什么都看不到了。</p>
+     */
+    private Boolean resolveIsResend(Long taskId) {
+        if (afterSaleActionMapper == null || taskId == null) {
+            return false;
+        }
+        try {
+            return afterSaleActionMapper.exists(com.baomidou.mybatisplus.core.toolkit.Wrappers
+                    .lambdaQuery(com.jbk.tool.data.aftersale.po.WsAfterSaleAction.class)
+                    .eq(com.jbk.tool.data.aftersale.po.WsAfterSaleAction::getResultTaskId, taskId));
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 }

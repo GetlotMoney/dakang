@@ -55,6 +55,12 @@ public class WsDeviceVo extends BaseEntityVo implements Serializable {
     @Schema(description = "SIM运营商(max20)")
     private String simCarrier;
 
+    @Schema(description = "SIM状态(1368)：1正常 2未激活 3欠费 4停用")
+    private Integer simStatus;
+
+    @Schema(description = "SIM到期时间")
+    private String simExpireTime;
+
     @Schema(description = "在线状态(1300)：1在线 2离线 3未激活")
     private Integer onlineStatus;
 
@@ -66,6 +72,15 @@ public class WsDeviceVo extends BaseEntityVo implements Serializable {
 
     @Schema(description = "最近故障码(max20)")
     private String lastFaultCode;
+
+    @Schema(description = "用户侧设备可用性码（由 DeviceAvailability 单一判定源生成）")
+    private String orderAvailabilityCode;
+
+    @Schema(description = "用户侧设备可用性说明")
+    private String orderAvailabilityReason;
+
+    @Schema(description = "当前是否允许进入用户侧取水预检")
+    private Boolean orderAvailable;
 
     @Schema(description = "信号强度(dBm，负值)")
     private Integer signalStrength;

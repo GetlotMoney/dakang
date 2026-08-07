@@ -313,14 +313,26 @@
     submitLoading.value = true
     try {
       if (dialogType.value === 'add') {
-        await fetchSaveUser(formData as Api.SystemManage.UserFormData)
+        const initPwdReceipt = await fetchSaveUser(formData as Api.SystemManage.UserFormData)
         ElMessage.success('添加成功')
+        dialogVisible.value = false
+        emit('submit')
+        // 一次性初始密码：库内只存哈希，本弹窗关闭后无法再查看（R-201）
+        await ElMessageBox.alert(
+          `<p>请将初始密码转交员工，<strong>关闭后无法再次查看</strong>：</p>
+           <p style="margin:12px 0;font-size:20px;text-align:center;"><code>${initPwdReceipt.initialPwd}</code></p>`,
+          '初始密码（仅显示一次）',
+          {
+            dangerouslyUseHTMLString: true,
+            confirmButtonText: '我已转交，关闭'
+          }
+        ).catch(() => {})
       } else {
         await fetchUpdateUser(formData as Api.SystemManage.UserFormData)
         ElMessage.success('更新成功')
+        dialogVisible.value = false
+        emit('submit')
       }
-      dialogVisible.value = false
-      emit('submit')
     } catch {
       // error handled by http
     } finally {

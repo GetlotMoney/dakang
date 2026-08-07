@@ -7,6 +7,7 @@ import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.mapper.trade.WsWalletFlowMapper;
 import com.jbk.serve.service.mini.recharge.RechargeCredit;
 import com.jbk.serve.service.mini.recharge.RechargeDetailVerifier;
+import com.jbk.serve.service.mini.recharge.RechargeRefundEvidenceVerifier;
 import com.jbk.serve.service.mini.card.WaterCardScope;
 import com.jbk.serve.service.mini.recharge.RechargeSnapshot;
 import com.jbk.tool.consts.trade.TradeEnum;
@@ -62,6 +63,7 @@ class MiniRechargeOrderDetailTest {
     private WsOrderMapper orderMapper;
     private WsWalletFlowMapper walletFlowMapper;
     private RechargeIdentityMapper identityMapper;
+    private RechargeRefundEvidenceVerifier refundEvidenceVerifier;
     private MiniOrderServiceImpl service;
 
     @BeforeAll
@@ -75,12 +77,13 @@ class MiniRechargeOrderDetailTest {
         orderMapper = Mockito.mock(WsOrderMapper.class);
         walletFlowMapper = Mockito.mock(WsWalletFlowMapper.class);
         identityMapper = Mockito.mock(RechargeIdentityMapper.class);
+        refundEvidenceVerifier = Mockito.mock(RechargeRefundEvidenceVerifier.class);
         service = new MiniOrderServiceImpl();
         ReflectionTestUtils.setField(service, "wsOrderMapper", orderMapper);
         ReflectionTestUtils.setField(service, "walletFlowMapper", walletFlowMapper);
         ReflectionTestUtils.setField(service, "rechargeIdentityMapper", identityMapper);
         ReflectionTestUtils.setField(service, "rechargeDetailVerifier",
-                new RechargeDetailVerifier(identityMapper));
+                new RechargeDetailVerifier(identityMapper, refundEvidenceVerifier));
         when(walletFlowMapper.selectCount(any())).thenReturn(0L);
         when(identityMapper.selectEventsByOrderNoIncludingDeleted(ORDER_NO)).thenReturn(List.of());
         when(identityMapper.selectFlowsByOrderIdIncludingDeleted(ORDER_ID)).thenReturn(List.of());
@@ -119,6 +122,35 @@ class MiniRechargeOrderDetailTest {
         assertEquals("限定范围：水站 1 个", recharge.getScopeDescription());
         assertEquals(flow.getAmountAfter(), recharge.getCardBalanceFen());
         assertEquals(flow.getMlAfter(), recharge.getCardBalanceMl());
+    }
+
+    @Test
+    void refundedPurchaseKeepsOriginalCreditEvidenceAndReturnsCurrentCardState() {
+        WsOrder order = purchaseOrder(TradeEnum.OrderStatus.REFUNDED.getValue(), CARD_ID);
+        order.setFinishTime(FINISH_TIME);
+        WsPayment payment = successfulPayment(order);
+        WsPaymentEvent event = processedSuccessEvent(order, payment);
+        WsWalletFlow credit = completedFlow(order);
+        WsWalletFlow refund = completedFlow(order)
+                .setId(706L)
+                .setFlowType(TradeEnum.FlowType.REFUND.getValue())
+                .setAmountChange(0L)
+                .setMlChange(-500000L)
+                .setAmountAfter(0L)
+                .setMlAfter(0L)
+                .setBizIdempotencyKey("AFTERSALE:AS-DETAIL");
+        WsCard refundedCard = issuedCard(ORDER_ID).setBalanceMl(0L).setCardStatus(4);
+        stubOrderAndPayment(order, payment);
+        when(walletFlowMapper.selectCount(any())).thenReturn(2L);
+        when(identityMapper.selectEventsByOrderNoIncludingDeleted(ORDER_NO)).thenReturn(List.of(event));
+        when(identityMapper.selectFlowsByOrderIdIncludingDeleted(ORDER_ID)).thenReturn(List.of(credit, refund));
+        when(identityMapper.selectCardsByIdIncludingDeleted(CARD_ID)).thenReturn(List.of(refundedCard));
+
+        MiniRechargeDetailVo recharge = detail().getOrder().getRecharge();
+
+        assertEquals(credit.getMlChange(), recharge.getFlowMlChange(), "详情只能把原充值流水当入账证据");
+        assertEquals(0L, recharge.getCardBalanceMl(), "当前卡水量应反映退款后的终值");
+        verify(refundEvidenceVerifier).requireIfRefunded(order);
     }
 
     @Test
@@ -222,17 +254,22 @@ class MiniRechargeOrderDetailTest {
 
     private WsOrder purchaseOrder(int status, Long cardId) {
         WsOrder order = baseOrder(status, cardId);
-        order.setPackageSnap(RechargeSnapshot.buildForPurchase(
-                UUID, rechargePackage(), WaterCardScope.normalize(SCOPE, "套餐"), CREATE_TIME));
+        order.setPackageSnap(com.jbk.serve.service.mini.recharge.LegacySnapshots.forgeExpireDays(
+                RechargeSnapshot.buildForPurchase(
+                        UUID, rechargePackage(), WaterCardScope.normalize(SCOPE, "套餐"), CREATE_TIME),
+                365));
         return order;
     }
 
     private WsOrder existingCardRechargeOrder(Long cardId) {
-        WsCard target = new WsCard().setId(CARD_ID).setUserId(USER_ID).setExpireTime("20270722100000");
+        WsCard target = new WsCard().setId(CARD_ID).setUserId(USER_ID)
+                .setCardStatus(1).setExpireTime("20270722100000");
         WsOrder order = baseOrder(TradeEnum.OrderStatus.UNPAID.getValue(), cardId);
         WaterCardScope scope = WaterCardScope.normalize(SCOPE, "目标卡");
-        order.setPackageSnap(RechargeSnapshot.build(
-                UUID, rechargePackage(), target, scope, scope, CREATE_TIME));
+        order.setPackageSnap(com.jbk.serve.service.mini.recharge.LegacySnapshots.forgeExpireDays(
+                RechargeSnapshot.build(
+                        UUID, rechargePackage(), target, scope, scope, CREATE_TIME),
+                365));
         return order;
     }
 
@@ -264,7 +301,7 @@ class MiniRechargeOrderDetailTest {
         pkg.setWaterMl(500000L);
         pkg.setBonusAmount(0L);
         pkg.setUnitPriceSnap("20.00");
-        pkg.setExpireDays(365);
+        pkg.setExpireDays(null); // D-213：有限期只存在于历史快照，由调用方铸造
         return pkg;
     }
 

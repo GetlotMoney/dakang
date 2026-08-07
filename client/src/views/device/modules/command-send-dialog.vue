@@ -1,12 +1,5 @@
 <template>
   <ElDialog v-model="dialogVisible" title="下发指令" width="520px" align-center>
-    <ElAlert
-      type="info"
-      :closable="false"
-      show-icon
-      title="出水类指令由订单链路触发，此处仅支持运维指令；锁机后设备停止服务，请谨慎操作"
-      class="mb-4"
-    />
     <ElForm ref="formRef" :model="formData" :rules="rules" label-width="90px">
       <ElFormItem label="目标设备">
         <ElInput :model-value="`${props.deviceName || ''}（${props.deviceNo || ''}）`" disabled />
@@ -122,7 +115,7 @@
     // 锁机属高风险操作：显式确认（完整二次验证 openSafe 为商业一期口径）
     if (formData.cmdType === CMD_TYPE_LOCK) {
       await ElMessageBox.confirm(
-        `锁机后设备 ${props.deviceNo} 将停止取水服务，直至下发解锁指令。确认锁机？`,
+        `锁机后设备 ${props.deviceNo} 停止取水，确认锁机？`,
         '高风险操作确认',
         { type: 'warning', confirmButtonText: '确认锁机', cancelButtonText: '取消' }
       )
@@ -134,7 +127,7 @@
         cmdType: formData.cmdType!,
         cmdPayload: formData.cmdType === CMD_TYPE_PARAM_SYNC ? formData.cmdPayload : undefined
       })
-      ElMessage.success('指令已下发，回执与执行结果见指令记录')
+      ElMessage.success('指令已下发，执行结果见指令记录')
       dialogVisible.value = false
       emit('submit')
     } finally {

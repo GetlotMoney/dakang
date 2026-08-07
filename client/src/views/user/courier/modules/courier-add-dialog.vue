@@ -5,7 +5,7 @@
       <ElFormItem label="关联用户" prop="userId">
         <ElSelect
           v-model="formData.userId"
-          placeholder="按姓名/手机号搜索 C 端用户（配送员准入记录关联该用户）"
+          placeholder="按姓名/手机号搜索用户"
           filterable
           remote
           :remote-method="searchUser"
@@ -36,7 +36,7 @@
       <ElFormItem label="服务水站" prop="stationIdList">
         <ElSelect
           v-model="formData.stationIdList"
-          placeholder="任务范围：仅可接所选水站的配送单；不选则默认不可接单"
+          placeholder="不选则不可接单"
           multiple
           clearable
           collapse-tags
@@ -56,12 +56,7 @@
           maxlength="100"
         />
       </ElFormItem>
-      <ElAlert
-        type="info"
-        :closable="false"
-        show-icon
-        title="创建后进入「待审核」状态，审核通过后配送员方可在小程序配送端接单"
-      />
+      <ElAlert type="info" :closable="false" show-icon title="创建后需审核通过才能接单" />
     </ElForm>
     <template #footer>
       <div class="dialog-footer">

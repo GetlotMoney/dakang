@@ -1,10 +1,9 @@
 import type { EntityId, MoneyFen, VolumeMl } from './common'
-import { cloneContractData, ContractError } from './common'
+import { ContractError } from './common'
 import { strictEntityId, strictNonNegativeInt } from './delivery-normalize'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { realAdapterPending, selectAdapter } from './runtime'
-import { scenarioStore } from '@/scenario/store'
+import { realAdapterPending } from './runtime'
 
 export interface WaterType {
   id: EntityId
@@ -45,18 +44,6 @@ export const catalogEndpoints = {
   packages: '/mini/catalog/package/list',
 } as const
 
-const mockCatalogApi: CatalogApi = {
-  async listWaterTypes() {
-    return cloneContractData(scenarioStore.waterTypes)
-  },
-  async listStations() {
-    return cloneContractData(scenarioStore.stations)
-  },
-  async listPackages() {
-    return cloneContractData(scenarioStore.packages)
-  },
-}
-
 /** 后端 MiniWaterTypeVo 原样结构（Long ID 已按字符串下发）。 */
 interface WaterTypeRaw {
   id?: string | number | null
@@ -79,7 +66,7 @@ interface StationRaw {
 function normalizeWaterType(raw: WaterTypeRaw): WaterType {
   const id = strictEntityId(raw.id)
   if (!id || typeof raw.name !== 'string' || !raw.name) {
-    throw new ContractError('CATALOG_CONTRACT_BROKEN', '水种数据异常：标识或名称缺失')
+    throw new ContractError('CATALOG_CONTRACT_BROKEN', '水种数据异常，请稍后重试')
   }
   return {
     id,
@@ -93,7 +80,7 @@ function normalizeWaterType(raw: WaterTypeRaw): WaterType {
 function normalizeStation(raw: StationRaw): StationSummary {
   const id = strictEntityId(raw.id)
   if (!id || typeof raw.stationName !== 'string' || !raw.stationName) {
-    throw new ContractError('CATALOG_CONTRACT_BROKEN', '水站数据异常：标识或名称缺失')
+    throw new ContractError('CATALOG_CONTRACT_BROKEN', '水站数据异常，请稍后重试')
   }
   return {
     id,
@@ -131,4 +118,4 @@ const realCatalogApi: CatalogApi = {
 
 // catalog 的页面消费方全部在配送链（U07 站点选择 / U08 配送下单 / D02 准入表单），
 // 故跟随 delivery 域接真——不单设 catalog 域，避免运行期模式指纹再多一段无独立语义的开关。
-export const catalogApi = selectAdapter(mockCatalogApi, realCatalogApi, 'delivery')
+export const catalogApi = realCatalogApi

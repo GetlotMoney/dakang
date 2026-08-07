@@ -241,7 +241,7 @@
 
   function handleDelete(row: DeviceItem) {
     ElMessageBox.confirm(
-      `确认删除设备「${row.deviceName}（${row.deviceNo}）」？出水口将一并删除，已绑定二维码时不可删除。`,
+      `确认删除设备「${row.deviceName}（${row.deviceNo}）」？出水口将一并删除。`,
       '删除确认',
       { type: 'warning' }
     ).then(async () => {

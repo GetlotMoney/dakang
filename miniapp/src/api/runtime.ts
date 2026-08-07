@@ -9,9 +9,10 @@ export const apiMode = import.meta.env.VITE_API_MODE
  * recharge 域（L2 充值链）自 L2-T 起后端已实现（创单→支付事实→入账），代码层硬锁解除，按域覆盖判定；
  * auth 域（L2-AUTH 正式微信登录/绑手机）默认 mock（走 C01 原型入口），仅在显式 Real 入口构建下翻 real；
  * delivery 域（E2E-03 水配送链，包B）后端 /mini/delivery/** 已实现，按域覆盖判定——
- * 与 recharge 域同一先例：只有显式 real 才接真，漏配回落 mock。
+ * 与 recharge 域同一先例：只有显式 real 才接真，漏配回落 mock；
+ * message 域（E2E-07 消息中心）后端 /mini/message/** 已实现，同一先例。
  */
-export type ApiDomain = 'device' | 'order' | 'card' | 'recharge' | 'auth' | 'delivery'
+export type ApiDomain = 'device' | 'order' | 'card' | 'recharge' | 'auth' | 'delivery' | 'message'
 
 /** 模式解析的环境快照（纯函数入参，测试可直接构造任意组合，含全局 real）。 */
 export interface ApiModeEnvironment {
@@ -22,6 +23,7 @@ export interface ApiModeEnvironment {
   rechargeMode?: string
   authMode?: string
   deliveryMode?: string
+  messageMode?: string
 }
 
 /**
@@ -44,7 +46,9 @@ export function resolveApiMode(domain: ApiDomain | undefined, env: ApiModeEnviro
               ? env.authMode
               : domain === 'delivery'
                 ? env.deliveryMode
-                : undefined
+                : domain === 'message'
+                  ? env.messageMode
+                  : undefined
   const mode = override || env.globalMode
   return mode === 'real' ? 'real' : 'mock'
 }
@@ -62,15 +66,8 @@ function buildTimeEnvironment(): ApiModeEnvironment {
     rechargeMode: import.meta.env.VITE_API_MODE_RECHARGE,
     authMode: import.meta.env.VITE_API_MODE_AUTH,
     deliveryMode: import.meta.env.VITE_API_MODE_DELIVERY,
+    messageMode: import.meta.env.VITE_API_MODE_MESSAGE,
   }
-}
-
-/**
- * 选择 Mock / Real 适配器：签名向后兼容——旧调用不传 domain 仍走全局，
- * 避免"全局翻 real"导致其它尚未接真域的 realAdapterPending 集体抛错。
- */
-export function selectAdapter<T>(mockAdapter: T, realAdapter: T, domain?: ApiDomain): T {
-  return resolveApiMode(domain, buildTimeEnvironment()) === 'real' ? realAdapter : mockAdapter
 }
 
 /** 当前构建期某域的生效模式（供页面/契约按域分流，如 recharge mock 单走本地读取）。 */
@@ -94,29 +91,37 @@ export function buildRuntimeModes(): string {
     `RECHARGE=${currentMode('recharge')}`,
     `AUTH=${currentMode('auth')}`,
     `DELIVERY=${currentMode('delivery')}`,
+    `MESSAGE=${currentMode('message')}`,
   ].join(';')
 }
 
 /**
- * 纯函数：是否允许以 Mock 原型账号建立会话/展示原型账号面板——全部业务域（含 auth）均为 Mock 才允许。
+ * 微信「手机号快速验证」组件是否可用。
  *
- * 复审 B：任一业务域接真（如 auth=mock 但 device/order/card=real）时，
- * 入口页不得用 Mock 账号恢复会话进首页，否则会话失效后会带着原型身份打真实接口。
+ * 小程序主体未通过微信认证时，平台在**组件层**禁用 `open-type="getPhoneNumber"`：
+ * 点击不弹窗、`@getphonenumber` 回调根本不触发——连错误分支都跑不到，按钮表现为完全没反应。
+ * 因此不能把这种情况留给「点了再看回调」，只能在构建物里写死是否渲染该按钮。
+ *
+ * 【为什么是代码常量而不是环境变量】2026-08-01 产物污染事故：多个残留 watch 编译器各持启动时刻的
+ * env 快照竞写同一 dist，环境变量注入的值在产物里不可判定；且「注入失败/取到旧值」与「关闭态」
+ * 表现完全一致，故障不会立刻暴露，会潜伏到要开放绑定那天才爆。代码常量没有注入环节，
+ * 产物值恒等于源码值，从机制上免疫整类问题。主体完成微信认证后，把下面的值改为 true 即放开绑定入口。
  */
-export function isMockAccountEntryAllowed(env: ApiModeEnvironment): boolean {
-  return (['device', 'order', 'card', 'recharge', 'auth', 'delivery'] as const)
-    .every(domain => resolveApiMode(domain, env) === 'mock')
+export const WX_PHONE_COMPONENT_AVAILABLE = false
+
+export function isPhoneComponentAvailable(): boolean {
+  return WX_PHONE_COMPONENT_AVAILABLE
 }
 
-/** 构建期版本：只有全部业务域（含 auth）都为 Mock 时，才允许原型账号选择与场景重置面板。 */
-export function isAllMockBuild(): boolean {
-  return isMockAccountEntryAllowed(buildTimeEnvironment())
-}
-
-/** TODO(real-api): 验收门打开后以同名 POST 实现替换占位，不改变页面调用签名。 */
+/**
+ * TODO(real-api): 验收门打开后以同名 POST 实现替换占位，不改变页面调用签名。
+ *
+ * <p>message 只说「用户能不能用」，规划中的 endpoint 不进这句话——它会被页面
+ * 直接 toast 给用户，而用户既看不懂 POST 路径，也不该知道我们的排期。
+ * endpoint 仍作为入参保留：调用点写明规划路径，排障时看代码即可定位，
+ * 配合错误码 REAL_ADAPTER_PENDING 足够，不必印在界面上。</p>
+ */
 export function realAdapterPending(operation: string, endpoint: string): never {
-  throw new ContractError(
-    'REAL_ADAPTER_PENDING',
-    `${operation} 尚未接真实接口（计划 POST ${endpoint}）`,
-  )
+  void endpoint
+  throw new ContractError('REAL_ADAPTER_PENDING', `${operation}暂不可用`)
 }

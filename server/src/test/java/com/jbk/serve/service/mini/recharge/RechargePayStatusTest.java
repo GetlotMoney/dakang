@@ -161,19 +161,24 @@ class RechargePayStatusTest {
                 "组内混入无组键事件必须拒绝");
     }
 
-    // payment 2 / order 7 退款合同未启用：fail-closed，绝不拼成成功
+    // payment 2 / order 7/8：原支付与原充值流水成立时进入退款终态；退款动作证据由服务入口另验
     @Test
-    void refundNotEnabled() {
-        RechargePayStatus.Resolved r = resolve(2, 7, List.of(), 0);
-        assertFalse(r.ok());
-        assertEquals("REFUND_CONTRACT_NOT_ENABLED", r.statusCode());
+    void refundedBranchesRequireOriginalPaymentAndCreditEvidence() {
+        List<WsPaymentEvent> ok = List.of(evt(SUCCESS, P_PROCESSED, "20260722100000"));
+        assertEquals("REFUNDED", resolve(2, 7, ok, 1).statusCode());
+        assertEquals("PART_REFUNDED", resolve(2, 8, ok, 1).statusCode());
+        assertFalse(resolve(2, 7, ok, 0).ok(), "缺少原充值流水不得报告退款终态");
+        assertFalse(resolve(2, 8, ok, 2).ok(), "重复原充值流水不得报告部分退款终态");
+        assertFalse(resolve(2, 7, List.of(evt(SUCCESS, P_PENDING, "20260722100000")), 1).ok(),
+                "原支付事实未处理不得报告退款终态");
+        assertFalse(resolve(2, 8, List.of(evt(SUCCESS, P_PROCESSED, "20260722103001")), 1).ok(),
+                "超时原支付事实不得报告退款终态");
     }
 
-    // 其余组合（含充值单 order 3/8）一律 mismatch；禁止数值序比较
+    // 其余组合一律 mismatch；禁止数值序比较
     @Test
     void otherCombinationsAreMismatch() {
         assertFalse(resolve(2, 3, List.of(), 0).ok());
-        assertFalse(resolve(2, 8, List.of(), 0).ok());
         assertFalse(resolve(1, 2, List.of(), 0).ok());
         assertFalse(resolve(2, 1, List.of(), 0).ok());
         assertFalse(resolve(4, 1, List.of(), 0).ok());

@@ -13,7 +13,7 @@ public class MiniPayStatusVo implements Serializable {
 
     @Schema(description = "订单号")
     private String orderNo;
-    @Schema(description = "结构化状态码：WAITING_PAYMENT/PAID_CREDIT_PENDING/COMPLETED/CLOSED/RECONCILIATION_REQUIRED/REFUND_CONTRACT_NOT_ENABLED/MISMATCH")
+    @Schema(description = "结构化状态码：WAITING_PAYMENT/PAID_CREDIT_PENDING/COMPLETED/CLOSED/RECONCILIATION_REQUIRED/REFUNDED/PART_REFUNDED/MISMATCH")
     private String payStatusCode;
     @Schema(description = "支付状态(1342)原值")
     private Integer payStatus;

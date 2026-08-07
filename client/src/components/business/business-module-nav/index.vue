@@ -3,7 +3,6 @@
     <div class="business-module-nav__inner">
       <div class="business-module-nav__heading">
         <div class="business-module-nav__title">{{ navigation.title }}</div>
-        <div class="business-module-nav__description">{{ navigation.description }}</div>
       </div>
 
       <nav class="business-module-nav__links" :aria-label="`${navigation.title}页内导航`">
@@ -88,13 +87,6 @@
     font-weight: 650;
     line-height: 24px;
     color: var(--el-text-color-primary);
-  }
-
-  .business-module-nav__description {
-    margin-top: 2px;
-    font-size: 12px;
-    line-height: 18px;
-    color: var(--el-text-color-secondary);
   }
 
   .business-module-nav__links {

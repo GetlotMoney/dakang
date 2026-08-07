@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "chain": "E2E-07",
+  "batchId": "2026-07-31T08-19-20-060Z",
+  "round": "round1",
+  "createdAt": "2026-07-31T08:19:21.067Z",
+  "envFingerprint": {
+    "base": "http://127.0.0.1:13340/dakangApi",
+    "dbHost": "127.0.0.1",
+    "dbPort": 3309,
+    "dbName": "dakang",
+    "round": "round1",
+    "seedSentinel": true,
+    "backendPidVerified": true,
+    "jarSha256": "dda26da101fd94f14be4a4a297e0d41e4149ba476b054d0cce0d5c2a51e921b3"
+  },
+  "scriptSha256": "13c14062b01ad0a8752c32a8705ba4c0f5cf661e9b1d898ecc281d81128bdd66",
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "无消息账号空列表；越权与不存在同文案（detail/read 双端点）",
+      "pass": true,
+      "evidence": [
+        "同文案=「消息不存在或无权访问」；越权零写入"
+      ],
+      "error": "",
+      "durationMs": 37
+    },
+    {
+      "id": "S2",
+      "name": "配送链真实动作产消息：下单→支付→任务生成消息与动作时间同源",
+      "pass": true,
+      "evidence": [
+        "任务生成消息 sendTime=20260731161920 == task.CREATE_TIME"
+      ],
+      "error": "",
+      "durationMs": 208
+    },
+    {
+      "id": "S3",
+      "name": "域筛选与排序：五域过滤正确、SEND_TIME 倒序稳定",
+      "pass": true,
+      "evidence": [
+        "全部 4 条倒序；water=1 card=1；非法域拒绝"
+      ],
+      "error": "",
+      "durationMs": 45
+    },
+    {
+      "id": "S4",
+      "name": "机主报修→受理：消息触达申报人且回跳凭据正确",
+      "pass": true,
+      "evidence": [
+        "受理消息 objectId=MSG-ACC-1785485960680"
+      ],
+      "error": "",
+      "durationMs": 66
+    },
+    {
+      "id": "S5",
+      "name": "机主报修→驳回：原因如实带给申报人",
+      "pass": true,
+      "evidence": [
+        "驳回消息含原因原文"
+      ],
+      "error": "",
+      "durationMs": 64
+    },
+    {
+      "id": "S6",
+      "name": "工单全生命周期：分配/提交结果不打扰，复核关闭一条收尾",
+      "pass": true,
+      "evidence": [
+        "三节点冻结口径成立：confirm/reject/reviewPass 之外零消息"
+      ],
+      "error": "",
+      "durationMs": 95
+    },
+    {
+      "id": "S7",
+      "name": "告警转工单（无申报人）：全程零消息、不报错",
+      "pass": true,
+      "evidence": [
+        "工单 4 转出成功且消息计数不变"
+      ],
+      "error": "",
+      "durationMs": 46
+    },
+    {
+      "id": "S8",
+      "name": "已读闭环：单条已读幂等、未读数与 DB 一致",
+      "pass": true,
+      "evidence": [
+        "未读一致=5"
+      ],
+      "error": "",
+      "durationMs": 45
+    },
+    {
+      "id": "S9",
+      "name": "重试/降级骨架：种子失败样本走通全状态机（唯一入口，不造新假数据）",
+      "pass": true,
+      "evidence": [
+        "3→2→3→(降级)1/4 全链走通；服务端同构方法由 MessageCenterDbTest 锁定"
+      ],
+      "error": "",
+      "durationMs": 13
+    },
+    {
+      "id": "S10",
+      "name": "PC 记录页接口：登录门 + 筛选正确 + 只读",
+      "pass": true,
+      "evidence": [
+        "记录页筛选 user9002=1 机主域=3"
+      ],
+      "error": "",
+      "durationMs": 18
+    },
+    {
+      "id": "S11",
+      "name": "白名单事件只读：工单事件可见、资金类型拒绝、未登录拒绝",
+      "pass": true,
+      "evidence": [
+        "工单事件 8 条；支付类型筛选拒绝=「事件类型不在可订阅白名单内」"
+      ],
+      "error": "",
+      "durationMs": 18
+    },
+    {
+      "id": "S12",
+      "name": "三方一致 + 零敏感信息：小程序 == SQL == PC 记录页",
+      "pass": true,
+      "evidence": [
+        "三方一致=7 条；正文零敏感"
+      ],
+      "error": "",
+      "durationMs": 22
+    }
+  ],
+  "passed": 12,
+  "total": 12,
+  "pass": true
+}

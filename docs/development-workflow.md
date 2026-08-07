@@ -223,7 +223,7 @@ Mock 必须满足：
 
 ### P1：SQL 与字典
 
-完整执行 `AGENTS.md` 的数据库阶段：读取 `mysql8` Skill、检查 DictType 冲突、编写表/字典/权限/测试数据、使用 `INSERT IGNORE INTO`、执行到本地数据库，并同步 `deploy/mysql/init/`。
+完整执行 `AGENTS.md` 的数据库阶段：读取 `mysql8` Skill、检查 DictType 冲突、编写表/字典/权限/测试数据、执行到本地数据库，并同步 `deploy/mysql/init/`。幂等写法按约束事实选择——带显式主键 ID 的用 `INSERT IGNORE`，字典表（无唯一键）必须用 `NOT EXISTS`，详见 `AGENTS.md` 字典段。
 
 ### P2：后端实现
 
@@ -283,6 +283,29 @@ Mock 必须满足：
 - [ ] Mock 已替换且页面调用签名稳定
 - [ ] 编译、接口、页面和主链路联调通过
 - [ ] 数据可从订单、指令、流水或审计中追溯
+
+### 主环境部署清单（三端必须同轮，缺一即验收不到）
+
+- [ ] 主库备份 → 迁移执行 → 前置/后置不变式 + 未触碰业务表 CHECKSUM 零漂移
+- [ ] 后端：`server/target` JAR → `deploy/dist/server/dakang-server.jar` → 重启 `dakang-server`
+- [ ] PC：`client` `build:demo` → `deploy/dist/client/` → 重启 `dakang-web`
+- [ ] **小程序：`miniapp` `pnpm dev:mp-weixin` 重建 `dist/dev/mp-weixin`**——
+      E2E-06/07/08 三链连续漏做此步，用户在微信开发者工具打开的一直是数周前的旧产物，
+      新页面一个都看不到。必须核对产物 `project.config.json` 的 appid 与页面清单。
+      注意两个坑：① `build:mp-weixin` 走 production 模式只读 `env/.env`（appid=touristappid），
+      真实 appid 只在 `env/.env.development.local`，故验收产物必须用 dev 模式构建；
+      ② `VITE_SERVER_BASEURL` 写死局域网 IP，本机 IP 漂移后必须改该文件再重建，
+      否则小程序连不上后端（用 `ipconfig getifaddr en0` 核对）。
+- [ ] **小程序构建纪律（2026-08-01 产物污染事故）**——`dev:mp-weixin` 是 watch 进程，
+      杀 pnpm 包装进程不会杀掉真正的编译器；事故当晚累计 15 个孤儿编译器（最老的活了 29 小时）
+      各持启动时刻的 env 快照竞写同一 dist，产物按文件粒度混层（authMode 被旧快照写回 mock，
+      真机登录整晚间歇性失败）。构建前后必须执行：
+      ① 构建前 `pgrep -f "vite-plugin-uni/bin/uni.js"` 必须为 0，有则 `pkill -f` 清掉；
+      ② "Build complete" 只表示编译完成、不代表落盘完毕，须等 dist 写入静默后再动产物；
+      ③ 构建后用 `pkill -f "vite-plugin-uni/bin/uni.js"` 按进程树终止并复核 pgrep 为 0；
+      ④ 产物核验不看构建日志，看内容：`build-fingerprint.json` 与页面内指纹一致、
+      `api/runtime.js` 的 `authMode` 等模式值符合预期、appid、后端 IP。
+- [ ] 冒烟：新端点鉴权门、nginx 前缀路由、老链无回归
 
 ## 9. 交付与产物管理
 

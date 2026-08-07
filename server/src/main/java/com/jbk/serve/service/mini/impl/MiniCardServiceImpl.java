@@ -5,11 +5,13 @@ import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.mapper.user.WsCardMemberMapper;
 import com.jbk.serve.mapper.user.WsUserIdentityMapper;
 import com.jbk.serve.service.mini.IMiniCardService;
 import com.jbk.serve.service.mini.auth.MiniUserIdentitySupport;
+import com.jbk.serve.service.mini.card.CardEligibility;
 import com.jbk.serve.service.mini.card.CardMemberRule;
 import com.jbk.serve.service.mini.card.WaterCardScope;
 import com.jbk.serve.service.trade.MemberDayLimitMath;
@@ -17,6 +19,8 @@ import com.jbk.serve.service.user.IWsCardService;
 import com.jbk.serve.service.user.IWsUserService;
 import com.jbk.tool.data.mini.bo.MiniCardMemberRevokeBo;
 import com.jbk.tool.data.mini.bo.MiniCardMemberSaveBo;
+import com.jbk.tool.data.aftersale.po.WsCardEntitlementBatch;
+import com.jbk.tool.data.mini.vo.MiniCardBundleVo;
 import com.jbk.tool.data.mini.vo.MiniCardDetailVo;
 import com.jbk.tool.data.mini.vo.MiniCardMemberVo;
 import com.jbk.tool.data.mini.vo.MiniCardSummaryVo;
@@ -25,6 +29,7 @@ import com.jbk.tool.data.user.po.WsCard;
 import com.jbk.tool.data.user.po.WsCardMember;
 import com.jbk.tool.data.user.po.WsUser;
 import com.jbk.tool.exception.JbkException;
+import com.jbk.serve.service.mini.recharge.RechargeExpiry;
 import com.jbk.tool.utils.DateUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
@@ -68,6 +73,7 @@ public class MiniCardServiceImpl implements IMiniCardService {
     private final IWsUserService wsUserService;
     private final WsUserIdentityMapper wsUserIdentityMapper;
     private final WsOrderMapper wsOrderMapper;
+    private final WsCardEntitlementBatchMapper entitlementBatchMapper;
 
     @Override
     public MiniCardSummaryVo getPrimaryCard(Long userId) {
@@ -103,7 +109,50 @@ public class MiniCardServiceImpl implements IMiniCardService {
         vo.setPackageName(readPackageName(card.getPackageSnap()));
         vo.setScopeDescription(describeScope(card.getScopeJson()));
         vo.setMembers(listMembers(card.getId()));
+        // D-415：赠卡且名下有正式水卡时可合并（能力位只是展示投影，合并接口锁内另行强制校验）
+        boolean gift = CardEligibility.isGiftCard(card);
+        boolean mergeable = gift
+                && (ObjectUtil.equals(card.getCardStatus(), 1) || ObjectUtil.equals(card.getCardStatus(), 3))
+                && hasOtherPaidCard(userId, card.getId());
+        vo.setCanMergeToPaidCard(mergeable);
+        vo.setExpiringBundles(listExpiringBundles(card.getId()));
         return vo;
+    }
+
+    /**
+     * 名下（除指定卡外）是否还有未注销的付费卡（付费卡=有订单锚或永久）。
+     * 口径与 {@code MiniRechargeServiceImpl#hasOtherPaidCard} 及 listUsableCards 的
+     * 内存判定同构——三处必须同判据，否则「详情说可合并、合并接口说无主卡」。
+     */
+    private boolean hasOtherPaidCard(Long userId, Long exceptCardId) {
+        // 名额口径（审计 P1-2）：状态 1/2/3/4 全占名额；「非赠卡」经 apply 引用 CardEligibility.SQL_NOT_GIFT 唯一谓词
+        return wsCardService.count(Wrappers.lambdaQuery(WsCard.class)
+                .eq(WsCard::getUserId, userId)
+                .ne(WsCard::getId, exceptCardId)
+                .apply(CardEligibility.SQL_NOT_GIFT)) > 0;
+    }
+
+    /**
+     * 带到期时间且尚有剩余的可消费批次摘要（按到期升序）——「合并后显示多久到期」的数据源。
+     * 状态集 (1, 6) 与消费选取一致：退款锁定/已退款/已过期批次不再对用户展示为可用权益。
+     */
+    private List<MiniCardBundleVo> listExpiringBundles(Long cardId) {
+        List<WsCardEntitlementBatch> batches = entitlementBatchMapper.selectList(
+                Wrappers.lambdaQuery(WsCardEntitlementBatch.class)
+                        .eq(WsCardEntitlementBatch::getCardId, cardId)
+                        .in(WsCardEntitlementBatch::getBatchStatus, 1, 6)
+                        .isNotNull(WsCardEntitlementBatch::getExpireTime)
+                        .and(w -> w.gt(WsCardEntitlementBatch::getRemainAmountFen, 0)
+                                .or().gt(WsCardEntitlementBatch::getRemainWaterMl, 0))
+                        .orderByAsc(WsCardEntitlementBatch::getExpireTime)
+                        .orderByAsc(WsCardEntitlementBatch::getId));
+        return batches.stream().map(b -> {
+            MiniCardBundleVo vo = new MiniCardBundleVo();
+            vo.setRemainFen(nvl(b.getRemainAmountFen()));
+            vo.setRemainMl(nvl(b.getRemainWaterMl()));
+            vo.setExpireTime(b.getExpireTime());
+            return vo;
+        }).toList();
     }
 
     @Override
@@ -119,7 +168,11 @@ public class MiniCardServiceImpl implements IMiniCardService {
                 .orderByAsc(WsCard::getCardType)
                 .orderByAsc(WsCard::getId));
         for (WsCard card : ownCards) {
-            result.add(toUsableCard(card, MiniUsableCardVo.ROLE_OWNER, null));
+            // 除本卡外是否还有未注销的付费卡（付费卡=有订单锚或永久；赠卡=带期且无锚）
+            // 名额口径（审计 P1-2）：CardEligibility 单一出处——注销(4)付费卡同样占名额
+            boolean hasOtherPaid = ownCards.stream().anyMatch(other ->
+                    !other.getId().equals(card.getId()) && CardEligibility.occupiesPaidSlot(other));
+            result.add(toUsableCard(card, MiniUsableCardVo.ROLE_OWNER, null, hasOtherPaid));
         }
         // 成员授权卡（MEMBER）：仅当前有效授权（状态生效 + 时间窗内），卡本身走 @TableLogic 过滤删除
         List<WsCardMember> grants = wsCardMemberMapper.selectList(
@@ -165,7 +218,10 @@ public class MiniCardServiceImpl implements IMiniCardService {
                 wsUserIdentityMapper.selectByPhoneIncludingDeleted(bo.getPhone()),
                 "该手机号身份数据异常，请联系客服处理");
         if (ObjectUtil.isNull(target)) {
-            throw new JbkException("该手机号尚未注册，请对方先登录小程序后再授权");
+            // 「仅微信身份建号」后查不到号有两种可能：对方从未登录，或已登录但尚未绑手机号。
+            // 服务端按号码查不区分二者，文案必须同时给出这两条出路——旧文案只说「先登录」，
+            // 会让一个明明已经登录过的人反复重登，永远解决不了。
+            throw new JbkException("该手机号未绑定任何账号。请对方先登录小程序，并在「我的」中完成手机号绑定后再试");
         }
         MiniUserIdentitySupport.assertUsable(target);
         if (ObjectUtil.equals(target.getId(), userId)) {
@@ -291,6 +347,19 @@ public class MiniCardServiceImpl implements IMiniCardService {
 
     /** 摘要 + 能力位：角色 × 卡形态共同决定（OWNER 且永久卡可充值可管成员；MEMBER 仅取水）。 */
     private MiniUsableCardVo toUsableCard(WsCard card, String role, Long remainingDailyLimitMl) {
+        return toUsableCard(card, role, remainingDailyLimitMl, true);
+    }
+
+    private static long nvl(Long v) {
+        return v == null ? 0L : v;
+    }
+
+    /**
+     * @param hasOtherPaidCard 同名下（除本卡外）是否还有未注销的付费卡——赠卡转正资格
+     *                         （D-416）需要它；成员视角恒传 true（成员不谈充值）
+     */
+    private MiniUsableCardVo toUsableCard(WsCard card, String role, Long remainingDailyLimitMl,
+                                          boolean hasOtherPaidCard) {
         MiniUsableCardVo vo = new MiniUsableCardVo();
         vo.setCardId(card.getId());
         vo.setCardNo(card.getCardNo());
@@ -301,10 +370,20 @@ public class MiniCardServiceImpl implements IMiniCardService {
         vo.setExpireTime(card.getExpireTime());
         boolean owner = MiniUsableCardVo.ROLE_OWNER.equals(role);
         vo.setAccessRole(role);
-        // 带有效期的卡=活动赠卡（D-213），不得出现充值入口——赠卡可充值会让付费余额被到期日绑架
-        vo.setCanRecharge(owner && StrUtil.isBlank(card.getExpireTime()));
+        // 带有效期的卡=活动赠卡（D-213）。D-416（2026-08-06）后充值入口分两类：
+        //   永久付费卡：恒可充值（原口径）；
+        //   赠卡：仅当权益用完或已到期、且名下无其他付费卡时开放——那笔充值会把它转为正式水卡。
+        // 有效期内且有权益的赠卡仍无入口（付费余额会被到期日绑架，原口径不变）。
+        boolean gift = CardEligibility.isGiftCard(card);
+        boolean giftPromotable = gift && !hasOtherPaidCard
+                && ((nvl(card.getBalanceAmount()) == 0L && nvl(card.getBalanceMl()) == 0L)
+                        || RechargeExpiry.naturallyExpired(card.getExpireTime(), DateUtils.time()));
+        vo.setCanRecharge(owner && (StrUtil.isBlank(card.getExpireTime()) || giftPromotable));
         vo.setCanManageMembers(owner);
         vo.setRemainingDailyLimitMl(owner ? null : remainingDailyLimitMl);
+        // D-415：OWNER 的赠卡且名下有正式水卡时可合并（含已自然过期赠卡——合并即作废清理）
+        vo.setCanMergeToPaidCard(owner && gift && hasOtherPaidCard
+                && (ObjectUtil.equals(card.getCardStatus(), 1) || ObjectUtil.equals(card.getCardStatus(), 3)));
         return vo;
     }
 

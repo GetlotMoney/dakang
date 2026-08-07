@@ -34,6 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -69,6 +71,7 @@ class MiniAuthIdentityDbTest {
               CHANNEL_USER_ID BIGINT,
               REFERRER_USER_ID BIGINT,
               PROMO_CODE VARCHAR(20),
+              OWN_INVITE_CODE VARCHAR(12) NULL,
               DATA_STATUS TINYINT DEFAULT 0,
               CREATE_BY BIGINT, CREATE_TIME VARCHAR(20), UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20),
               UNIQUE KEY uk_user_phone (USER_PHONE),
@@ -254,6 +257,117 @@ class MiniAuthIdentityDbTest {
             int affected = identity.bindOpenidToUsablePhoneUser(
                     disabled.getId(), "13900004444", "oX", 1L, "20260721000000");
             assertEquals(0, affected, "禁用手机号用户不得被 CAS 绑定");
+        }
+    }
+
+    // 仅微信身份建号：多个手机号为 NULL 的账号可共存（MySQL 唯一索引忽略 NULL）
+    @Test
+    void multipleNullPhoneUsersCoexistUnderUniqueKey() {
+        try (SqlSession s = factory.openSession(true)) {
+            WsUserIdentityMapper identity = s.getMapper(WsUserIdentityMapper.class);
+            identity.insertIdentityUser(row("wx1", null, "oNULL-1", 0, 1, 1));
+            identity.insertIdentityUser(row("wx2", null, "oNULL-2", 0, 1, 1));
+            identity.insertIdentityUser(row("wx3", null, "oNULL-3", 0, 1, 1));
+            assertEquals(1, identity.selectByOpenidIncludingDeleted("oNULL-2").size());
+            assertNull(identity.selectByOpenidIncludingDeleted("oNULL-2").get(0).getUserPhone());
+        }
+    }
+
+    // 反证：写空串而非 NULL 时第二个未绑用户就撞 uk_user_phone —— 这正是应用层禁止空串的原因
+    @Test
+    void blankPhoneCollidesOnUniqueKey() {
+        try (SqlSession s = factory.openSession(true)) {
+            WsUserIdentityMapper identity = s.getMapper(WsUserIdentityMapper.class);
+            identity.insertIdentityUser(row("blank1", "", "oBLANK-1", 0, 1, 1));
+            assertThrows(Exception.class,
+                    () -> identity.insertIdentityUser(row("blank2", "", "oBLANK-2", 0, 1, 1)),
+                    "空串手机号之间会互撞唯一键，必须写 NULL");
+        }
+    }
+
+    // 补绑 CAS：手机号为 NULL 才可写入，且只写一次
+    @Test
+    void bindPhoneCasOnlyAppliesToPhonelessUser() {
+        try (SqlSession s = factory.openSession(true)) {
+            WsUserIdentityMapper identity = s.getMapper(WsUserIdentityMapper.class);
+            WsUser phoneless = row("wx", null, "oBIND-1", 0, 1, 1);
+            identity.insertIdentityUser(phoneless);
+
+            assertEquals(1, identity.bindPhoneToPhonelessUser(
+                    phoneless.getId(), "13900005555", 1L, "20260801000000"), "未绑号应补绑成功");
+            // 已绑号后再补绑 → 影响 0 行（换绑必须另走身份复核，不从此路进）
+            assertEquals(0, identity.bindPhoneToPhonelessUser(
+                    phoneless.getId(), "13900006666", 1L, "20260801000000"), "已绑号不得被本路径改号");
+
+            List<WsUser> rows = identity.selectByOpenidIncludingDeleted("oBIND-1");
+            assertEquals("13900005555", rows.get(0).getUserPhone());
+        }
+    }
+
+    // 改名守卫：占位名才改，已被用户改过的昵称绝不覆盖
+    @Test
+    void renameOnlyAppliesToPlaceholderName() {
+        try (SqlSession s = factory.openSession(true)) {
+            WsUserIdentityMapper identity = s.getMapper(WsUserIdentityMapper.class);
+            WsUser placeholder = row("微信用户", null, "oNAME-1", 0, 1, 1);
+            identity.insertIdentityUser(placeholder);
+            assertEquals(1, identity.renamePlaceholderUserName(
+                    placeholder.getId(), "微信用户", "微信用户0001", 1L, "20260801000000"));
+
+            // 已改过名（不再是占位值）→ 影响 0 行，用户自定义昵称不被覆盖
+            assertEquals(0, identity.renamePlaceholderUserName(
+                    placeholder.getId(), "微信用户", "微信用户9999", 1L, "20260801000000"));
+
+            assertEquals("微信用户0001",
+                    identity.selectByOpenidIncludingDeleted("oNAME-1").get(0).getUserName());
+        }
+    }
+
+    // 补绑 CAS 不会作用于禁用/删除账号
+    @Test
+    void bindPhoneCasSkipsUnusableUser() {
+        try (SqlSession s = factory.openSession(true)) {
+            WsUserIdentityMapper identity = s.getMapper(WsUserIdentityMapper.class);
+            WsUser deleted = row("gone", null, "oBIND-2", 1, 1, 1); // DATA_STATUS=1
+            identity.insertIdentityUser(deleted);
+            assertEquals(0, identity.bindPhoneToPhonelessUser(
+                    deleted.getId(), "13900007777", 1L, "20260801000000"), "逻辑删除账号不得补绑");
+        }
+    }
+
+    // 并发同 openid 建号：唯一键只放行一个，另一路重读（锁定读）拿得到胜出行
+    @Test
+    void concurrentPhonelessRegisterOnlyOneRowSurvives() throws Exception {
+        int threads = 2;
+        CountDownLatch ready = new CountDownLatch(threads);
+        CountDownLatch go = new CountDownLatch(1);
+        AtomicInteger ok = new AtomicInteger();
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        for (int i = 0; i < threads; i++) {
+            pool.submit(() -> {
+                try (SqlSession s = factory.openSession(true)) {
+                    WsUserIdentityMapper identity = s.getMapper(WsUserIdentityMapper.class);
+                    ready.countDown();
+                    go.await();
+                    identity.insertIdentityUser(row("wx", null, "oRACE-1", 0, 1, 1));
+                    ok.incrementAndGet();
+                } catch (Exception e) {
+                    // 唯一键冲突 → 不计成功
+                }
+                return null;
+            });
+        }
+        ready.await(10, TimeUnit.SECONDS);
+        go.countDown();
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
+
+        assertEquals(1, ok.get(), "同 openid 并发建号只能一个成功");
+        try (SqlSession s = factory.openSession(true)) {
+            WsUserIdentityMapper identity = s.getMapper(WsUserIdentityMapper.class);
+            List<WsUser> winner = identity.selectByOpenidForUpdate("oRACE-1");
+            assertEquals(1, winner.size(), "锁定读应能拿到胜出行");
+            assertNotNull(winner.get(0).getId());
         }
     }
 }

@@ -23,6 +23,8 @@ public final class RechargeSnapshot {
     public static final String SCHEMA_VERSION = "L2_V2";
     /** 通过创单校验的卡状态固定为 1 正常。 */
     public static final int CARD_STATUS_AT_CREATE = 1;
+    /** 转正单唯一额外合法的创单资格状态：自然过期(3)。快照必须记真实值（审计 P1-3）。 */
+    public static final int CARD_STATUS_EXPIRED_AT_CREATE = 3;
     /** 首次购卡快照的 purchaseMode 固定值（决策 A7）。 */
     public static final String PURCHASE_MODE_FIRST_CARD = "FIRST_CARD";
     /** 首次购卡计划卡类型固定 1 虚拟卡（决策 A5：一期 L2-A 固定建虚拟卡）。 */
@@ -40,6 +42,14 @@ public final class RechargeSnapshot {
     private static final String F_PKG_SCOPE = "packageScopeSnapshot";
     private static final String F_CARD_SCOPE = "targetCardScopeSnapshot";
     private static final String F_ELIGIBILITY = "targetCardEligibilitySnapshot";
+    /**
+     * 赠卡转正标志（D-416，2026-08-06 甲方确认）：创单时冻结「本单入账即把赠卡转为
+     * 永久付费卡」的意图。<b>可选字段</b>——存量快照没有它，parse 缺省按 false；
+     * 一旦出现则必须是严格 boolean。它同时是三处校验的豁免钥匙：
+     * ①套餐永久×卡有限的类型交叉校验；②付款窗按永久卡口径（不被旧到期日钳制）；
+     * ③入账时走「置 EXPIRE_TIME=NULL + 状态恢复」的转正 CAS。</p>
+     */
+    private static final String F_PROMOTE = "promoteToPermanent";
     private static final String F_CARD_STATUS_AT_CREATE = "cardStatusAtCreate";
     private static final String F_EXPIRE_AT_CREATE = "expireTimeAtCreate";
     private static final String F_CAPTURED_TIME = "capturedTime";
@@ -77,10 +87,24 @@ public final class RechargeSnapshot {
      */
     public static String build(String requestId, WsPackage pkg, WsCard card,
                                WaterCardScope cardScope, WaterCardScope pkgScope, String createTime) {
+        return build(requestId, pkg, card, cardScope, pkgScope, createTime, false);
+    }
+
+    /**
+     * L2-B 快照（可带赠卡转正标志，D-416）。
+     *
+     * <p>{@code promoteToPermanent=false} 时<b>不写</b>该字段——新旧快照逐字节同形，
+     * 既有订单与既有测试都不感知；只有转正单会带上显式 {@code true}。</p>
+     */
+    public static String build(String requestId, WsPackage pkg, WsCard card,
+                               WaterCardScope cardScope, WaterCardScope pkgScope, String createTime,
+                               boolean promoteToPermanent) {
         RechargeOrderNo.requireCanonicalUuid(requestId);
         RechargeLimits.validatePackage(pkg);
         JSONObject eligibility = new JSONObject(true);
-        eligibility.put(F_CARD_STATUS_AT_CREATE, CARD_STATUS_AT_CREATE);
+        // 审计 P1-3：记真实创单资格状态，不再硬编码 1。普通充值创单闸只放行状态 1；
+        // 转正单（D-416）允许自然过期形成的状态 3——parse 侧按 promote 标志交叉校验。
+        eligibility.put(F_CARD_STATUS_AT_CREATE, card.getCardStatus());
         // 永久卡为 null；有限卡是创建时刻的卡有效期。
         eligibility.put(F_EXPIRE_AT_CREATE, blankToNull(card.getExpireTime()));
         // 必须等于订单 createTime（同一服务端时刻）。
@@ -99,6 +123,9 @@ public final class RechargeSnapshot {
         snap.put(F_PKG_SCOPE, pkgScope == null ? null : pkgScope.toCanonicalJson());
         snap.put(F_CARD_SCOPE, cardScope.toCanonicalJson());
         snap.put(F_ELIGIBILITY, eligibility);
+        if (promoteToPermanent) {
+            snap.put(F_PROMOTE, Boolean.TRUE);
+        }
         // v2 的 nullable 字段也是完整合同的一部分；必须显式序列化 null，避免 build 产物被 strict parse
         // 判成缺字段，也避免「字段缺失」与「明确为永久/不附加范围」混成同一语义。
         return JSON.toJSONString(snap, SerializerFeature.WriteMapNullValue);
@@ -156,7 +183,8 @@ public final class RechargeSnapshot {
                          long payAmount, long waterMl, long bonusAmount, String unitPriceSnap,
                          Integer expireDays, WaterCardScope cardScope, WaterCardScope packageScope,
                          Integer cardStatusAtCreate, String expireTimeAtCreate, String capturedTime,
-                         String purchaseMode, Integer plannedCardType) {
+                         String purchaseMode, Integer plannedCardType,
+                         boolean promoteToPermanent) {
     }
 
     /**
@@ -183,7 +211,12 @@ public final class RechargeSnapshot {
         // 分流不放松任何一侧：L2-B 快照混入 purchase 字段会因「资格快照字段不符」被拒，
         // purchase 快照缺 plannedCardType 或带 cardStatusAtCreate 同样被拒。
         boolean purchase = o.containsKey(F_PURCHASE_MODE);
-        requireExactFields(o, purchase ? PURCHASE_SNAPSHOT_FIELDS : SNAPSHOT_FIELDS, "订单快照");
+        if (purchase) {
+            requireExactFields(o, PURCHASE_SNAPSHOT_FIELDS, "订单快照");
+        } else {
+            requireExactFields(o, SNAPSHOT_FIELDS, Set.of(F_PROMOTE), "订单快照");
+        }
+        boolean promote = readPromoteFlag(o);
         String schemaVersion = requireString(o, F_SCHEMA, "订单快照版本");
         if (!SCHEMA_VERSION.equals(schemaVersion)) {
             throw new JbkException("订单快照版本不符，拒绝按当前合同解释");
@@ -229,8 +262,13 @@ public final class RechargeSnapshot {
             capturedTime = requireString(eligibility, F_CAPTURED_TIME, "订单快照采集时间");
             expireAtCreate = requireNullableString(
                     eligibility, F_EXPIRE_AT_CREATE, "订单快照创建时卡有效期");
-            // §4.3：cardStatusAtCreate 固定为通过创单校验的 1；其它值说明快照被改写或来自非法创建路径
-            if (statusAtCreate != CARD_STATUS_AT_CREATE) {
+            // §4.3 + 审计 P1-3：普通充值只允许状态 1；转正单允许 1 或自然过期形成的 3。
+            // 非转正快照出现 3（或任何其它值）都说明快照被改写或来自非法创建路径。
+            if (promote) {
+                if (statusAtCreate != CARD_STATUS_AT_CREATE && statusAtCreate != CARD_STATUS_EXPIRED_AT_CREATE) {
+                    throw new JbkException("订单快照资格状态非法，拒绝");
+                }
+            } else if (statusAtCreate != CARD_STATUS_AT_CREATE) {
                 throw new JbkException("订单快照资格状态非法，拒绝");
             }
         }
@@ -253,23 +291,48 @@ public final class RechargeSnapshot {
                 throw new JbkException("首次购卡快照新卡范围与套餐范围不一致，拒绝");
             }
         } else if ((expireDays == null) != (expireAtCreate == null)) {
-            // 该交叉校验只属于 L2-B（卡与套餐有效期类型必须一致）；purchase 没有既有卡，不适用
-            throw new JbkException("订单快照套餐与目标卡有效期类型不一致");
+            // 该交叉校验只属于 L2-B（卡与套餐有效期类型必须一致）；purchase 没有既有卡，不适用。
+            // 唯一豁免：赠卡转正单（D-416）恰是「永久套餐 × 有限赠卡」的组合，放行；
+            // 反向错配（有限套餐 × 永久卡）不存在合法场景，照拒。
+            if (!(promote && expireDays == null && expireAtCreate != null)) {
+                throw new JbkException("订单快照套餐与目标卡有效期类型不一致");
+            }
         }
         return new Parsed(SCHEMA_VERSION, requestId, packageId, packageName,
                 pay, water, bonus, unitPrice, expireDays,
                 cardScope, pkgScope, statusAtCreate, expireAtCreate, capturedTime,
-                purchaseMode, plannedCardType);
+                purchaseMode, plannedCardType, promote);
+    }
+
+    /** 转正标志：缺省 false（存量快照兼容）；出现则必须是严格 boolean，字符串 "true" 不算。 */
+    private static boolean readPromoteFlag(JSONObject o) {
+        if (!o.containsKey(F_PROMOTE)) {
+            return false;
+        }
+        Object raw = o.get(F_PROMOTE);
+        if (!(raw instanceof Boolean value)) {
+            throw new JbkException("订单快照转正标志必须是布尔值");
+        }
+        return value;
     }
 
     private static void requireExactFields(JSONObject object, Set<String> expected, String label) {
+        requireExactFields(object, expected, Set.of(), label);
+    }
+
+    /**
+     * 严格封闭字段集 + 显式可选集。可选集当前只有转正标志一个成员：
+     * 存量快照（历史订单）没有该字段，强制必填会让旧单的支付/入账/详情整体失效。
+     */
+    private static void requireExactFields(JSONObject object, Set<String> expected,
+                                           Set<String> optional, String label) {
         for (String field : expected) {
             if (!object.containsKey(field)) {
                 throw new JbkException(label + "缺少字段 " + field);
             }
         }
         for (String field : object.keySet()) {
-            if (!expected.contains(field)) {
+            if (!expected.contains(field) && !optional.contains(field)) {
                 throw new JbkException(label + "含未知字段 " + field);
             }
         }

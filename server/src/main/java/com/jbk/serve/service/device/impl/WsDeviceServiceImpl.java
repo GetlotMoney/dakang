@@ -9,7 +9,10 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.jbk.serve.mapper.device.WsDeviceMapper;
 import com.jbk.serve.mapper.device.WsDeviceTelemetryMapper;
+import com.jbk.serve.mapper.device.WsFaultDictMapper;
 import com.jbk.serve.mapper.device.WsQrcodeMapper;
+import com.jbk.serve.service.device.DeviceAvailability;
+import com.jbk.serve.service.device.DeviceAvailabilityGuard;
 import com.jbk.serve.service.device.IWsDeviceOutletService;
 import com.jbk.serve.service.device.IWsDeviceService;
 import com.jbk.serve.service.user.IWsUserService;
@@ -20,6 +23,7 @@ import com.jbk.tool.data.device.bo.WsDeviceBo;
 import com.jbk.tool.data.device.po.WsDevice;
 import com.jbk.tool.data.device.po.WsDeviceOutlet;
 import com.jbk.tool.data.device.po.WsDeviceTelemetry;
+import com.jbk.tool.data.device.po.WsFaultDict;
 import com.jbk.tool.data.device.po.WsQrcode;
 import com.jbk.tool.data.device.vo.WsDeviceTelemetryVo;
 import com.jbk.tool.data.device.vo.WsDeviceVo;
@@ -28,6 +32,7 @@ import com.jbk.tool.data.user.po.WsUser;
 import com.jbk.tool.data.station.po.WsStation;
 import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.utils.OptionalUtils;
+import com.jbk.tool.utils.DateUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -57,6 +62,11 @@ public class WsDeviceServiceImpl extends ServiceImpl<WsDeviceMapper, WsDevice> i
     private WsQrcodeMapper qrcodeMapper;
     @Autowired
     private WsDeviceTelemetryMapper telemetryMapper;
+    @Autowired
+    private WsFaultDictMapper faultDictMapper;
+    /** 可用性判定唯一出处：列表页与用户侧、下单事务共用同一套字典冲突处理。 */
+    @Autowired
+    private DeviceAvailabilityGuard availabilityGuard;
 
     @Override
     public PageDataVo<WsDeviceVo> pageData(WsDeviceBo deviceBo) {
@@ -92,6 +102,7 @@ public class WsDeviceServiceImpl extends ServiceImpl<WsDeviceMapper, WsDevice> i
         OptionalUtils.gtZeroElseThrow(cnt, "设备编号已存在");
         checkStation(deviceBo.getStationId());
         checkOwnerUser(deviceBo.getOwnerUserId());
+        checkSimArchive(deviceBo);
         WsDevice device = BeanUtil.copyProperties(deviceBo, WsDevice.class);
         // 新建设备初始状态为未激活、空闲；首次有效心跳负责激活，后台不提供人工修改入口。
         device.setOnlineStatus(DeviceEnum.OnlineStatus.INACTIVE.getValue());
@@ -111,6 +122,7 @@ public class WsDeviceServiceImpl extends ServiceImpl<WsDeviceMapper, WsDevice> i
         }
         checkStation(deviceBo.getStationId());
         checkOwnerUser(deviceBo.getOwnerUserId());
+        checkSimArchive(deviceBo);
         WsDevice device = BeanUtil.copyProperties(deviceBo, WsDevice.class);
         device.setDeviceNo(null);
         // Bo 的在线/运行状态仅是列表筛选字段，严禁经编辑写回（状态只能由设备上行链路维护）
@@ -121,6 +133,17 @@ public class WsDeviceServiceImpl extends ServiceImpl<WsDeviceMapper, WsDevice> i
             update(Wrappers.lambdaUpdate(WsDevice.class)
                     .eq(WsDevice::getId, deviceBo.getId())
                     .set(WsDevice::getOwnerUserId, null));
+        }
+        // SIM 状态/到期时间同为可清空档案字段：不置空则错误的到期日期永远改不掉（同 ownerUserId 手法）
+        if (ObjectUtil.isNull(deviceBo.getSimStatus())) {
+            update(Wrappers.lambdaUpdate(WsDevice.class)
+                    .eq(WsDevice::getId, deviceBo.getId())
+                    .set(WsDevice::getSimStatus, null));
+        }
+        if (StrUtil.isBlank(deviceBo.getSimExpireTime())) {
+            update(Wrappers.lambdaUpdate(WsDevice.class)
+                    .eq(WsDevice::getId, deviceBo.getId())
+                    .set(WsDevice::getSimExpireTime, null));
         }
         updateById(device);
         return Boolean.TRUE;
@@ -191,7 +214,34 @@ public class WsDeviceServiceImpl extends ServiceImpl<WsDeviceMapper, WsDevice> i
         OptionalUtils.nullToElseThrow(user, "机主用户不存在");
     }
 
+    /** SIM 档案由运营维护但仍需服务端终审，避免非法状态或宽松日期污染可用性判定。 */
+    private void checkSimArchive(WsDeviceBo deviceBo) {
+        if (ObjectUtil.isNotNull(deviceBo.getSimStatus())) {
+            DeviceEnum.SimStatus.getType(deviceBo.getSimStatus());
+            if (StrUtil.isBlank(deviceBo.getSimIccid())) {
+                throw new JbkException("维护SIM状态前必须填写ICCID");
+            }
+        }
+        String expireTime = deviceBo.getSimExpireTime();
+        if (StrUtil.isBlank(expireTime)) {
+            deviceBo.setSimExpireTime(null);
+            return;
+        }
+        try {
+            var parsed = java.time.LocalDateTime.parse(expireTime, DateUtils.COMPACT_FORMATTER);
+            if (!expireTime.equals(parsed.format(DateUtils.COMPACT_FORMATTER))) {
+                throw new IllegalArgumentException("日期发生宽松归一化");
+            }
+        } catch (RuntimeException e) {
+            throw new JbkException("SIM到期时间格式非法");
+        }
+    }
+
     /** 填充派生字段：水站名、机主名、出水口数 */
+    private static String normalizeFaultCode(String faultCode) {
+        return StrUtil.trimToEmpty(faultCode).toUpperCase(java.util.Locale.ROOT);
+    }
+
     private void fillDerived(List<WsDeviceVo> voList) {
         if (CollUtil.isEmpty(voList)) {
             return;
@@ -220,11 +270,50 @@ public class WsDeviceServiceImpl extends ServiceImpl<WsDeviceMapper, WsDevice> i
                 }
             });
         }
-        // 出水口数
+        // 出水口数与用户侧可用性。PC 只展示这里的结论，不在页面复制设备安全规则。
         List<Long> deviceIdList = voList.stream().map(WsDeviceVo::getId).collect(Collectors.toList());
-        Map<Long, Long> outletCountMap = outletService.list(Wrappers.lambdaQuery(WsDeviceOutlet.class)
-                        .in(WsDeviceOutlet::getDeviceId, deviceIdList)).stream()
-                .collect(Collectors.groupingBy(WsDeviceOutlet::getDeviceId, Collectors.counting()));
-        voList.forEach(vo -> vo.setOutletCount(outletCountMap.getOrDefault(vo.getId(), 0L)));
+        List<WsDeviceOutlet> outletList = outletService.list(Wrappers.lambdaQuery(WsDeviceOutlet.class)
+                .in(WsDeviceOutlet::getDeviceId, deviceIdList));
+        Map<Long, List<WsDeviceOutlet>> outletMap = outletList.stream()
+                .collect(Collectors.groupingBy(WsDeviceOutlet::getDeviceId));
+        List<String> faultCodes = voList.stream().map(WsDeviceVo::getLastFaultCode)
+                .filter(StrUtil::isNotBlank).distinct().collect(Collectors.toList());
+        // 按码分组而不是 toMap 去重：同码多条是可能的（FAULT_CODE 只是普通索引），
+        // (a,b)->a 会把「一条阻断、一条不阻断」压平成任选其一，列表显示「可下单」而用户侧
+        // 同时被 FAULT_DICT_CONFLICT 拒绝。冲突的处理权交给 Guard，本处只负责原样搬运。
+        Map<String, List<WsFaultDict>> faultMap = faultCodes.isEmpty() ? Map.of()
+                : faultDictMapper.selectList(Wrappers.lambdaQuery(WsFaultDict.class)
+                        .in(WsFaultDict::getFaultCode, faultCodes)).stream()
+                        .collect(Collectors.groupingBy(item -> normalizeFaultCode(item.getFaultCode())));
+        Map<Long, WsDevice> sourceMap = listByIds(deviceIdList).stream()
+                .collect(Collectors.toMap(WsDevice::getId, Function.identity()));
+        voList.forEach(vo -> {
+            List<WsDeviceOutlet> deviceOutlets = outletMap.getOrDefault(vo.getId(), List.of());
+            vo.setOutletCount((long) deviceOutlets.size());
+            WsDevice source = sourceMap.get(vo.getId());
+            if (ObjectUtil.isNull(source)) {
+                vo.setOrderAvailable(false)
+                        .setOrderAvailabilityCode("DEVICE_UNAVAILABLE")
+                        .setOrderAvailabilityReason("设备档案缺失");
+                return;
+            }
+            WsDeviceOutlet verdictOutlet = deviceOutlets.stream()
+                    .filter(item -> ObjectUtil.equal(item.getOutletStatus(), 1))
+                    .findFirst().orElseGet(() -> deviceOutlets.stream().findFirst().orElse(null));
+            // 键归一：库侧 IN 匹配走 utf8mb4_general_ci（大小写不敏感、尾空格 PAD SPACE），
+            // Java Map 查键是大小写与空白敏感的。不归一就会出现「SQL 查到了、Java 查不到」，
+            // 把已登记的码误判成未登记。
+            List<WsFaultDict> currentFaults = StrUtil.isBlank(source.getLastFaultCode())
+                    ? List.of()
+                    : faultMap.getOrDefault(normalizeFaultCode(source.getLastFaultCode()), List.of());
+            DeviceAvailability.Verdict verdict =
+                    availabilityGuard.judgeWithFaults(source, verdictOutlet, currentFaults).verdict();
+            if (verdict.available() && deviceOutlets.isEmpty()) {
+                verdict = new DeviceAvailability.Verdict("NO_AVAILABLE_OUTLET", "当前设备没有可用出水口");
+            }
+            vo.setOrderAvailable(verdict.available())
+                    .setOrderAvailabilityCode(verdict.code())
+                    .setOrderAvailabilityReason(verdict.reason());
+        });
     }
 }

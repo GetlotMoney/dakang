@@ -507,7 +507,8 @@ class AdminDeliveryTraceAssemblyTest {
     void decideDelegatesToPackageATransactionWithSessionAdmin() {
         DeliveryAppealDecideBo bo = new DeliveryAppealDecideBo();
         bo.setAppealId("300");
-        bo.setOutcome(5);
+        bo.setStrategyCode("RESEND");
+        bo.setApprovedCount(1);
         bo.setHandleResult("核实少送一桶，登记补送");
         when(appealTxService.decideAppeal(eq(bo), eq(9L), any())).thenReturn(true);
 

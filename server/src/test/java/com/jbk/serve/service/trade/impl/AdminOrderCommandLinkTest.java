@@ -1,5 +1,6 @@
 package com.jbk.serve.service.trade.impl;
 
+import com.jbk.serve.service.trade.OrderCommandVerifier;
 import com.jbk.tool.data.device.po.WsCommand;
 import com.jbk.tool.data.trade.vo.AdminOrderItemVo;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 历史兼容已随迁移补写 orderNo 而退场）；DATA_STATUS 必须精确为 0；出水指令与取水订单双向绑定。</p>
  */
 class AdminOrderCommandLinkTest {
+
+    /**
+     * 判定入口已抽到 {@link OrderCommandVerifier}（原始值入参，读写两侧共用）。
+     * 本用例仍以读模型形状驱动矩阵，故在测试内做一次拆包，不在生产代码留 Vo 适配层。
+     * afterSaleConfirmed 取自订单读模型（默认 false），核账放宽的用例自行置位。
+     */
+    private static String verify(AdminOrderItemVo order, WsCommand cmd) {
+        return OrderCommandVerifier.commandLinkMismatch(
+                order.getId(), order.getOrderNo(), order.getOrderType(), order.getOrderStatus(),
+                order.getDeviceId(), order.getOutletId(), order.getOutletNo(), order.getOutletDeviceId(),
+                order.getPlanMl(), order.getActualMl(), order.getCmdId(), order.getFinishTime(),
+                Boolean.TRUE.equals(order.getAfterSaleConfirmed()), cmd);
+    }
 
     private AdminOrderItemVo order(Long id, String orderNo, Integer orderType, Long deviceId, Long cmdId) {
         AdminOrderItemVo order = new AdminOrderItemVo();
@@ -46,40 +60,40 @@ class AdminOrderCommandLinkTest {
 
     @Test
     void matchedKeysPass() {
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNull(verify(
                 waterOrder, cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
     void nonDispenseCommandOnAnyOrderIsMismatch() {
         // 收口复审：只要订单引用了指令，就必须 ORDER_TYPE=1 且 CMD_TYPE=1；查询类指令(3)一律拒绝。
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 order(70L, "WO-70", 2, 1L, 37L), cmd(70L, 1L, 3, "{}")));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 waterOrder, cmd(55L, 1L, 3, "{\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
     void payloadPlanMlMismatchIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 waterOrder, cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":99999,\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
     void payloadOutletNoMismatchIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 waterOrder, cmd(55L, 1L, 1, "{\"outletNo\":9,\"planMl\":20000,\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
     void payloadPlanMlAndOutletNoAreRequiredIntegerEvidence() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 waterOrder, cmd(55L, 1L, 1, "{\"outletNo\":1,\"orderNo\":\"WO-55\"}")));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 waterOrder, cmd(55L, 1L, 1, "{\"planMl\":20000,\"orderNo\":\"WO-55\"}")));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 waterOrder, cmd(55L, 1L, 1, "{\"outletNo\":\"1\",\"planMl\":\"20000\",\"orderNo\":\"WO-55\"}")));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 waterOrder, cmd(55L, 1L, 1, "{\"outletNo\":1.0,\"planMl\":20000.0,\"orderNo\":\"WO-55\"}")));
     }
 
@@ -87,12 +101,12 @@ class AdminOrderCommandLinkTest {
     void orderPlanMlAndOutletNoAreRequiredEvidence() {
         AdminOrderItemVo missingPlan = order(55L, "WO-55", 1, 1L, 37L);
         missingPlan.setPlanMl(null);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 missingPlan, cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}")));
 
         AdminOrderItemVo missingOutlet = order(55L, "WO-55", 1, 1L, 37L);
         missingOutlet.setOutletNo(null);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 missingOutlet, cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}")));
     }
 
@@ -100,18 +114,18 @@ class AdminOrderCommandLinkTest {
     void planMlAndOutletNoMustBePositiveOnBothSides() {
         AdminOrderItemVo invalidPlan = order(55L, "WO-55", 1, 1L, 37L);
         invalidPlan.setPlanMl(0L);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 invalidPlan, cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":0,\"orderNo\":\"WO-55\"}")));
 
         AdminOrderItemVo invalidOutlet = order(55L, "WO-55", 1, 1L, 37L);
         invalidOutlet.setOutletNo(0);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 invalidOutlet, cmd(55L, 1L, 1, "{\"outletNo\":0,\"planMl\":20000,\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
     void numericPayloadOrderNoIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 order(55L, "55", 1, 1L, 37L),
                 cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":55}")));
     }
@@ -127,19 +141,19 @@ class AdminOrderCommandLinkTest {
         WsCommand notSuccess = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         notSuccess.setCmdStatus(3);
         notSuccess.setResultPayload("{\"actualMl\":4980}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(finished, notSuccess));
+        assertNotNull(verify(finished, notSuccess));
 
         // 水量不一致 → mismatch（防"正确单号+错误水量"）
         WsCommand wrongMl = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         wrongMl.setCmdStatus(4);
         wrongMl.setResultPayload("{\"actualMl\":9999}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(finished, wrongMl));
+        assertNotNull(verify(finished, wrongMl));
 
         // 结果缺 actualMl → mismatch
         WsCommand noActual = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         noActual.setCmdStatus(4);
         noActual.setResultPayload("{}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(finished, noActual));
+        assertNotNull(verify(finished, noActual));
 
         // 全对 → 通过
         WsCommand good = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
@@ -147,7 +161,7 @@ class AdminOrderCommandLinkTest {
         good.setSentTime("20260721090000");
         good.setFinishTime("20260721090002");
         good.setResultPayload("{\"actualMl\":4980}");
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(finished, good));
+        assertNull(verify(finished, good));
     }
 
     @Test
@@ -159,7 +173,7 @@ class AdminOrderCommandLinkTest {
         WsCommand numericResult = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         numericResult.setCmdStatus(4);
         numericResult.setResultPayload("{\"actualMl\":4980}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(missingOrderActual, numericResult));
+        assertNotNull(verify(missingOrderActual, numericResult));
 
         AdminOrderItemVo finished = order(55L, "WO-55", 1, 1L, 37L);
         finished.setOrderStatus(4);
@@ -168,7 +182,7 @@ class AdminOrderCommandLinkTest {
         WsCommand stringResult = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         stringResult.setCmdStatus(4);
         stringResult.setResultPayload("{\"actualMl\":\"4980\"}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(finished, stringResult));
+        assertNotNull(verify(finished, stringResult));
     }
 
     @Test
@@ -180,45 +194,45 @@ class AdminOrderCommandLinkTest {
         WsCommand zeroResult = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         zeroResult.setCmdStatus(4);
         zeroResult.setResultPayload("{\"actualMl\":0}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(finished, zeroResult));
+        assertNotNull(verify(finished, zeroResult));
     }
 
     @Test
     void missingCommandIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, null));
+        assertNotNull(verify(waterOrder, null));
     }
 
     @Test
     void nonZeroOrNullDataStatusIsMismatch() {
         WsCommand deleted = cmd(55L, 1L, 1, "{\"orderNo\":\"WO-55\"}");
         deleted.setDataStatus(1);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, deleted));
+        assertNotNull(verify(waterOrder, deleted));
         // 收口复审：DATA_STATUS 为空不得默认视为正常。
         WsCommand unknown = cmd(55L, 1L, 1, "{\"orderNo\":\"WO-55\"}");
         unknown.setDataStatus(null);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, unknown));
+        assertNotNull(verify(waterOrder, unknown));
     }
 
     @Test
     void nullCommandOrderIdIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(null, 1L, 1, "{\"orderNo\":\"WO-55\"}")));
+        assertNotNull(verify(waterOrder, cmd(null, 1L, 1, "{\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
     void foreignOrderIdIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(56L, 1L, 1, "{\"orderNo\":\"WO-55\"}")));
+        assertNotNull(verify(waterOrder, cmd(56L, 1L, 1, "{\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
     void missingDeviceOnEitherSideIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 order(55L, "WO-55", 1, null, 37L), cmd(55L, 1L, 1, "{\"orderNo\":\"WO-55\"}")));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(55L, null, 1, "{\"orderNo\":\"WO-55\"}")));
+        assertNotNull(verify(waterOrder, cmd(55L, null, 1, "{\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
     void foreignDeviceIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(55L, 2L, 1, "{\"orderNo\":\"WO-55\"}")));
+        assertNotNull(verify(waterOrder, cmd(55L, 2L, 1, "{\"orderNo\":\"WO-55\"}")));
     }
 
     @Test
@@ -227,7 +241,7 @@ class AdminOrderCommandLinkTest {
         crossed.setOutletId(3L);
         crossed.setOutletNo(1);
         crossed.setOutletDeviceId(2L);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 crossed, cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}")));
     }
 
@@ -235,7 +249,7 @@ class AdminOrderCommandLinkTest {
     void loadedCommandIdMustEqualOrderCmdId() {
         WsCommand other = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         other.setId(99L);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, other));
+        assertNotNull(verify(waterOrder, other));
     }
 
     @Test
@@ -243,26 +257,26 @@ class AdminOrderCommandLinkTest {
         AdminOrderItemVo dispensing = order(55L, "WO-55", 1, 1L, 37L);
         dispensing.setOrderStatus(3);
         WsCommand pending = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(dispensing, pending));
+        assertNotNull(verify(dispensing, pending));
 
         WsCommand acked = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         acked.setCmdStatus(3);
         acked.setSentTime("20260721090000");
         acked.setAckTime("20260721090001");
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(dispensing, acked));
+        assertNull(verify(dispensing, acked));
         acked.setFinishTime("20260721090002");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(dispensing, acked));
+        assertNotNull(verify(dispensing, acked));
         acked.setFinishTime(null);
         acked.setResultPayload("{}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(dispensing, acked));
+        assertNotNull(verify(dispensing, acked));
 
         AdminOrderItemVo abnormal = order(55L, "WO-55", 1, 1L, 37L);
         abnormal.setOrderStatus(6);
         WsCommand failed = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         failed.setCmdStatus(5);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNotNull(verify(abnormal, failed));
         failed.setFinishTime("20260721090002");
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNull(verify(abnormal, failed));
     }
 
     @Test
@@ -276,9 +290,9 @@ class AdminOrderCommandLinkTest {
         success.setSentTime("20260721090000");
         success.setFinishTime("20260721090002");
         success.setResultPayload("{\"actualMl\":0}");
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(refunded, success));
+        assertNull(verify(refunded, success));
         success.setResultPayload("{\"actualMl\":1}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(refunded, success));
+        assertNotNull(verify(refunded, success));
     }
 
     @Test
@@ -291,29 +305,29 @@ class AdminOrderCommandLinkTest {
         failed.setFinishTime("20260721090002");
 
         // 下发即失败/超时时允许双方均无实际量。
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNull(verify(abnormal, failed));
         failed.setCmdStatus(6);
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNull(verify(abnormal, failed));
         failed.setCmdStatus(5);
 
         abnormal.setActualMl(1L);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNotNull(verify(abnormal, failed));
         failed.setResultPayload("{\"actualMl\":9999}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNotNull(verify(abnormal, failed));
         failed.setResultPayload("{\"actualMl\":1}");
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNull(verify(abnormal, failed));
 
         abnormal.setActualMl(null);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNotNull(verify(abnormal, failed));
         abnormal.setActualMl(0L);
         failed.setResultPayload("{\"actualMl\":0}");
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNull(verify(abnormal, failed));
         abnormal.setActualMl(-1L);
         failed.setResultPayload("{\"actualMl\":-1}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNotNull(verify(abnormal, failed));
         abnormal.setActualMl(0L);
         failed.setResultPayload("{\"actualMl\":\"0\"}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(abnormal, failed));
+        assertNotNull(verify(abnormal, failed));
     }
 
     @Test
@@ -321,31 +335,31 @@ class AdminOrderCommandLinkTest {
         WsCommand pending = cmd(55L, 1L, 1,
                 "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         pending.setFinishTime("20260721090002");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, pending));
+        assertNotNull(verify(waterOrder, pending));
         pending.setFinishTime(null);
         pending.setResultPayload("{}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, pending));
+        assertNotNull(verify(waterOrder, pending));
         pending.setResultPayload(null);
         pending.setSentTime("20260721090000");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, pending));
+        assertNotNull(verify(waterOrder, pending));
         pending.setSentTime(null);
         pending.setAckTime("20260721090001");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, pending));
+        assertNotNull(verify(waterOrder, pending));
 
         WsCommand sent = cmd(55L, 1L, 1,
                 "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
         sent.setCmdStatus(2);
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, sent));
+        assertNotNull(verify(waterOrder, sent));
         sent.setSentTime("20260721090000");
-        assertNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, sent));
+        assertNull(verify(waterOrder, sent));
         sent.setAckTime("20260721090001");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, sent));
+        assertNotNull(verify(waterOrder, sent));
         sent.setAckTime(null);
         sent.setFinishTime("20260721090002");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, sent));
+        assertNotNull(verify(waterOrder, sent));
         sent.setFinishTime(null);
         sent.setResultPayload("{}");
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, sent));
+        assertNotNull(verify(waterOrder, sent));
     }
 
     @Test
@@ -363,13 +377,13 @@ class AdminOrderCommandLinkTest {
             success.setFinishTime("20260721090002");
             success.setResultPayload("{\"actualMl\":" + actualMl + "}");
 
-            assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(completed, success));
+            assertNotNull(verify(completed, success));
         }
     }
 
     @Test
     void waterOrderWithNonDispenseCommandIsMismatch() {
-        String reason = AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(55L, 1L, 3, "{}"));
+        String reason = verify(waterOrder, cmd(55L, 1L, 3, "{}"));
         assertNotNull(reason);
         assertTrue(reason.contains("开始出水"));
     }
@@ -377,32 +391,93 @@ class AdminOrderCommandLinkTest {
     @Test
     void dispenseCommandOnNonWaterOrderIsMismatch() {
         // 收口复审：反向约束——出水指令只能被 ORDER_TYPE=1 订单绑定。
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 order(70L, "WO-70", 2, 1L, 37L), cmd(70L, 1L, 1, "{\"orderNo\":\"WO-70\"}")));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 order(71L, "WO-71", null, 1L, 37L), cmd(71L, 1L, 1, "{\"orderNo\":\"WO-71\"}")));
     }
 
     @Test
     void dispensePayloadMissingOrBlankOrderNoIsMismatch() {
         // 收口复审：出水指令报文 orderNo 硬校验——空报文 / 无字段 / 空串全部拒绝。
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(55L, 1L, 1, null)));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(55L, 1L, 1, "")));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(55L, 1L, 1, "{\"planMl\":5000}")));
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(55L, 1L, 1, "{\"orderNo\":\"\"}")));
+        assertNotNull(verify(waterOrder, cmd(55L, 1L, 1, null)));
+        assertNotNull(verify(waterOrder, cmd(55L, 1L, 1, "")));
+        assertNotNull(verify(waterOrder, cmd(55L, 1L, 1, "{\"planMl\":5000}")));
+        assertNotNull(verify(waterOrder, cmd(55L, 1L, 1, "{\"orderNo\":\"\"}")));
     }
 
     @Test
     void dispenseMalformedPayloadIsMismatch() {
         // 收口复审：畸形 JSON 不再兼容通过。
-        String reason = AdminOrderServiceImpl.commandLinkMismatch(waterOrder, cmd(55L, 1L, 1, "not-json"));
+        String reason = verify(waterOrder, cmd(55L, 1L, 1, "not-json"));
         assertNotNull(reason);
         assertTrue(reason.contains("JSON"));
     }
 
     @Test
     void payloadOrderNoRebindIsMismatch() {
-        assertNotNull(AdminOrderServiceImpl.commandLinkMismatch(
+        assertNotNull(verify(
                 waterOrder, cmd(55L, 1L, 1, "{\"planMl\":20000,\"orderNo\":\"WO-OTHER\"}")));
+    }
+
+    @Test
+    void reconciledOrderMayKeepFailedOrTimeoutCommand() {
+        // E2E-04 包A：取水异常核账把订单从 6 推进到 4/7，却刻意不改写指令（指令是核账依据的证据）。
+        // 缺了 afterSaleConfirmed，每一张已核账订单都会被矩阵报成 mismatch。
+        AdminOrderItemVo reconciled = order(55L, "WO-55", 1, 1L, 37L);
+        reconciled.setOrderStatus(4);
+        reconciled.setActualMl(4980L);
+        reconciled.setFinishTime("20260721090002");
+        WsCommand failed = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
+        failed.setCmdStatus(5);
+        failed.setSentTime("20260721090000");
+        failed.setFinishTime("20260721090002");
+        failed.setResultPayload("{\"actualMl\":4980}");
+
+        // 未核账：失败终态指令配已完成订单仍是断链
+        assertNotNull(verify(reconciled, failed));
+        reconciled.setAfterSaleConfirmed(true);
+        assertNull(verify(reconciled, failed));
+        failed.setCmdStatus(6);
+        assertNull(verify(reconciled, failed));
+
+        // 放宽只限「指令终态 + 完成时间」这一格：其余条件一条不减
+        failed.setFinishTime(null);
+        assertNotNull(verify(reconciled, failed));
+        failed.setFinishTime("20260721090002");
+        reconciled.setFinishTime(null);
+        assertNotNull(verify(reconciled, failed));
+        reconciled.setFinishTime("20260721090002");
+        failed.setResultPayload("{\"actualMl\":1}");
+        assertNotNull(verify(reconciled, failed));
+
+        // 8部分退款 不在核账产出范围内，带标记也不放行
+        AdminOrderItemVo partRefunded = order(55L, "WO-55", 1, 1L, 37L);
+        partRefunded.setOrderStatus(8);
+        partRefunded.setActualMl(4980L);
+        partRefunded.setFinishTime("20260721090002");
+        partRefunded.setAfterSaleConfirmed(true);
+        WsCommand timeout = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
+        timeout.setCmdStatus(6);
+        timeout.setSentTime("20260721090000");
+        timeout.setFinishTime("20260721090002");
+        timeout.setResultPayload("{\"actualMl\":4980}");
+        assertNotNull(verify(partRefunded, timeout));
+    }
+
+    @Test
+    void reconciledZeroWaterOrderStillRequiresZeroActualOnBothSides() {
+        AdminOrderItemVo refunded = order(55L, "WO-55", 1, 1L, 37L);
+        refunded.setOrderStatus(7);
+        refunded.setActualMl(0L);
+        refunded.setFinishTime("20260721090002");
+        refunded.setAfterSaleConfirmed(true);
+        WsCommand failed = cmd(55L, 1L, 1, "{\"outletNo\":1,\"planMl\":20000,\"orderNo\":\"WO-55\"}");
+        failed.setCmdStatus(5);
+        failed.setFinishTime("20260721090002");
+        failed.setResultPayload("{\"actualMl\":0}");
+        assertNull(verify(refunded, failed));
+        failed.setResultPayload("{\"actualMl\":1}");
+        assertNotNull(verify(refunded, failed));
     }
 }

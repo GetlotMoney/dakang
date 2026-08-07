@@ -100,4 +100,8 @@ public class WsOrder extends BaseEntity implements Serializable {
     @Schema(description = "取消/异常原因(max500)")
     @TableField("CANCEL_REASON")
     private String cancelReason;
+
+    @Schema(description = "下单时推荐人快照（E2E-08 分润归因，随归属变更不回溯；绑定前订单恒 NULL）")
+    @TableField("REFERRER_USER_ID")
+    private Long referrerUserId;
 }

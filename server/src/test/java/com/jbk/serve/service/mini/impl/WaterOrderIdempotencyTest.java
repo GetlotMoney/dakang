@@ -104,6 +104,9 @@ class WaterOrderIdempotencyTest {
         ReflectionTestUtils.setField(service, "deviceMapper", deviceMapper);
         ReflectionTestUtils.setField(service, "domainEventService", domainEventService);
         ReflectionTestUtils.setField(service, "redis", redis);
+        // E2E-08 归因快照协作方：mock 恒返回 null 推荐人（归因行为由 AttributionDbTest 锁定）
+        ReflectionTestUtils.setField(service, "inviteService",
+                Mockito.mock(com.jbk.serve.service.settlement.IInviteService.class));
     }
 
     @Test
@@ -117,6 +120,32 @@ class WaterOrderIdempotencyTest {
         assertEquals(ORDER_NO, detail.getOrder().getOrderNo());
         verify(valueOperations).get(CACHE_KEY);
         verify(valueOperations, never()).get("order:req:" + REQUEST_ID);
+        verifyIdempotentReplayOnlyBackfillsDispatch();
+    }
+
+    /**
+     * S2：成功后再调价，同 requestId 重放仍须返回原订单原金额。
+     *
+     * <p>本用例真正要钉死的不变式是「幂等判定早于任何报价读取」——一旦有人把报价漂移闸挪到
+     * 幂等检查之前，一笔已扣款成功的订单在后台调价后重放就会被 5411 打回，用户看到失败、
+     * 钱却已经扣了。因此断言不能只看单号：还要证明重放路径压根没去读出水口现价
+     * （outletMapper 零调用），且返回金额仍是首次冻结价算出的那一份。</p>
+     */
+    @Test
+    void replayAfterPriceChangeStillReturnsOriginalOrderWithoutRecharging() {
+        when(valueOperations.get(CACHE_KEY)).thenReturn(ORDER_NO);
+        when(wsOrderMapper.selectOne(any())).thenReturn(existingOrder());
+
+        OrderDetailVo detail = service.createWaterOrder(request(), USER_ID);
+
+        assertEquals(ORDER_NO, detail.getOrder().getOrderNo());
+        // 金额仍取首次冻结价（20 分/升 × 5 升 = 100 分），绝不按现价重算
+        assertEquals(100L, detail.getOrder().getOrderAmountFen());
+        // 重放路径完全不读出水口档案：读了就意味着报价闸有机会介入，已成功订单可被改判
+        verify(outletMapper, never()).selectById(any());
+        // 不重新读会话、不重复扣卡、不重复建单
+        verify(miniDeviceService, never()).loadScanSession(anyString(), any());
+        verify(tradeOrderTxService, never()).createWaterOrder(any(), any(), anyString());
         verifyIdempotentReplayOnlyBackfillsDispatch();
     }
 
@@ -303,6 +332,11 @@ class WaterOrderIdempotencyTest {
 
     private ScanSessionInfo scanSession() {
         return new ScanSessionInfo()
+                // S2：会话冻结报价——下单装配的单价/水种唯一来源
+                .setScanSessionId(REQUEST_ID)
+                .setWaterTypeId(WATER_TYPE_ID)
+                .setUnitPriceFenPerLiter(20)
+                .setQuotedAt("20260723120000")
                 .setUserId(USER_ID)
                 .setQrcodeId(11L)
                 .setStationId(41L)

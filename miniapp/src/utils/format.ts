@@ -2,7 +2,6 @@ import type { CourierAdmissionStatus, DeliveryTaskStatus } from '@/api/delivery'
 import type { CardBlockCode, DeviceAvailability } from '@/api/device'
 import type { MessageSendStatus } from '@/api/message'
 import type { AppealStatus, OrderStatus, OrderType, PayWay } from '@/api/order'
-import { currentMode } from '@/api/runtime'
 
 /** wd-tag 的 type 取值；default 渲染为无色标签。 */
 export type TagTone = 'default' | 'primary' | 'danger' | 'warning' | 'success'
@@ -10,6 +9,14 @@ export type TagTone = 'default' | 'primary' | 'danger' | 'warning' | 'success'
 /** 金额展示：接口一律整数分，页面格式化为元（AGENTS：接口保留原单位）。 */
 export function formatFen(fen: number): string {
   return `¥${(fen / 100).toFixed(2)}`
+}
+
+/**
+ * 手机号脱敏展示。未绑号（仅微信身份建号）时返回空串——
+ * 调用方一律走本函数，别在模板里直接对可能缺省的号码 slice，那会在未绑号账号上直接白屏。
+ */
+export function maskPhone(phone?: string): string {
+  return phone && phone.length === 11 ? `${phone.slice(0, 3)}****${phone.slice(-4)}` : ''
 }
 
 /** 水量展示：接口一律整数毫升，页面格式化为升。 */
@@ -35,6 +42,21 @@ export function formatBizTimeShort(time?: string): string {
     return '—'
   }
   return `${time.slice(4, 6)}-${time.slice(6, 8)} ${time.slice(8, 10)}:${time.slice(10, 12)}`
+}
+
+/**
+ * 钱包在途分润行文案（D-421）：null=整行不渲染。展示逻辑收口在此供回归钉住——
+ * 金额>0 才出行；解冻时间缺省或非法（formatBizTimeShort 回「—」）时只报金额不报时间，
+ * 不许出现「最早 — 起入账」这种半截话。
+ */
+export function pendingSplitLineText(pendingSplitFen: number, earliestUnfreezeTime?: string): string | null {
+  if (!(pendingSplitFen > 0)) {
+    return null
+  }
+  const time = formatBizTimeShort(earliestUnfreezeTime)
+  return time === '—'
+    ? `在途分润 ${formatFen(pendingSplitFen)}`
+    : `在途分润 ${formatFen(pendingSplitFen)}，最早 ${time} 起入账`
 }
 
 export const ORDER_TYPE_LABELS: Record<OrderType, string> = {
@@ -65,15 +87,29 @@ export const ORDER_STATUS_TONES: Record<OrderStatus, TagTone> = {
   8: 'warning',
 }
 
+/** 收益流水类型标签（字典 1378 同源；E2E-08 收益钱包） */
+export const INCOME_FLOW_TYPE_LABELS: Record<number, string> = {
+  1: '分润入账',
+  2: '分润回退',
+  3: '提现冻结',
+  4: '提现完成',
+  5: '提现驳回解冻',
+}
+
 /**
  * 支付方式(1346)。
  *
- * `payWay=1` 的后缀随充值域模式变化：接真后这条链路由 Pay-Sim 承载，
- * 仍写「待接入」会让一笔**已经真实入账**的订单看起来像没付过款——
- * 演示时最容易造成误判的正是这种陈旧文案。真实微信支付接入后应去掉后缀。
+ * <p>本表只回答「用哪种方式付」，不回答「这笔钱有没有真走微信」。后者是<b>每笔订单各自的
+ * 事实</b>，由服务端 `paySource` 记录（1=微信支付、2=模拟支付），页面经
+ * `rechargePaySourceLabel` 按单展示，接真前后各自照实，不需要本表配合。</p>
+ *
+ * <p>曾把构建期模式拼进 `payWay=1` 的后缀（recharge=real 时写「微信支付（模拟）」）。
+ * 两个后果都很坏：一是后缀一刀切盖到所有订单头上，接真后真微信单也被写成模拟；
+ * 二是把 requestPayment 换上来那天，这里仍写「模拟」——等于对着一笔真扣了钱的订单
+ * 说没扣。后缀依赖的是构建开关而不是订单事实，所以只能拆掉，不能改措辞。</p>
  */
 export const PAY_WAY_LABELS: Record<PayWay, string> = {
-  1: currentMode('recharge') === 'real' ? '微信支付（当前由 Pay-Sim 模拟）' : '微信支付（待接入）',
+  1: '微信支付',
   2: '水卡余额',
   3: '水卡水量',
 }
@@ -176,18 +212,20 @@ export const CARD_STATUS_TONES: Record<number, TagTone> = {
   4: 'default',
 }
 
+// 与字典 1313 逐值同源（1待发送 2发送中 3发送失败 4已送达）；渠道语义另由 CHANNEL_LABELS 承担，
+// 状态列不得混入「站内消息」这类渠道话术（E2E-07 审查纠偏）。
 export const SEND_STATUS_LABELS: Record<MessageSendStatus, string> = {
   1: '待发送',
-  2: '发送成功',
+  2: '发送中',
   3: '发送失败',
-  4: '站内消息',
+  4: '已送达',
 }
 
 export const SEND_STATUS_TONES: Record<MessageSendStatus, TagTone> = {
   1: 'default',
-  2: 'success',
+  2: 'warning',
   3: 'danger',
-  4: 'primary',
+  4: 'success',
 }
 
 export const MESSAGE_DOMAIN_LABELS: Record<string, string> = {

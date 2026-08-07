@@ -47,6 +47,32 @@ describe('post 会话失效链 (1401~1405)', () => {
   })
 })
 
+describe('扫码链拒绝码映射 (S2)', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+    onSessionInvalid(() => {})
+  })
+
+  // 5410 此前被映射成 QR_EXPIRED，而页面按 SCAN_SESSION_EXPIRED 判断，
+  // 后端/映射/页面三处契约对不上，会话过期在页面上走不到专门的处置分支
+  it('5410 映射为 SCAN_SESSION_EXPIRED', async () => {
+    stubUni({ code: 5410, msg: '扫码会话已过期，请重新扫码', data: null })
+
+    await expect(post('/mini/device/water/context'))
+      .rejects
+      .toMatchObject({ code: 'SCAN_SESSION_EXPIRED' })
+  })
+
+  // 5411 与 5410 必须分开：前者是价格/水种变了要提示用户，后者只是时间到了
+  it('5411 映射为 SCAN_QUOTE_CHANGED', async () => {
+    stubUni({ code: 5411, msg: '取水价格已调整，请重新扫码确认', data: null })
+
+    await expect(post('/mini/order/water/create'))
+      .rejects
+      .toMatchObject({ code: 'SCAN_QUOTE_CHANGED' })
+  })
+})
+
 /**
  * E2E-03 验收 P1-5：新旧会话响应竞态。请求发起时冻结携带的 token 作为会话代际，
  * 1401 全局登出只在「失败响应对应的会话仍是当前会话」时执行——

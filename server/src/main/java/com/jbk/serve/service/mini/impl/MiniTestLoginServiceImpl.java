@@ -61,8 +61,10 @@ public class MiniTestLoginServiceImpl implements IMiniTestLoginService {
         ctx.setUserId(String.valueOf(user.getId()));
         ctx.setUserName(user.getUserName());
         ctx.setUserPhone(user.getUserPhone());
+        ctx.setPhoneBound(StrUtil.isNotBlank(user.getUserPhone()));
         // 与正式登录同一能力投影实现：测试会话看到的入口与正式会话完全一致，不藏差异
         ctx.setCapabilities(capabilityService.capabilitiesOf(user.getId()));
+        ctx.setOwnerScope(capabilityService.ownerScopeOf(user.getId()));
         return MiniAuthResultVo.bound(token.tokenName(), token.tokenValue(), ctx);
     }
 }

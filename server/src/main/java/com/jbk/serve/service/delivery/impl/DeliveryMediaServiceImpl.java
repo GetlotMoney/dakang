@@ -38,10 +38,20 @@ public class DeliveryMediaServiceImpl implements IDeliveryMediaService {
     @Autowired
     private DeliveryMediaStore mediaStore;
 
+    /** 用户门户（1364）：旧接口的隐含登记身份域，与 OWNER_PORTAL 列默认值一致 */
+    private static final int PORTAL_USER = 2;
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String register(Long ownerUserId, DeliveryEnum.MediaPurpose purpose,
                            byte[] content, String mimeType, String now) {
+        return registerAs(PORTAL_USER, ownerUserId, purpose, content, mimeType, now);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String registerAs(int ownerPortal, Long ownerUserId, DeliveryEnum.MediaPurpose purpose,
+                             byte[] content, String mimeType, String now) {
         if (ownerUserId == null || ownerUserId <= 0 || purpose == null) {
             throw new JbkException("媒体登记参数非法");
         }
@@ -52,10 +62,11 @@ public class DeliveryMediaServiceImpl implements IDeliveryMediaService {
             throw new JbkException("仅支持图片类型媒体");
         }
         String contentSha = SecureUtil.sha256(new java.io.ByteArrayInputStream(content));
-        String mediaKey = deriveKey(ownerUserId, contentSha, purpose);
+        String mediaKey = deriveKey(ownerPortal, ownerUserId, contentSha, purpose);
         WsDeliveryMedia media = new WsDeliveryMedia()
                 .setMediaKey(mediaKey)
                 .setOwnerUserId(ownerUserId)
+                .setOwnerPortal(ownerPortal)
                 .setMediaPurpose(purpose.getValue())
                 .setContentSha256(contentSha)
                 .setSizeBytes((long) content.length)
@@ -70,6 +81,7 @@ public class DeliveryMediaServiceImpl implements IDeliveryMediaService {
                     .eq(WsDeliveryMedia::getMediaKey, mediaKey));
             if (ObjectUtil.isNull(existing)
                     || ObjectUtil.notEqual(existing.getOwnerUserId(), ownerUserId)
+                    || ObjectUtil.notEqual(existing.getOwnerPortal(), ownerPortal)
                     || ObjectUtil.notEqual(existing.getMediaPurpose(), purpose.getValue())
                     || ObjectUtil.notEqual(existing.getContentSha256(), contentSha)) {
                 throw new JbkException("媒体键冲突，请重试");
@@ -84,6 +96,12 @@ public class DeliveryMediaServiceImpl implements IDeliveryMediaService {
     @Override
     public void claimForTask(List<String> mediaKeys, Long taskId, Long ownerUserId,
                              DeliveryEnum.MediaPurpose purpose, String failMessage) {
+        claimForTaskAs(PORTAL_USER, mediaKeys, taskId, ownerUserId, purpose, failMessage);
+    }
+
+    @Override
+    public void claimForTaskAs(int ownerPortal, List<String> mediaKeys, Long taskId, Long ownerUserId,
+                               DeliveryEnum.MediaPurpose purpose, String failMessage) {
         if (mediaKeys == null || mediaKeys.isEmpty()) {
             return;
         }
@@ -97,6 +115,7 @@ public class DeliveryMediaServiceImpl implements IDeliveryMediaService {
                     .set(WsDeliveryMedia::getBoundTaskId, taskId)
                     .eq(WsDeliveryMedia::getMediaKey, key)
                     .eq(WsDeliveryMedia::getOwnerUserId, ownerUserId)
+                    .eq(WsDeliveryMedia::getOwnerPortal, ownerPortal)
                     .eq(WsDeliveryMedia::getMediaPurpose, purpose.getValue())
                     .isNull(WsDeliveryMedia::getBoundTaskId));
             if (affected != 1) {
@@ -106,8 +125,17 @@ public class DeliveryMediaServiceImpl implements IDeliveryMediaService {
         }
     }
 
-    static String deriveKey(Long ownerUserId, String contentSha256, DeliveryEnum.MediaPurpose purpose) {
-        String digest = SecureUtil.sha256(ownerUserId + ":" + contentSha256 + ":" + purpose.getValue());
+    /**
+     * 键派生：旧用途（1-3）保持 owner:sha:purpose 三元（E2E-03 既有证据键不可漂移）；
+     * 工单证据（4起）掺入门户段 portal:owner:sha:purpose——员工1号与用户1号登记同一张图
+     * 必须得到两个不同的键，否则先登记者会占住后登记者的行。
+     */
+    static String deriveKey(int ownerPortal, Long ownerUserId, String contentSha256,
+                            DeliveryEnum.MediaPurpose purpose) {
+        String seed = purpose.getValue() >= DeliveryEnum.MediaPurpose.WORK_ORDER.getValue()
+                ? ownerPortal + ":" + ownerUserId + ":" + contentSha256 + ":" + purpose.getValue()
+                : ownerUserId + ":" + contentSha256 + ":" + purpose.getValue();
+        String digest = SecureUtil.sha256(seed);
         return "DM" + digest.substring(0, 30).toUpperCase();
     }
 }

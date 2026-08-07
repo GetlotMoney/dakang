@@ -6,7 +6,6 @@ import { useMessage, useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { ContractError } from '@/api/common'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { setDraftAddress } from '@/store/delivery-draft'
 import { goTo } from '@/utils/navigation'
 
@@ -20,7 +19,8 @@ definePage({
 const toast = useToast()
 const message = useMessage()
 
-/** returnTo=delivery 时本页为 U08 的地址选择模式（蓝图 §6.6：选择后写草稿回 U08）。 */
+/** returnTo=delivery 时本页为 U08 的地址选择模式：选择后写草稿回 U08。 */
+// 2026-08-02 链路落地：地址簿已接服务端（按账号隔离），配送下单可直接选用。
 const selectMode = ref(false)
 const loading = ref(true)
 const errorMessage = ref('')
@@ -91,16 +91,6 @@ function handleDelete(item: DeliveryAddress) {
     <AppNavbar title="水配送地址" back-to="U03" />
     <wd-toast />
     <wd-message-box />
-
-    <AppPrototypeNotice />
-
-    <view v-if="selectMode" class="select-hint">
-      为配送订单选择地址：点击任一条目即返回下单页
-    </view>
-
-    <view class="page-note muted-text">
-      水配送地址与后续商城收货地址严格分离（REQ-010），不相互复用。
-    </view>
 
     <view v-if="loading" class="page-section muted-text">
       地址加载中…
@@ -182,21 +172,6 @@ function handleDelete(item: DeliveryAddress) {
 </template>
 
 <style scoped lang="scss">
-.select-hint {
-  margin-top: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: rgba(93, 135, 255, 0.1);
-  color: var(--wot-color-theme, var(--app-color-primary));
-  font-size: 13px;
-}
-
-.page-note {
-  margin-top: 8px;
-  padding: 0 4px;
-  line-height: 1.6;
-}
-
 .status-actions {
   display: flex;
   justify-content: center;

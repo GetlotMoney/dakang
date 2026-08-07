@@ -8,9 +8,10 @@ import type {
   PageResult,
   VolumeMl,
 } from './common'
+import type { AfterSaleCancelEligibility, AfterSaleProgress } from './after-sale'
 import type { DeliveryTask } from './delivery'
-import { addSecondsToBusinessTime, cloneContractData, ContractError, nextBusinessTime, prototypeMeta } from './common'
-import { requireLinkedDeliveryOrder } from './delivery-link'
+import { normalizeAfterSaleProgress, normalizeCancelEligibility } from './after-sale'
+import { ContractError } from './common'
 import {
   DELIVERY_MEDIA_KEY_PATTERN,
   normalizeDeliveryAppeal,
@@ -19,8 +20,7 @@ import {
 import type { DeliveryAppealRaw, DeliveryTaskRaw } from './delivery-normalize'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { currentMode, realAdapterPending, selectAdapter } from './runtime'
-import { scenarioStore } from '@/scenario/store'
+import { realAdapterPending } from './runtime'
 
 export type OrderType = 1 | 2 | 3
 export type OrderStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
@@ -94,6 +94,16 @@ export interface OrderDetail {
   flowCount: number
   deliveryTaskNo?: string
   appealId?: EntityId
+  /**
+   * 售后进度（E2E-04 包E，只读）。缺省 = 服务端未下发本单售后动作，
+   * 页面隐藏售后区块；**不得由订单状态、金额或数量本地推算出一份售后结论**。
+   */
+  afterSale?: AfterSaleProgress
+  /**
+   * 待接单取消资格。缺省 = 服务端未下发，取消入口一律不显示。
+   * 判定逻辑（任务是否仍待接单、是否本人、是否有在途售后）只存在于服务端事务内。
+   */
+  cancelEligibility?: AfterSaleCancelEligibility
 }
 
 export interface OrderQuery {
@@ -174,305 +184,6 @@ export const orderEndpoints = {
   deliveryTaskDetail: '/mini/order/delivery-task/detail',
 } as const
 
-function findDetail(orderNo: string) {
-  const userId = scenarioStore.activeAccount().userId
-  const detail = scenarioStore.orderDetails.find(
-    item => item.order.orderNo === orderNo && item.order.userId === userId,
-  )
-  if (!detail) {
-    throw new ContractError('ORDER_NOT_FOUND', '订单不存在或无权访问')
-  }
-  return detail
-}
-
-const mockOrderApi: OrderApi = {
-  async listMyOrders(query = {}) {
-    const userId = scenarioStore.activeAccount().userId
-    const current = query.current ?? 1
-    const size = query.size ?? 20
-    if (current <= 0 || size <= 0) {
-      throw new ContractError('PAGE_QUERY_INVALID', '分页参数必须大于 0')
-    }
-    const matched = scenarioStore.orderDetails
-      .map(item => item.order)
-      .filter(item => item.userId === userId)
-      .filter(item => !query.orderType || item.orderType === query.orderType)
-      .filter(item => !query.orderStatus || item.orderStatus === query.orderStatus)
-      .filter(item => !query.createTimeStart || item.createTime >= query.createTimeStart)
-      .filter(item => !query.createTimeEnd || item.createTime <= query.createTimeEnd)
-      .sort((left, right) => right.createTime.localeCompare(left.createTime))
-    const start = (current - 1) * size
-    const list = matched.slice(start, start + size)
-    return cloneContractData({ list, total: matched.length })
-  },
-  async getOrderDetail(orderNo) {
-    return cloneContractData(findDetail(orderNo))
-  },
-  async createWaterOrder(input) {
-    if (input.planMl <= 0) {
-      throw new ContractError('INVALID_VOLUME', '取水量必须大于 0')
-    }
-    const account = scenarioStore.activeAccount()
-    // 提交前二次预检（蓝图 U04）：会话、设备、出水口、水种、卡状态、限额、余额逐项校验。
-    const session = scenarioStore.findActiveScanSession(input.scanSessionId)
-    if (!session) {
-      throw new ContractError('SCAN_SESSION_EXPIRED', '扫码会话已失效，请重新扫码')
-    }
-    const device = scenarioStore.devices.find(item => item.deviceNo === session.deviceNo)
-    const outlet = device?.outlets.find(item => item.outletId === session.outletId)
-    if (!device || !outlet) {
-      throw new ContractError('DEVICE_NOT_FOUND', '设备或出水口不存在')
-    }
-    if (outlet.waterTypeId !== input.waterTypeId) {
-      throw new ContractError('WATER_TYPE_MISMATCH', '所选水种与出水口不一致，请重新确认')
-    }
-    if (device.onlineStatus !== 'ONLINE' || device.runStatus !== 'IDLE') {
-      throw new ContractError('DEVICE_BLOCKED', '设备当前不可取水，请按预检提示处理')
-    }
-    const card = scenarioStore.cards.find(
-      item => item.cardId === input.cardId && item.userId === account.userId,
-    )
-    if (!card) {
-      throw new ContractError('CARD_NOT_FOUND', '水卡不存在或无权使用')
-    }
-    if (card.cardStatus !== 1) {
-      throw new ContractError('CARD_NOT_USABLE', '水卡状态不可用（冻结/过期/注销），无法取水')
-    }
-    const maxAllowedMl = scenarioStore.waterEligibility.maxAllowedMl
-    if (maxAllowedMl !== undefined && input.planMl > maxAllowedMl) {
-      throw new ContractError('DAY_LIMIT_EXCEEDED', `超出单次可取上限 ${maxAllowedMl / 1000}L`)
-    }
-    const amountFen = Math.ceil(input.planMl / 1000) * outlet.unitPriceFenPerLiter
-    if (input.payWay === 3 && card.balanceMl < input.planMl) {
-      throw new ContractError('INSUFFICIENT_WATER', '水卡剩余水量不足')
-    }
-    if (input.payWay === 2 && card.balanceFen < amountFen) {
-      throw new ContractError('INSUFFICIENT_BALANCE', '水卡余额不足')
-    }
-
-    // 会话一次性消费（蓝图 §6.6），二次提交按已失效拒绝。
-    scenarioStore.consumeScanSession(input.scanSessionId)
-    const sequence = scenarioStore.nextOrderSequence()
-    const orderNo = `MW20260716${sequence}`
-    // 动作发生时间由统一逻辑时钟取得并推进；后续剧本节点相对它偏移（第五轮审计整改）。
-    const base = scenarioStore.takeBusinessTime()
-    const liters = input.planMl / 1000
-    // 原型固定剧本：数据一次性生成终态，U05 只按时间轴播放展示，不提供伪造状态推进接口。
-    const detail: OrderDetail = {
-      order: {
-        orderId: `MO-${sequence}`,
-        orderNo,
-        userId: account.userId,
-        orderType: 1,
-        orderStatus: 4,
-        orderAmountFen: amountFen,
-        payWay: input.payWay,
-        stationId: device.stationId,
-        stationName: device.stationName,
-        deviceNo: device.deviceNo,
-        cardId: card.cardId,
-        planMl: input.planMl,
-        actualMl: input.planMl,
-        createTime: base,
-        finishTime: addSecondsToBusinessTime(base, 10),
-        mockMeta: { ...prototypeMeta },
-      },
-      commandNo: `MCMD-${sequence}`,
-      commandStatus: 4,
-      trace: [
-        {
-          node: 'created',
-          label: '原型订单已创建',
-          time: base,
-          detail: '未发生真实扣减或设备指令',
-          tone: 'primary',
-        },
-        {
-          node: 'dispatch',
-          label: '出水指令已下发（原型）',
-          time: addSecondsToBusinessTime(base, 2),
-          tone: 'info',
-        },
-        {
-          node: 'ack',
-          label: '设备已确认（原型 ACK）',
-          time: addSecondsToBusinessTime(base, 4),
-          tone: 'info',
-        },
-        {
-          node: 'result',
-          label: '出水完成（原型 result）',
-          time: addSecondsToBusinessTime(base, 10),
-          detail: `计划 ${liters}L，实际 ${liters}L`,
-          tone: 'success',
-        },
-      ],
-      flowCount: 0,
-    }
-    scenarioStore.orderDetails.unshift(detail)
-    // 原型剧本一次性生成终态：把时钟推进到剧本最后节点，保证后续动作时间不早于已展示的完成时间。
-    scenarioStore.advanceBusinessClock(addSecondsToBusinessTime(base, 10))
-    scenarioStore.recordAudit('USER_BASE', 'order.water.create', 'order', orderNo, 'success', base)
-    return cloneContractData(detail)
-  },
-  async createRechargeOrder(input) {
-    if (input.amountFen <= 0) {
-      throw new ContractError('INVALID_AMOUNT', '充值金额必须大于 0')
-    }
-    const account = scenarioStore.activeAccount()
-    // 前置校验卡（蓝图 §10 U10 行）：归属与可用状态；注销卡不可充值，冻结/过期卡由客服处理后再充。
-    const card = scenarioStore.cards.find(
-      item => item.cardId === input.cardId && item.userId === account.userId,
-    )
-    if (!card) {
-      throw new ContractError('CARD_NOT_FOUND', '水卡不存在或无权使用')
-    }
-    if (card.cardStatus !== 1) {
-      throw new ContractError('CARD_NOT_USABLE', '水卡状态不可用（冻结/过期/注销），请先联系客服处理')
-    }
-    // 套餐快照按下单时口径固化（名称/售价/水量/赠送），退款折算以快照为准（REQ-061 契约预留）。
-    const selectedPackage = input.packageId
-      ? scenarioStore.packages.find(item => item.id === input.packageId)
-      : undefined
-    if (input.packageId && !selectedPackage) {
-      throw new ContractError('PACKAGE_NOT_FOUND', '套餐不存在或已下架')
-    }
-    const sequence = scenarioStore.nextOrderSequence()
-    const orderNo = `MR20260716${sequence}`
-    const createTime = scenarioStore.takeBusinessTime()
-    const detail: OrderDetail = {
-      order: {
-        orderId: `MO-${sequence}`,
-        orderNo,
-        userId: account.userId,
-        orderType: 2,
-        orderStatus: 1,
-        orderAmountFen: input.amountFen,
-        payWay: 1,
-        cardId: card.cardId,
-        packageSnapshot: selectedPackage
-          ? JSON.stringify({
-              packageId: selectedPackage.id,
-              packageName: selectedPackage.packageName,
-              payAmountFen: selectedPackage.payAmountFen,
-              waterMl: selectedPackage.waterMl,
-              bonusAmountFen: selectedPackage.bonusAmountFen,
-              expireDays: selectedPackage.expireDays,
-            })
-          : undefined,
-        createTime,
-        mockMeta: { ...prototypeMeta },
-      },
-      trace: [
-        {
-          node: 'pending-payment',
-          label: '等待支付能力接入',
-          time: createTime,
-          tone: 'warning',
-        },
-      ],
-      flowCount: 0,
-    }
-    scenarioStore.orderDetails.unshift(detail)
-    scenarioStore.recordAudit('USER_BASE', 'order.recharge.create', 'order', orderNo, 'success', createTime)
-    return cloneContractData(detail)
-  },
-  async getMyDeliveryAppeal(appealId) {
-    const userId = scenarioStore.activeAccount().userId
-    const appeal = scenarioStore.deliveryAppeals.find(
-      item => item.appealId === appealId && item.userId === userId,
-    )
-    if (!appeal) {
-      throw new ContractError('APPEAL_NOT_FOUND', '申诉不存在或无权访问')
-    }
-    return cloneContractData(appeal)
-  },
-  async getMyDeliveryTask(orderNo) {
-    const detail = findDetail(orderNo)
-    const task = scenarioStore.deliveryTasks.find(
-      item => item.orderNo === detail.order.orderNo && item.userId === detail.order.userId,
-    )
-    return task ? cloneContractData(task) : null
-  },
-  async createDeliveryAppeal(input) {
-    const account = scenarioStore.activeAccount()
-    const orderDetail = findDetail(input.orderNo)
-    const task = scenarioStore.deliveryTasks.find(
-      item => item.taskNo === input.taskNo && item.orderNo === input.orderNo,
-    )
-    if (!task || task.userId !== account.userId) {
-      throw new ContractError('TASK_NOT_FOUND', '配送任务不存在或无权访问')
-    }
-    // 第四轮审计整改：创建申诉前先过中立关联栅栏（orderType===3 + orderId/userId/deliveryTaskNo 共键一致），
-    // 并要求订单已完成、任务已签收、无活动申诉、申诉时间落在签收后 24 小时窗口内；
-    // 任一校验失败即拒绝，申诉/任务/订单/消息/审计乃至场景时钟全部零副作用。
-    const linkedRecord = requireLinkedDeliveryOrder(task)
-    if (linkedRecord.order.orderStatus !== 4) {
-      throw new ContractError('APPEAL_ORDER_STATE_INVALID', '申诉要求关联订单处于已完成状态')
-    }
-    if (task.taskStatus !== 5 || !task.signTime) {
-      throw new ContractError('APPEAL_NOT_ALLOWED', '只有已签收订单可以发起申诉')
-    }
-    const activeAppeal = scenarioStore.deliveryAppeals.find(
-      item => item.taskNo === input.taskNo && item.appealStatus === 1,
-    )
-    if (activeAppeal) {
-      throw new ContractError('APPEAL_ALREADY_EXISTS', '该任务已有待处理申诉')
-    }
-    if (!input.description.trim() || input.receivedCount < 0) {
-      throw new ContractError('APPEAL_INPUT_INVALID', '申诉说明或实收数量不合法')
-    }
-    // 统一逻辑时钟：申诉动作时间由场景时钟派生，须落在 [signTime, signTime+24h]；
-    // 校验通过后才推进时钟，之后的轨迹/消息/审计全部使用同一时间。
-    const appealTime = nextBusinessTime({ floorTimes: [scenarioStore.now], offsetSeconds: 1 })
-    const appealDeadline = addSecondsToBusinessTime(task.signTime, 24 * 60 * 60)
-    if (appealTime < task.signTime || appealTime > appealDeadline) {
-      throw new ContractError('APPEAL_WINDOW_EXPIRED', '申诉须在签收后 24 小时内发起')
-    }
-    scenarioStore.advanceBusinessClock(appealTime)
-    const appeal: DeliveryAppeal = {
-      appealId: `APPEAL-${scenarioStore.deliveryAppeals.length + 1}`,
-      orderNo: input.orderNo,
-      taskNo: input.taskNo,
-      userId: account.userId,
-      appealStatus: 1,
-      reason: input.reason,
-      description: input.description.trim(),
-      receivedCount: input.receivedCount,
-      evidenceRefs: [...input.evidenceRefs],
-      createTime: appealTime,
-    }
-    scenarioStore.deliveryAppeals.push(appeal)
-    task.taskStatus = 7
-    task.version += 1
-    orderDetail.appealId = appeal.appealId
-    orderDetail.trace.push({
-      node: 'appeal-created',
-      label: '申诉已登记，任务转申诉中',
-      time: appealTime,
-      detail: '等待运营核验证据并裁决；小程序只消费裁决结果',
-      tone: 'warning',
-    })
-    scenarioStore.pushMessage({
-      accountId: account.accountId,
-      domain: 'delivery',
-      title: '配送申诉已登记',
-      summary: `申诉 ${appeal.appealId} 等待运营裁决`,
-      content: `您对订单 ${input.orderNo} 的申诉已登记，运营核验证据后将给出成立/驳回结果。`,
-      channel: 'in-app',
-      sendStatus: 4,
-      sendTime: appealTime,
-      unread: true,
-      objectType: 'appeal',
-      objectId: appeal.appealId,
-      requiredCapability: 'USER_BASE',
-      evidenceMode: 'prototype',
-    })
-    scenarioStore.recordAudit('USER_BASE', 'delivery.appeal.create', 'appeal', appeal.appealId, 'success', appealTime)
-    return cloneContractData(appeal)
-  },
-}
-
 /**
  * 后端订单项原始返回：后端全局 Jackson 将 Long 序列化为字符串（防 JS 精度丢失），
  * 故 orderId/userId/orderAmountFen/stationId/cardId/planMl/actualMl 到达前端是数值字符串；
@@ -514,6 +225,11 @@ export interface OrderDetailRaw {
   flowCount?: number | null
   deliveryTaskNo?: string | null
   appealId?: string | number | null
+  /** 售后进度区块（E2E-04 包E）；当前后端未下发，形状校验在 after-sale.ts 一处完成。 */
+  afterSale?: unknown
+  /** 取消资格：结构化 {allowed,reason}；兼容布尔 cancellable 形态。 */
+  cancelEligibility?: unknown
+  cancellable?: unknown
 }
 
 /** EntityId(string) 归一化：Long→String 后已是字符串，null 归一化为 undefined。 */
@@ -775,6 +491,9 @@ export function normalizeOrderDetail(raw: OrderDetailRaw): OrderDetail {
     flowCount: Number(raw.flowCount ?? 0),
     deliveryTaskNo: optionalString(raw.deliveryTaskNo),
     appealId: optionalId(raw.appealId),
+    // 售后区块与取消资格：服务端下发才有值，畸形数据整块丢弃（after-sale.ts fail-closed）
+    afterSale: normalizeAfterSaleProgress(raw.afterSale),
+    cancelEligibility: normalizeCancelEligibility(raw.cancelEligibility ?? raw.cancellable),
   }
 }
 
@@ -827,22 +546,16 @@ const realOrderApi: OrderApi = {
   // 真实端点；delivery 仍为 mock 时保持原委托——读路径对真实订单安全返回空/明确报错，
   // 申诉创建（写路径）在 mock 域内也只会作用于 Mock 订单，不会对真实订单造假申诉。
   async getMyDeliveryAppeal(appealId) {
-    if (currentMode('delivery') !== 'real') {
-      return mockOrderApi.getMyDeliveryAppeal(appealId)
-    }
     return withRealSession(async () => {
       const raw = await post<DeliveryAppealRaw>(orderEndpoints.appealDetail, { appealId })
       return normalizeDeliveryAppeal(raw)
     })
   },
   async createDeliveryAppeal(input) {
-    if (currentMode('delivery') !== 'real') {
-      return mockOrderApi.createDeliveryAppeal(input)
-    }
     // 举证引用必须是已上传换取的受控媒体键；本地路径/伪引用在发出前拒绝（与 delivery 域同口径）
     for (const ref of input.evidenceRefs) {
       if (!DELIVERY_MEDIA_KEY_PATTERN.test(ref)) {
-        throw new ContractError('DELIVERY_MEDIA_NOT_UPLOADED', '申诉凭证必须先完成照片上传（受控媒体键缺失）')
+        throw new ContractError('DELIVERY_MEDIA_NOT_UPLOADED', '请先完成申诉凭证照片上传')
       }
     }
     return withRealSession(async () => {
@@ -858,9 +571,6 @@ const realOrderApi: OrderApi = {
     })
   },
   async getMyDeliveryTask(orderNo) {
-    if (currentMode('delivery') !== 'real') {
-      return mockOrderApi.getMyDeliveryTask(orderNo)
-    }
     return withRealSession(async () => {
       // 无任务后端返回 null（code 0 data null），透传 null 与 mock 口径一致
       const raw = await post<DeliveryTaskRaw | null>(orderEndpoints.deliveryTaskDetail, { orderNo })
@@ -869,4 +579,4 @@ const realOrderApi: OrderApi = {
   },
 }
 
-export const orderApi = selectAdapter(mockOrderApi, realOrderApi, 'order')
+export const orderApi = realOrderApi

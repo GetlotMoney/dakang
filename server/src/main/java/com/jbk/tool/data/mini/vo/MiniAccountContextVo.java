@@ -30,9 +30,18 @@ public class MiniAccountContextVo implements Serializable {
     @Schema(description = "用户昵称")
     private String userName;
 
-    @Schema(description = "用户手机号")
+    @Schema(description = "用户手机号；仅微信身份建号且尚未补绑时不携带本字段")
     private String userPhone;
+
+    @Schema(description = "是否已绑定手机号；false 时前端应展示补绑入口，且不得直接对 userPhone 取子串")
+    private Boolean phoneBound;
+
+    @Schema(description = "头像路径（服务端相对路径，如 /mini/profile/avatar/AVxx.jpg）；未设置不携带")
+    private String userAvatar;
 
     @Schema(description = "能力清单（USER_BASE / COURIER_* / OWNER_*）")
     private List<String> capabilities;
+
+    @Schema(description = "机主授权范围（有归属才携带；E2E-06 profile 展示用，不构成授权）")
+    private MiniOwnerScopeVo ownerScope;
 }

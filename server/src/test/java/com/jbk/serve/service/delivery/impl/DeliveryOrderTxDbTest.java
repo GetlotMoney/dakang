@@ -6,9 +6,14 @@ import com.jbk.serve.mapper.delivery.WsDeliveryTaskMapper;
 import com.jbk.serve.mapper.message.WsMessageMapper;
 import com.jbk.serve.mapper.product.WsWaterTypeMapper;
 import com.jbk.serve.mapper.station.WsStationMapper;
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
+import com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper;
 import com.jbk.serve.mapper.trade.TradeCardMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.mapper.trade.WsWalletFlowMapper;
+import com.jbk.serve.service.aftersale.batch.EntitlementFixture;
+import com.jbk.serve.service.aftersale.batch.EntitlementLedger;
+import com.jbk.serve.service.aftersale.IAfterSaleActionTxService;
 import com.jbk.serve.service.delivery.DeliveryClock;
 import com.jbk.serve.service.delivery.DeliveryOrderNo;
 import com.jbk.serve.service.delivery.IDeliveryOrderService;
@@ -168,6 +173,26 @@ class DeliveryOrderTxDbTest {
             return mapper(WsMessageMapper.class, t);
         }
 
+        @Bean
+        MapperFactoryBean<WsCardEntitlementBatchMapper> wsCardEntitlementBatchMapper(SqlSessionTemplate t) {
+            // 包D-4：配送创单扣减同事务写权益分摊，故本上下文必须提供这两个 Mapper
+            return mapper(WsCardEntitlementBatchMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<WsEntitlementAllocationMapper> wsEntitlementAllocationMapper(SqlSessionTemplate t) {
+            return mapper(WsEntitlementAllocationMapper.class, t);
+        }
+
+        @Bean
+        EntitlementLedger entitlementLedger(WsCardEntitlementBatchMapper batchMapper,
+                                            WsEntitlementAllocationMapper allocationMapper,
+                                            TradeCardMapper tradeCardMapper,
+                                            WsWalletFlowMapper walletFlowMapper) {
+            // 真实台账而不是 Mock：分摊要摊到真表上，才验证得了「卡扣了、批次也扣了」
+            return new EntitlementLedger(batchMapper, allocationMapper, tradeCardMapper, walletFlowMapper);
+        }
+
         private static <M> MapperFactoryBean<M> mapper(Class<M> type, SqlSessionTemplate template) {
             MapperFactoryBean<M> bean = new MapperFactoryBean<>(type);
             bean.setSqlSessionTemplate(template);
@@ -187,8 +212,21 @@ class DeliveryOrderTxDbTest {
         }
 
         @Bean
+        IAfterSaleActionTxService afterSaleActionTxService() {
+            // 本测试只钉创单的资金/任务事实，创单路径一次都不碰售后内核；
+            // 取消路径（唯一的调用方）由 DeliveryFulfillmentTxDbTest 用真实现覆盖
+            return Mockito.mock(IAfterSaleActionTxService.class);
+        }
+
+        @Bean
         IDeliveryOrderTxService deliveryOrderTxService() {
             return new DeliveryOrderTxServiceImpl();
+        }
+
+        @Bean
+        com.jbk.serve.service.settlement.IInviteService inviteService() {
+            // E2E-08 归因快照协作方：mock 恒返回 null 推荐人，归因行为由 AttributionDbTest 锁定
+            return org.mockito.Mockito.mock(com.jbk.serve.service.settlement.IInviteService.class);
         }
 
         @Bean
@@ -227,6 +265,8 @@ class DeliveryOrderTxDbTest {
         jdbc.update("INSERT INTO ws_card(ID,DATA_STATUS,CARD_NO,CARD_TYPE,USER_ID,BALANCE_AMOUNT,BALANCE_ML,"
                         + "SCOPE_JSON,EXPIRE_TIME,CARD_STATUS) VALUES(?,?,?,1,?,?,?,NULL,NULL,?)",
                 CARD_ID, dataStatus, "VC-TEST-100", userId, fen, ml, cardStatus);
+        // 包D-4：卡是裸 INSERT，补历史聚合批次以满足「批次剩余合计 == 卡聚合值」
+        EntitlementFixture.seedLegacyBatch(jdbc, CARD_ID, userId, fen, ml);
     }
 
     private DeliveryCreateBo bo(String requestId, int mode) {
@@ -257,6 +297,8 @@ class DeliveryOrderTxDbTest {
     }
 
     private void assertZeroResidue() {
+        // 包D-4：拒绝路径零分摊——留下分摊行等于批次被扣而卡没扣，方向相反同样是账本断裂
+        assertEquals(0, count("ws_entitlement_allocation"), "分摊零新增");
         assertEquals(BALANCE_FEN, cardBalance(), "余额必须原封不动");
         assertEquals(0, count("ws_order"), "订单零新增");
         assertEquals(0, count("ws_wallet_flow"), "流水零新增");
@@ -289,6 +331,19 @@ class DeliveryOrderTxDbTest {
         assertEquals(7, jdbc.queryForObject("SELECT FLOW_TYPE FROM ws_wallet_flow", Integer.class), "配送扣减流水类型");
         assertEquals("DELIVERY:" + created.order().getOrderNo(),
                 jdbc.queryForObject("SELECT BIZ_IDEMPOTENCY_KEY FROM ws_wallet_flow", String.class), "规则3幂等键");
+
+        // 包D-4 正向断言：配送扣减必须同事务摊到权益批次，键与上面的流水幂等键同源。
+        // 删掉 createPaidDeliveryOrder 里的 allocateOnConsume 那一段，本段立刻红
+        assertEquals(1, count("ws_entitlement_allocation"));
+        assertEquals("DELIVERY:" + created.order().getOrderNo(),
+                jdbc.queryForObject("SELECT BIZ_KEY FROM ws_entitlement_allocation", String.class));
+        assertEquals(3_000L,
+                jdbc.queryForObject("SELECT ALLOC_AMOUNT_FEN FROM ws_entitlement_allocation", Long.class));
+        assertEquals(0L,
+                jdbc.queryForObject("SELECT ALLOC_WATER_ML FROM ws_entitlement_allocation", Long.class),
+                "payWay=2 全余额支付，水量维度不分摊");
+        assertEquals(cardBalance(), EntitlementFixture.sumRemainFen(jdbc, CARD_ID),
+                "不变式：逐卡批次剩余合计恒等于卡聚合值");
         assertEquals(1, count("ws_message"), "创建节点站内消息与创单同事务");
     }
 
@@ -372,12 +427,42 @@ class DeliveryOrderTxDbTest {
         jdbc.update("INSERT INTO ws_card(ID,DATA_STATUS,CARD_NO,CARD_TYPE,USER_ID,BALANCE_AMOUNT,BALANCE_ML,"
                 + "SCOPE_JSON,EXPIRE_TIME,CARD_STATUS) VALUES(101,0,'VC-TEST-101',1,?,?,0,NULL,NULL,1)",
                 OTHER_USER, BALANCE_FEN);
+        // 包D-4：他人卡同样是裸 INSERT，缺批次会在分摊处 fail-closed（这正是台账该有的行为）
+        EntitlementFixture.seedLegacyBatch(jdbc, 101L, OTHER_USER, BALANCE_FEN, 0L);
         DeliveryCreateBo foreign = bo(REQ_A, 1);
         foreign.setCardId("101");
         orderService.createDeliveryOrder(foreign, OTHER_USER);
     }
 
     // ================= 3：失败整体回滚零残留 =================
+
+    /**
+     * 审计 P0-1：配送链与取水链共用 settleExpired——过期批次权益不得支付配送单。
+     * 卡 10000 分中 8000 属过期批次：清算后可用 2000，3000 的配送单必须拒绝且零残留；
+     * 把过期批次改回未过期后同单成功，证明拦截的确是「过期」而非金额本身。
+     */
+    @Test
+    void expiredBatchEntitlementCannotPayForDelivery() {
+        jdbc.update("UPDATE ws_card_entitlement_batch SET GRANT_AMOUNT_FEN=2000, REMAIN_AMOUNT_FEN=2000 "
+                + "WHERE CARD_ID=" + CARD_ID);
+        jdbc.update("INSERT INTO ws_card_entitlement_batch(CARD_ID, USER_ID, SOURCE_TYPE, "
+                + "PAY_AMOUNT_FEN, GRANT_AMOUNT_FEN, GRANT_BONUS_FEN, GRANT_WATER_ML, "
+                + "REMAIN_AMOUNT_FEN, REMAIN_WATER_ML, EXPIRE_TIME, SCOPE_JSON, BATCH_STATUS, "
+                + "REFUNDED_AMOUNT_FEN, VERSION, DATA_STATUS, CREATE_TIME) "
+                + "VALUES(" + CARD_ID + ", " + USER_ID + ", 4, 0, 8000, 8000, 0, 8000, 0, "
+                + "'20250101000000', NULL, 6, 0, 1, 0, '20240101000000')");
+
+        assertThrows(JbkException.class, () -> orderService.createDeliveryOrder(bo(REQ_A, 1), USER_ID));
+        assertEquals(BALANCE_FEN, cardBalance(), "拒绝单整体回滚（清算与扣减同生共死），零残留");
+        assertEquals(0, count("ws_order"));
+        assertEquals(0, count("ws_wallet_flow"));
+
+        // 同额度但批次未过期：成功——证明上面拦住的正是「过期」
+        jdbc.update("UPDATE ws_card_entitlement_batch SET EXPIRE_TIME='20991231000000' "
+                + "WHERE CARD_ID=" + CARD_ID + " AND SOURCE_TYPE=4");
+        orderService.createDeliveryOrder(bo(REQ_A, 1), USER_ID);
+        assertEquals(BALANCE_FEN - 3_000L, cardBalance());
+    }
 
     @Test
     void insufficientBalanceRejectsWithZeroResidue() {
@@ -390,6 +475,7 @@ class DeliveryOrderTxDbTest {
         assertEquals(0, count("ws_wallet_flow"));
         assertEquals(0, count("ws_delivery_task"));
         assertEquals(0, count("ws_message"));
+        assertEquals(0, count("ws_entitlement_allocation"), "包D-4：拒绝路径零分摊");
     }
 
     @Test
@@ -474,6 +560,16 @@ class DeliveryOrderTxDbTest {
         assertEquals(40_000L, snap.getLong("waterMl"));
         assertEquals(2_600L, snap.getLong("priceWaterAmountFen"), "价目参考=原 waterAmountFen 语义");
         assertEquals(0L, snap.getLong("waterAmountFen"), "快照水费=实际应扣口径");
+
+        // 包D-4：payWay=3 的两维在<b>同一条</b>分摊行上各记各的，绝不互相折算。
+        // 该卡只有一条历史聚合批次，故两维都落在它上面，一条分摊行
+        assertEquals(1, count("ws_entitlement_allocation"), "双支付方式分摊仍恰一条");
+        assertEquals(400L,
+                jdbc.queryForObject("SELECT ALLOC_AMOUNT_FEN FROM ws_entitlement_allocation", Long.class));
+        assertEquals(40_000L,
+                jdbc.queryForObject("SELECT ALLOC_WATER_ML FROM ws_entitlement_allocation", Long.class));
+        assertEquals(cardBalance(), EntitlementFixture.sumRemainFen(jdbc, CARD_ID));
+        assertEquals(cardMl(), EntitlementFixture.sumRemainMl(jdbc, CARD_ID));
     }
 
     @Test

@@ -15,6 +15,30 @@ import com.jbk.tool.data.ops.po.WsDomainEvent;
 public interface IWsDomainEventService extends IService<WsDomainEvent> {
 
     /**
+     * 可订阅事件类型白名单（E2E-07 包B / REQ-083）：n8n 等外部编排只允许订阅
+     * 业务状态变化族——订单/设备/告警/工单/配送节点/告警恢复。
+     * 资金类（支付/分账/售后）与设备指令内部态明确不开放：资金事实归 E2E-08 对账链，
+     * 指令细节属设备安全面。置位发生在事件落库时（单一来源，见 impl.buildEvent）；
+     * 历史存量事件不回刷——白名单语义自本链启用起生效。
+     */
+    java.util.Set<Integer> WHITELIST_EVENT_TYPES = java.util.Set.of(
+            OpsEnum.EventType.ORDER_STATUS.getValue(),
+            OpsEnum.EventType.DEVICE_STATUS.getValue(),
+            OpsEnum.EventType.ALARM_CREATED.getValue(),
+            OpsEnum.EventType.WORK_ORDER_STATUS.getValue(),
+            OpsEnum.EventType.DELIVERY_NODE.getValue(),
+            OpsEnum.EventType.ALARM_RECOVERED.getValue());
+
+    /**
+     * 白名单事件只读分页（管理端；为 n8n 订阅预演，消费翻转 CONSUMED_FLAG 明确归二期）。
+     *
+     * @param current   页码（≥1）
+     * @param size      页大小（1~100）
+     * @param eventType 可选类型筛选（必须在白名单内，否则拒绝——不泄露非白名单事件存在性）
+     */
+    com.jbk.tool.data.PageDataVo<WsDomainEvent> pageWhitelist(Long current, Long size, Integer eventType);
+
+    /**
      * 记录状态变化事件（身份上下文自动取自当前登录会话；无会话=系统触发）
      *
      * @param eventType 事件类型

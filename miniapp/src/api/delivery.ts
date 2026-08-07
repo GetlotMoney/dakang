@@ -1,4 +1,3 @@
-import type { AccountContext } from './account'
 import type {
   BusinessTime,
   EntityId,
@@ -7,9 +6,7 @@ import type {
 } from './common'
 import type { DeliveryAppeal, OrderDetail, OrderDetailRaw } from './order'
 import { cardApi } from './card'
-import { requireCapability } from './capability'
-import { cloneContractData, ContractError, prototypeMeta } from './common'
-import { isFulfillableTask, requireFulfillableDeliveryOrder, requireLinkedDeliveryOrder } from './delivery-link'
+import { ContractError } from './common'
 import {
   DELIVERY_MEDIA_KEY_PATTERN,
   DELIVERY_MODE_TO_VALUE,
@@ -29,8 +26,7 @@ import type {
 import { normalizeOrderDetail } from './order'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { currentMode, realAdapterPending, selectAdapter } from './runtime'
-import { scenarioStore } from '@/scenario/store'
+import { currentMode, realAdapterPending } from './runtime'
 import { formatFen, formatMl } from '@/utils/format'
 
 export type DeliveryTaskStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7
@@ -98,12 +94,19 @@ export interface DeliveryTask {
   signPhotos: SignPhoto[]
   /** 签收定位记录状态：原型快照=固定坐标已随三照记录；recorded=真实坐标已记录；unrecorded=未记录。 */
   locationStatus?: 'prototype-snapshot' | 'recorded' | 'unrecorded'
+  /**
+   * 补送任务标识（E2E-04 包C：申诉裁决 RESEND 生成的零金额子单任务）。
+   *
+   * **只认服务端下发的显式标识**：补送任务在快照上与普通任务只差"金额为 0、无回收桶"，
+   * 用这些特征去猜必然误标（价格调整或免配送费活动都能命中）。缺省即不加标识。
+   */
+  isResend?: boolean
   mockMeta?: MockMeta
 }
 
 export interface CreateDeliveryOrderInput {
-  /** Mock 地址簿引用；real 模式无地址簿域（包A 冻结为快照式输入），可传空串。 */
-  addressId: EntityId
+  /** 地址簿地址ID：传入时服务端按归属解引用取地址与号码写快照（号码不经前端，2026-08-02）。 */
+  addressId?: EntityId
   stationId: EntityId
   waterTypeId: EntityId
   containerSpec: DeliveryTask['containerSpec']
@@ -115,9 +118,9 @@ export interface CreateDeliveryOrderInput {
   autoRefillIntervalDays?: number
   /** 幂等键（real 必填）：规范小写 UUID，同一次提交的网络重试必须复用；Mock 忽略。 */
   requestId?: string
-  /** 收水地址快照（real 必填，≤200 字）；Mock 由 addressId 解析。 */
+  /** 收水地址快照（直填模式必填，≤200 字）；与 addressId 二选一。 */
   receiveAddress?: string
-  /** 收货电话（real 必填，11 位手机号；服务端入库供配送联系、出网必脱敏）；Mock 由 addressId 解析。 */
+  /** 收货电话（直填模式必填，11 位；服务端入库供配送联系、出网必脱敏）；与 addressId 二选一。 */
   receivePhone?: string
   /** 支付方式（D-214 二选一）：缺省按 2 全余额，兼容既有调用方；金额判定最终在服务端。 */
   payWay?: DeliveryPayWay
@@ -365,566 +368,6 @@ export function deliveryPayWayOptions(
   return [balance, ml]
 }
 
-function accountIdOfUser(userId: EntityId): EntityId | undefined {
-  return scenarioStore.accounts.find(item => item.userId === userId)?.accountId
-}
-
-/**
- * 统一逻辑时钟（第四/五轮审计整改）：动作时间统一取自 scenarioStore.takeBusinessTime，
- * 保证 创建≤接单≤离站≤送达≤签收===完成，且异常/举证不早于各自前置节点；
- * 必须在全部校验通过之后调用——拒绝路径连时钟都不允许推进。
- */
-function takeActionTime(floorTimes: Array<BusinessTime | undefined>, offsetSeconds: number): BusinessTime {
-  return scenarioStore.takeBusinessTime(floorTimes, offsetSeconds)
-}
-
-/** 履约节点回写订单轨迹：只接受 requireFulfillableDeliveryOrder 返回的订单记录，时间与任务动作同源。 */
-function appendOrderTrace(
-  record: OrderDetail,
-  node: string,
-  label: string,
-  tone: 'primary' | 'success' | 'warning' | 'danger' | 'info',
-  time: BusinessTime,
-  detail?: string,
-) {
-  record.trace.push({ node, label, time, tone, detail })
-}
-
-/** 配送节点向下单用户发站内消息（REQ-059：至少覆盖离站与签收节点）。 */
-function notifyOrderUser(task: DeliveryTask, title: string, content: string, sendTime: BusinessTime = scenarioStore.now) {
-  const accountId = accountIdOfUser(task.userId)
-  if (!accountId) {
-    return
-  }
-  scenarioStore.pushMessage({
-    accountId,
-    domain: 'delivery',
-    title,
-    summary: `订单 ${task.orderNo}：${title}`,
-    content,
-    channel: 'in-app',
-    sendStatus: 4,
-    sendTime,
-    unread: true,
-    objectType: 'order',
-    objectId: task.orderNo,
-    requiredCapability: 'USER_BASE',
-    evidenceMode: 'prototype',
-  })
-}
-
-function maskPhone(phone: string) {
-  if (!/^1\d{10}$/.test(phone)) {
-    throw new ContractError('PHONE_INVALID', '手机号格式不合法')
-  }
-  return `${phone.slice(0, 3)}****${phone.slice(-4)}`
-}
-
-function courierContext(): AccountContext {
-  const context = scenarioStore.activeAccount()
-  requireCapability(context, 'COURIER_WORK')
-  const scope = context.courierScope
-  if (!scope || scope.status !== 2 || scope.stationIds.length === 0) {
-    throw new ContractError('COURIER_SCOPE_DENIED', '配送范围未配置，默认不可接单')
-  }
-  return context
-}
-
-function taskByNo(taskNo: string) {
-  const task = scenarioStore.deliveryTasks.find(item => item.taskNo === taskNo)
-  if (!task) {
-    throw new ContractError('TASK_NOT_FOUND', '配送任务不存在')
-  }
-  return task
-}
-
-function assertTaskVersion(task: DeliveryTask, expectedVersion: number) {
-  if (task.version !== expectedVersion) {
-    throw new ContractError('TASK_STALE', '任务状态已变化，请刷新后重试')
-  }
-}
-
-function assertCourierCanAccept(context: AccountContext, task: DeliveryTask) {
-  const scope = context.courierScope!
-  if (!scope.stationIds.includes(task.stationId)) {
-    throw new ContractError('TASK_OUT_OF_SCOPE', '任务不在当前配送范围')
-  }
-  if (task.userId === context.userId) {
-    throw new ContractError('SELF_DELIVERY_FORBIDDEN', '同一账号不能配送自己的订单')
-  }
-  if (task.taskStatus !== 1 || task.courierId) {
-    throw new ContractError('TASK_ALREADY_ACCEPTED', '任务已被领取或状态不可接单')
-  }
-}
-
-/**
- * 只读证据访问收口（2026-07-18 第五轮审计整改）：
- * 申诉与异常证据只允许任务实际归属配送员查看——未分配可接任务、其他配送员（即使服务范围
- * 覆盖该水站）一律拒绝；任务-订单共键必须一致，孤儿/错位任务 fail-closed。
- * 纯校验：拒绝路径不写审计、不发消息、不推进时钟。
- */
-function requireAssignedCourierEvidenceAccess(context: AccountContext, task: DeliveryTask): OrderDetail {
-  if (!task.courierId || task.courierId !== context.courierScope!.courierId) {
-    throw new ContractError('TASK_ACCESS_DENIED', '只有任务归属配送员可以查看申诉与异常证据')
-  }
-  return requireLinkedDeliveryOrder(task)
-}
-
-function assertCourierCanView(context: AccountContext, task: DeliveryTask) {
-  const scope = context.courierScope!
-  const canViewAvailable
-    = task.taskStatus === 1
-      && !task.courierId
-      && task.userId !== context.userId
-      && scope.stationIds.includes(task.stationId)
-  const isMine = task.courierId === scope.courierId
-  if (!canViewAvailable && !isMine) {
-    throw new ContractError('TASK_ACCESS_DENIED', '无权查看该配送任务')
-  }
-}
-
-const mockDeliveryApi: DeliveryApi = {
-  async createDeliveryOrder(input) {
-    if (input.deliveryCount <= 0 || input.plannedReturnCount < 0) {
-      throw new ContractError('INVALID_DELIVERY_COUNT', '配送和回收数量不合法')
-    }
-    // D-214 结构校验与后端同构：白名单 {2,3}，缺省按 2 兼容既有调用方
-    const payWay: DeliveryPayWay = input.payWay ?? 2
-    if (payWay !== 2 && payWay !== 3) {
-      throw new ContractError('DELIVERY_PAY_WAY_INVALID', '配送支付方式不合法')
-    }
-    if (input.deliveryMode === 'scheduled') {
-      if (!input.scheduledTime) {
-        throw new ContractError('SCHEDULE_TIME_REQUIRED', '预约配送必须选择预约时间')
-      }
-      if (input.scheduledTime <= scenarioStore.now) {
-        throw new ContractError('SCHEDULE_TIME_INVALID', '预约时间必须晚于当前时间')
-      }
-    }
-    if (input.deliveryMode === 'auto-refill') {
-      const interval = input.autoRefillIntervalDays
-      if (!interval || interval < 3 || interval > 90) {
-        throw new ContractError('AUTO_REFILL_RULE_REQUIRED', '自动补货需配置 3~90 天的固定周期')
-      }
-      // 与后端同边界：规则表无支付方式列，周期单恒走余额，首单也不许水量抵扣
-      if (payWay === 3) {
-        throw new ContractError('AUTO_REFILL_PAY_WAY_UNSUPPORTED', AUTO_REFILL_PAY_WAY_REASON)
-      }
-    }
-    const account = scenarioStore.activeAccount()
-    const address = scenarioStore.addresses.find(
-      item => item.addressId === input.addressId && item.userId === account.userId,
-    )
-    const station = scenarioStore.stations.find(item => item.id === input.stationId)
-    const waterType = scenarioStore.waterTypes.find(item => item.id === input.waterTypeId)
-    if (!address || !station || !waterType) {
-      throw new ContractError('DELIVERY_INPUT_INVALID', '地址、水站或水种无效')
-    }
-    if (station.status !== 'OPEN') {
-      throw new ContractError('STATION_NOT_OPEN', '该水站检修或暂停营业中，暂不支持配送下单')
-    }
-
-    const priceWaterAmountFen = input.deliveryCount * CONTAINER_WATER_PRICE_FEN[input.containerSpec]
-    const deliveryFeeFen = input.deliveryCount * DELIVERY_FEE_PER_CONTAINER_FEN
-    const waterMl = deliveryWaterMl(input.containerSpec, input.deliveryCount)
-    // D-214 金额口径：实际应扣金额 = (payWay===2 ? 水费 : 0) + 配送费；
-    // payWay=3 的水费以水量抵扣，orderAmountFen 只含配送费
-    const waterAmountFen = payWay === 3 ? 0 : priceWaterAmountFen
-    const totalAmountFen = waterAmountFen + deliveryFeeFen
-    // 2026-07-18 决策：配送单水卡原型支付——校验余额/水量后以"已支付"入池，
-    // 消除"待支付订单可接单履约"矛盾；不改变卡面余额，不伪造微信支付。
-    const card = scenarioStore.cards.find(item => item.userId === account.userId)
-    if (!card) {
-      throw new ContractError('CARD_MISSING', '当前账号暂无水卡，请先购卡后再下配送单')
-    }
-    if (card.cardStatus !== 1) {
-      throw new ContractError('CARD_NOT_USABLE', '水卡状态不可用（冻结/过期/注销），无法支付配送单')
-    }
-    // 拒因与后端扣减事务同文案：payWay=3 先验水量抵扣、再验配送费余额
-    if (payWay === 3) {
-      if (card.balanceMl < waterMl) {
-        throw new ContractError('INSUFFICIENT_ML', '水卡水量不足以抵扣本单水量')
-      }
-      if (card.balanceFen < deliveryFeeFen) {
-        throw new ContractError('INSUFFICIENT_BALANCE', '水卡余额不足以支付配送费')
-      }
-    }
-    else if (card.balanceFen < totalAmountFen) {
-      throw new ContractError('INSUFFICIENT_BALANCE', '水卡余额不足以支付本单水费与配送费')
-    }
-
-    const sequence = scenarioStore.nextOrderSequence()
-    const orderNo = `MD20260716${sequence}`
-    const taskNo = `MDT-${sequence}`
-    const createTime = takeActionTime([], 1)
-    const order: OrderDetail = {
-      order: {
-        orderId: `MO-${sequence}`,
-        orderNo,
-        userId: account.userId,
-        orderType: 3,
-        orderStatus: 2,
-        orderAmountFen: totalAmountFen,
-        payWay,
-        cardId: card.cardId,
-        stationId: station.id,
-        stationName: station.stationName,
-        createTime,
-        mockMeta: { ...prototypeMeta },
-      },
-      trace: [
-        {
-          node: 'paid',
-          label: payWay === 3 ? '水卡水量+余额原型支付' : '水卡余额原型支付',
-          time: createTime,
-          detail: payWay === 3
-            ? `原型扣减：水量抵扣 ${formatMl(waterMl)}，余额支付配送费 ${formatFen(deliveryFeeFen)}（不改变卡面余额与水量，不发生真实结算）`
-            : '原型扣减：不改变卡面余额，不发生真实结算',
-          tone: 'success',
-        },
-        {
-          node: 'delivery-created',
-          label: '配送任务已生成，等待接单',
-          time: createTime,
-          tone: 'primary',
-        },
-      ],
-      flowCount: 0,
-      deliveryTaskNo: taskNo,
-    }
-    const task: DeliveryTask = {
-      taskId: `MT-${sequence}`,
-      taskNo,
-      orderId: order.order.orderId,
-      orderNo,
-      userId: account.userId,
-      stationId: station.id,
-      stationName: station.stationName,
-      waterTypeId: waterType.id,
-      waterTypeName: waterType.name,
-      containerSpec: input.containerSpec,
-      plannedDeliveryCount: input.deliveryCount,
-      plannedReturnCount: input.plannedReturnCount,
-      receiveAddress: `${address.region}${address.detail}`,
-      maskedPhone: address.maskedPhone,
-      priceSnapshot: {
-        waterAmountFen,
-        deliveryFeeFen,
-        totalAmountFen,
-      },
-      payWay,
-      taskStatus: 1,
-      version: 1,
-      signPhotos: [],
-      mockMeta: { ...prototypeMeta },
-    }
-    scenarioStore.orderDetails.unshift(order)
-    scenarioStore.deliveryTasks.unshift(task)
-    notifyOrderUser(task, '配送任务已生成', `您的配送订单 ${orderNo} 已生成，等待配送员接单。`, createTime)
-    scenarioStore.recordAudit('USER_BASE', 'delivery.order.create', 'task', taskNo, 'success', createTime)
-    return cloneContractData({ order, task })
-  },
-  async listTasks(view) {
-    const context = courierContext()
-    const scope = context.courierScope!
-    const list = scenarioStore.deliveryTasks.filter((task) => {
-      if (view === 'available') {
-        // fail-closed：与履约动作同源的精确判定——订单存在、共键一致且 orderStatus===2；
-        // 孤儿/未支付/终态/关联错位任务一律不进入可接列表（2026-07-18 第三轮审计整改）。
-        return (
-          task.taskStatus === 1
-          && !task.courierId
-          && scope.stationIds.includes(task.stationId)
-          && task.userId !== context.userId
-          && isFulfillableTask(task)
-        )
-      }
-      if (view === 'active') {
-        return task.courierId === scope.courierId && [2, 3, 4, 7].includes(task.taskStatus)
-      }
-      return task.courierId === scope.courierId && [5, 6].includes(task.taskStatus)
-    })
-    return cloneContractData(list)
-  },
-  async getTaskDetail(taskNo) {
-    const context = courierContext()
-    const task = taskByNo(taskNo)
-    assertCourierCanView(context, task)
-    // 深链防护：未分配任务只有在关联订单可履约时才允许查看，
-    // 阻断孤儿/未支付/取消/退款/关联错位任务经 URL 直达泄露收货地址（2026-07-18 第三轮审计整改）。
-    if (task.courierId !== context.courierScope!.courierId) {
-      requireFulfillableDeliveryOrder(task)
-    }
-    return cloneContractData(task)
-  },
-  async acceptTask(taskNo, expectedVersion) {
-    const context = courierContext()
-    const task = taskByNo(taskNo)
-    assertTaskVersion(task, expectedVersion)
-    assertCourierCanAccept(context, task)
-    const orderRecord = requireFulfillableDeliveryOrder(task)
-    const acceptTime = takeActionTime([orderRecord.order.createTime], 600)
-    task.courierId = context.courierScope!.courierId
-    task.taskStatus = 2
-    task.version += 1
-    task.acceptTime = acceptTime
-    appendOrderTrace(orderRecord, 'accepted', '配送员已接单', 'info', acceptTime)
-    notifyOrderUser(task, '配送员已接单', `订单 ${task.orderNo} 已由配送员接单，备货后将从水站出发。`, acceptTime)
-    scenarioStore.recordAudit('COURIER_WORK', 'delivery.task.accept', 'task', taskNo, 'success', acceptTime)
-    return cloneContractData(task)
-  },
-  async advanceTask(taskNo, targetStatus, expectedVersion) {
-    const context = courierContext()
-    const task = taskByNo(taskNo)
-    assertTaskVersion(task, expectedVersion)
-    if (task.courierId !== context.courierScope!.courierId) {
-      throw new ContractError('TASK_ACCESS_DENIED', '只能推进本人已接任务')
-    }
-    const expectedCurrent = targetStatus === 3 ? 2 : 3
-    if (task.taskStatus !== expectedCurrent) {
-      throw new ContractError('INVALID_TASK_TRANSITION', '配送任务状态不允许该操作')
-    }
-    const orderRecord = requireFulfillableDeliveryOrder(task)
-    const actionTime = targetStatus === 3
-      ? takeActionTime([task.acceptTime], 600)
-      : takeActionTime([task.departTime], 1800)
-    task.taskStatus = targetStatus
-    task.version += 1
-    if (targetStatus === 3) {
-      task.departTime = actionTime
-      appendOrderTrace(orderRecord, 'departed', '水已离开水站', 'info', actionTime)
-      notifyOrderUser(task, '水已离开水站', `订单 ${task.orderNo} 已由配送员取水离站，正在配送途中。`, actionTime)
-    }
-    else {
-      task.arriveTime = actionTime
-      appendOrderTrace(orderRecord, 'arrived', '已送达待确认', 'info', actionTime)
-      notifyOrderUser(task, '已送达，等待签收确认', `订单 ${task.orderNo} 已送达收货地址，等待三照签收。`, actionTime)
-    }
-    scenarioStore.recordAudit('COURIER_WORK', 'delivery.task.advance', 'task', taskNo, 'success', actionTime)
-    return cloneContractData(task)
-  },
-  async signTask(input) {
-    const context = courierContext()
-    const task = taskByNo(input.taskNo)
-    assertTaskVersion(task, input.expectedVersion)
-    if (task.courierId !== context.courierScope!.courierId || task.taskStatus !== 4) {
-      throw new ContractError('SIGN_NOT_ALLOWED', '当前任务不能签收')
-    }
-    const photoTypes = new Set(input.photos.map(item => item.type))
-    if (
-      input.photos.length !== 3
-      || photoTypes.size !== 3
-      || ![1, 2, 3].every(type => photoTypes.has(type as SignPhotoType))
-    ) {
-      throw new ContractError('SIGN_PHOTO_INCOMPLETE', '门牌、水品、摆放三照缺一不可')
-    }
-    if (input.actualDeliveryCount <= 0 || input.actualReturnCount < 0) {
-      throw new ContractError('INVALID_DELIVERY_COUNT', '实际配送或回收数量不合法')
-    }
-    // 定位证据一致性（2026-07-18 审计整改）：声明"原型快照"时，三照必须携带同一合法固定坐标，
-    // 契约不信任调用方的单方声明，防止"文案宣称超出实际记录"。
-    if ((input.locationStatus ?? 'unrecorded') === 'prototype-snapshot') {
-      const first = input.photos[0]
-      const consistent = input.photos.every(photo =>
-        typeof photo.latitude === 'number'
-        && typeof photo.longitude === 'number'
-        && photo.latitude >= -90 && photo.latitude <= 90
-        && photo.longitude >= -180 && photo.longitude <= 180
-        && photo.latitude === first.latitude
-        && photo.longitude === first.longitude,
-      )
-      if (!consistent) {
-        throw new ContractError('LOCATION_EVIDENCE_INVALID', '定位快照声明与三照坐标不符：三照须携带同一合法固定坐标')
-      }
-    }
-    const orderRecord = requireFulfillableDeliveryOrder(task)
-    const signTime = takeActionTime([task.arriveTime], 600)
-    task.actualDeliveryCount = input.actualDeliveryCount
-    task.actualReturnCount = input.actualReturnCount
-    // 权威照片时间由签收动作统一写入，不采信页面传入的草稿时间（第五轮审计整改）。
-    task.signPhotos = cloneContractData(input.photos).map(photo => ({
-      ...photo,
-      time: signTime,
-    }))
-    task.signTime = signTime
-    task.taskStatus = 5
-    task.version += 1
-    task.locationStatus = input.locationStatus ?? 'unrecorded'
-    // 订单终态闭合：签收即订单完成，完成时间与任务签收时间同源。
-    appendOrderTrace(orderRecord, 'signed', '三照签收，订单完成', 'success', signTime)
-    orderRecord.order.orderStatus = 4
-    orderRecord.order.finishTime = signTime
-    notifyOrderUser(
-      task,
-      '订单已签收',
-      `订单 ${task.orderNo} 已完成三照签收；如有异议，可在签收后 24 小时内发起申诉。`,
-      signTime,
-    )
-    scenarioStore.recordAudit('COURIER_WORK', 'delivery.task.sign', 'task', input.taskNo, 'success', signTime)
-    return cloneContractData(task)
-  },
-  async getCourierAdmission() {
-    const context = scenarioStore.activeAccount()
-    requireCapability(context, 'COURIER_APPLY')
-    const admission = scenarioStore.courierAdmissions.find(
-      item => item.accountId === context.accountId,
-    )
-    if (!admission) {
-      throw new ContractError('COURIER_ADMISSION_NOT_FOUND', '配送准入记录不存在')
-    }
-    return cloneContractData(admission)
-  },
-  async submitCourierAdmission(input) {
-    const context = scenarioStore.activeAccount()
-    requireCapability(context, 'COURIER_APPLY')
-    const admission = scenarioStore.courierAdmissions.find(
-      item => item.accountId === context.accountId,
-    )
-    if (!admission || ![0, 4].includes(admission.status)) {
-      throw new ContractError('COURIER_ADMISSION_NOT_ALLOWED', '当前准入状态不能重复提交')
-    }
-    if (!input.applicantName.trim() || !input.declarationAccepted) {
-      throw new ContractError('COURIER_ADMISSION_INVALID', '申请人和必要声明不能为空')
-    }
-    if (!input.requestedRegion?.trim() && input.requestedStationIds.length === 0) {
-      throw new ContractError('COURIER_SCOPE_REQUIRED', '申请服务区域或水站至少填写一项')
-    }
-    admission.applicantName = input.applicantName.trim()
-    admission.maskedPhone = maskPhone(input.phone)
-    admission.requestedStationIds = [...input.requestedStationIds]
-    admission.requestedRegion = input.requestedRegion?.trim() || undefined
-    const submitTime = takeActionTime([], 1)
-    admission.submittedTime = submitTime
-    admission.status = 1
-    admission.rejectReason = undefined
-    scenarioStore.recordAudit(
-      'COURIER_APPLY',
-      'courier.admission.submit',
-      'courier-admission',
-      context.accountId,
-      'success',
-      submitTime,
-    )
-    return cloneContractData(admission)
-  },
-  async reportException(input) {
-    const context = courierContext()
-    const task = taskByNo(input.taskNo)
-    assertTaskVersion(task, input.expectedVersion)
-    if (
-      task.courierId !== context.courierScope!.courierId
-      || ![2, 3, 4].includes(task.taskStatus)
-    ) {
-      throw new ContractError('EXCEPTION_NOT_ALLOWED', '当前任务不能上报配送异常')
-    }
-    if (!input.description.trim()) {
-      throw new ContractError('EXCEPTION_DESCRIPTION_REQUIRED', '异常说明不能为空')
-    }
-    // 全部校验（含订单关联与可履约状态）通过之后才允许产生任何写入；
-    // 校验失败时异常记录、订单轨迹、消息、审计与任务字段一律零副作用（2026-07-18 第三轮审计整改）。
-    const orderRecord = requireFulfillableDeliveryOrder(task)
-    // 异常时间不得早于任务当前最后已发生节点（第四轮统一逻辑时钟）。
-    const exceptionTime = takeActionTime(
-      [orderRecord.order.createTime, task.acceptTime, task.departTime, task.arriveTime],
-      60,
-    )
-    const record: DeliveryExceptionRecord = {
-      exceptionId: `DEX-${scenarioStore.deliveryExceptions.length + 1}`,
-      taskNo: input.taskNo,
-      courierId: context.courierScope!.courierId,
-      reason: input.reason,
-      description: input.description.trim(),
-      evidenceRefs: [...input.evidenceRefs],
-      createTime: exceptionTime,
-    }
-    scenarioStore.deliveryExceptions.push(record)
-    appendOrderTrace(
-      orderRecord,
-      'exception',
-      '配送异常已登记',
-      'warning',
-      exceptionTime,
-      `${record.reason}：${record.description}`,
-    )
-    scenarioStore.recordAudit(
-      'COURIER_WORK',
-      'delivery.task.exception.report',
-      'task',
-      input.taskNo,
-      'success',
-      exceptionTime,
-    )
-    return cloneContractData(record)
-  },
-  async listTaskExceptions(taskNo) {
-    const context = courierContext()
-    const task = taskByNo(taskNo)
-    requireAssignedCourierEvidenceAccess(context, task)
-    return cloneContractData(
-      scenarioStore.deliveryExceptions.filter(
-        item => item.taskNo === taskNo && item.courierId === task.courierId,
-      ),
-    )
-  },
-  async getTaskAppeal(taskNo) {
-    const context = courierContext()
-    const task = taskByNo(taskNo)
-    const record = requireAssignedCourierEvidenceAccess(context, task)
-    const appeal = scenarioStore.deliveryAppeals.find(
-      item => item.taskNo === taskNo && item.orderNo === record.order.orderNo,
-    )
-    return appeal ? cloneContractData(appeal) : null
-  },
-  async appendAppealEvidence(input) {
-    const context = courierContext()
-    const task = taskByNo(input.taskNo)
-    if (task.courierId !== context.courierScope!.courierId) {
-      throw new ContractError('TASK_ACCESS_DENIED', '只能就本人任务的申诉举证')
-    }
-    if (task.taskStatus !== 7) {
-      throw new ContractError('APPEAL_NOT_ACTIVE', '任务当前不在申诉中，无法追加举证')
-    }
-    // 申诉发生在已完成订单上，走关联校验而非履约支付栅栏：
-    // 要求任务 7 / 订单 4 / 申诉 1 且任务-订单-申诉三方共键一致（2026-07-18 第三轮审计整改）。
-    const orderRecord = requireLinkedDeliveryOrder(task)
-    if (orderRecord.order.orderStatus !== 4) {
-      throw new ContractError('APPEAL_ORDER_STATE_INVALID', '申诉举证要求关联订单处于已完成状态')
-    }
-    const appeal = scenarioStore.deliveryAppeals.find(
-      item => item.appealId === input.appealId
-        && item.taskNo === input.taskNo
-        && item.orderNo === orderRecord.order.orderNo,
-    )
-    if (!appeal || appeal.appealStatus !== 1) {
-      throw new ContractError('APPEAL_NOT_FOUND', '申诉不存在、共键不一致或已裁决')
-    }
-    if (!input.description.trim()) {
-      throw new ContractError('EVIDENCE_DESCRIPTION_REQUIRED', '举证说明不能为空')
-    }
-    appeal.courierEvidences = appeal.courierEvidences ?? []
-    // 举证时间不得早于签收、申诉创建与上一份举证（第四轮统一逻辑时钟）。
-    const previousEvidenceTime = appeal.courierEvidences[appeal.courierEvidences.length - 1]?.time
-    const evidenceTime = takeActionTime(
-      [task.signTime, appeal.createTime, previousEvidenceTime],
-      60,
-    )
-    appeal.courierEvidences.push({
-      description: input.description.trim(),
-      evidenceRefs: [...input.evidenceRefs],
-      time: evidenceTime,
-    })
-    scenarioStore.recordAudit(
-      'COURIER_WORK',
-      'delivery.appeal.evidence',
-      'appeal',
-      input.appealId,
-      'success',
-      evidenceTime,
-    )
-    return cloneContractData(appeal)
-  },
-}
-
 // ==================== real 适配器（E2E-03 包B） ====================
 
 /** 后端 MiniDeliveryCreateVo 原样结构。 */
@@ -937,7 +380,7 @@ interface DeliveryCreateRaw {
 function requireMediaKeys(refs: string[], scene: string): string[] {
   for (const ref of refs) {
     if (!DELIVERY_MEDIA_KEY_PATTERN.test(ref)) {
-      throw new ContractError('DELIVERY_MEDIA_NOT_UPLOADED', `${scene}必须先完成照片上传（受控媒体键缺失）`)
+      throw new ContractError('DELIVERY_MEDIA_NOT_UPLOADED', `${scene}前请先完成照片上传`)
     }
   }
   return refs
@@ -952,16 +395,19 @@ const realDeliveryApi: DeliveryApi = {
   async createDeliveryOrder(input) {
     // 幂等键由页面持有并在同一次提交的重试间复用；缺失/形态不符直接拒绝，防重试双扣款
     if (!input.requestId || !DELIVERY_REQUEST_ID_PATTERN.test(input.requestId)) {
-      throw new ContractError('DELIVERY_REQUEST_ID_INVALID', '配送下单缺少合法幂等标识，请返回重试')
+      throw new ContractError('DELIVERY_REQUEST_ID_INVALID', '配送下单请求异常，请返回重试')
     }
     // real 无地址簿域（包A 快照式输入）：地址与电话必须随单提交，服务端再做最终校验
     const receiveAddress = input.receiveAddress?.trim() ?? ''
     const receivePhone = input.receivePhone?.trim() ?? ''
-    if (!receiveAddress || receiveAddress.length > 200) {
-      throw new ContractError('DELIVERY_ADDRESS_REQUIRED', '请填写收水地址（200 字以内）')
-    }
-    if (!/^1\d{10}$/.test(receivePhone)) {
-      throw new ContractError('PHONE_INVALID', '请填写 11 位收货手机号')
+    // addressId 引用模式：地址与号码由服务端按归属解引用写快照（号码不经前端）；直填模式才做形态预检
+    if (!input.addressId) {
+      if (!receiveAddress || receiveAddress.length > 200) {
+        throw new ContractError('DELIVERY_ADDRESS_REQUIRED', '请填写收水地址（200 字以内）')
+      }
+      if (!/^1\d{10}$/.test(receivePhone)) {
+        throw new ContractError('PHONE_INVALID', '请填写 11 位收货手机号')
+      }
     }
     return withRealSession(async () => {
       const raw = await post<DeliveryCreateRaw>(deliveryEndpoints.create, {
@@ -972,8 +418,9 @@ const realDeliveryApi: DeliveryApi = {
         containerSpec: input.containerSpec,
         deliveryCount: input.deliveryCount,
         planReturnCount: input.plannedReturnCount,
-        receiveAddress,
-        receivePhone,
+        addressId: input.addressId,
+        receiveAddress: input.addressId ? undefined : receiveAddress,
+        receivePhone: input.addressId ? undefined : receivePhone,
         deliveryMode: DELIVERY_MODE_TO_VALUE[input.deliveryMode],
         scheduledTime: input.deliveryMode === 'scheduled' ? input.scheduledTime : undefined,
         autoRefillIntervalDays: input.deliveryMode === 'auto-refill' ? input.autoRefillIntervalDays : undefined,
@@ -981,7 +428,7 @@ const realDeliveryApi: DeliveryApi = {
         payWay: input.payWay ?? 2,
       })
       if (!raw?.order || !raw.task) {
-        throw new ContractError('DELIVERY_CONTRACT_BROKEN', '配送下单响应缺少订单或任务')
+        throw new ContractError('DELIVERY_CONTRACT_BROKEN', '配送下单未成功，请稍后重试')
       }
       return { order: normalizeOrderDetail(raw.order), task: normalizeDeliveryTask(raw.task) }
     })
@@ -1091,7 +538,7 @@ const realDeliveryApi: DeliveryApi = {
  */
 async function requireRealPrimaryCardId(): Promise<EntityId> {
   if (currentMode('card') !== 'real') {
-    throw new ContractError('DELIVERY_CARD_DOMAIN_MOCK', 'card 域未接真：配送真实下单要求真实水卡数据源')
+    throw new ContractError('DELIVERY_CARD_DOMAIN_MOCK', '暂时无法下单，请稍后重试')
   }
   const card = await cardApi.getPrimaryCard()
   if (!card) {
@@ -1100,13 +547,22 @@ async function requireRealPrimaryCardId(): Promise<EntityId> {
   return card.cardId
 }
 
-/** 媒体用途（页面语义命名）→ 后端 1签收三照 2申诉举证 3异常举证。 */
-export type DeliveryMediaPurpose = 'sign' | 'appeal' | 'exception'
+/** 媒体用途（页面语义命名）→ 后端 1签收三照 2申诉举证 3异常举证 4工单证据（E2E-05 机主申报）。 */
+export type DeliveryMediaPurpose = 'sign' | 'appeal' | 'exception' | 'workorder'
 
 const MEDIA_PURPOSE_TO_VALUE: Record<DeliveryMediaPurpose, number> = {
   sign: 1,
   appeal: 2,
   exception: 3,
+  workorder: 4,
+}
+
+/** 各用途归属的接真域：上传门控按业务域判定（工单证据随 device 域接真，与配送三照互不牵连）。 */
+const MEDIA_PURPOSE_DOMAIN: Record<DeliveryMediaPurpose, 'delivery' | 'device'> = {
+  sign: 'delivery',
+  appeal: 'delivery',
+  exception: 'delivery',
+  workorder: 'device',
 }
 
 /** 由本地文件扩展名推断 MIME（微信 chooseImage 临时文件带扩展名；未知按 JPEG）。 */
@@ -1143,8 +599,8 @@ function readFileAsBase64(filePath: string): Promise<string> {
  * POST /mini/delivery/media/upload → 受控媒体键。签收/举证只提交该键。
  */
 export async function uploadDeliveryMedia(filePath: string, purpose: DeliveryMediaPurpose): Promise<string> {
-  if (currentMode('delivery') !== 'real') {
-    throw new ContractError('MOCK_ONLY', 'Mock 构建不上传照片（本地记录即完整边界）')
+  if (currentMode(MEDIA_PURPOSE_DOMAIN[purpose]) !== 'real') {
+    throw new ContractError('MOCK_ONLY', '当前无法上传照片，请稍后重试')
   }
   const contentBase64 = await readFileAsBase64(filePath)
   return withRealSession(async () => {
@@ -1155,7 +611,7 @@ export async function uploadDeliveryMedia(filePath: string, purpose: DeliveryMed
     })
     const mediaKey = raw?.mediaKey ?? ''
     if (!DELIVERY_MEDIA_KEY_PATTERN.test(mediaKey)) {
-      throw new ContractError('DELIVERY_CONTRACT_BROKEN', '媒体登记响应缺少合法受控媒体键')
+      throw new ContractError('DELIVERY_CONTRACT_BROKEN', '照片上传失败，请重试')
     }
     return mediaKey
   })
@@ -1177,4 +633,4 @@ export function newDeliveryRequestId(): string {
 }
 
 // delivery 域按域解锁（recharge 先例）：显式 VITE_API_MODE_DELIVERY='real' 才接真，漏配回落 Mock。
-export const deliveryApi = selectAdapter(mockDeliveryApi, realDeliveryApi, 'delivery')
+export const deliveryApi = realDeliveryApi

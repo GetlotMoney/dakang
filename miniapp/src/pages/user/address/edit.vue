@@ -5,7 +5,6 @@ import { useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { ContractError } from '@/api/common'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { backOr } from '@/utils/navigation'
 
 definePage({
@@ -18,7 +17,6 @@ definePage({
 const toast = useToast()
 
 const addressId = ref('')
-const fromDeliverySelect = ref(false)
 /** 契约只回传脱敏号码（DeliveryAddress.maskedPhone），编辑时用于提示，完整号码需重新填写。 */
 const editingMaskedPhone = ref('')
 const saving = ref(false)
@@ -46,7 +44,6 @@ const phoneRules = [{ required: true, pattern: /^1\d{10}$/, message: '请填写 
 onLoad(async (options?: Record<string, string>) => {
   const query = options ?? {}
   addressId.value = query.addressId ?? ''
-  fromDeliverySelect.value = query.returnTo === 'delivery'
   if (!addressId.value) {
     return
   }
@@ -100,12 +97,6 @@ async function handleSave() {
     <AppNavbar :title="pageTitle" back-to="U14" />
     <wd-toast />
 
-    <AppPrototypeNotice />
-
-    <view v-if="fromDeliverySelect" class="page-note muted-text">
-      保存后返回地址列表，可继续为配送订单选择地址。
-    </view>
-
     <view class="page-section">
       <wd-form ref="formRef" :model="model">
         <wd-cell-group border>
@@ -152,14 +143,11 @@ async function handleSave() {
           <wd-cell title="设为默认地址" center>
             <wd-switch v-model="model.isDefault" />
           </wd-cell>
-          <wd-cell title="定位授权" label="原型仅记录授权状态，定位失败可手填地址" center>
+          <wd-cell title="定位授权" center>
             <wd-switch v-model="model.locationAuthorized" />
           </wd-cell>
         </wd-cell-group>
       </wd-form>
-      <view class="page-note muted-text">
-        地区暂为文本输入，行政区选择器待接入。
-      </view>
     </view>
 
     <view class="page-section">
@@ -169,11 +157,3 @@ async function handleSave() {
     </view>
   </view>
 </template>
-
-<style scoped lang="scss">
-.page-note {
-  margin-top: 8px;
-  padding: 0 4px;
-  line-height: 1.6;
-}
-</style>

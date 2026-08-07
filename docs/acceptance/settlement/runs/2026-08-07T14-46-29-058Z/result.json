@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "chain": "E2E-08",
+  "batchId": "2026-08-07T14-46-29-058Z",
+  "round": "R1-final",
+  "createdAt": "2026-08-07T14:48:32.870Z",
+  "envFingerprint": {
+    "base": "http://127.0.0.1:13340/dakangApi",
+    "dbHost": "127.0.0.1",
+    "dbPort": 3309,
+    "dbName": "dakang",
+    "round": "R1-final",
+    "seedSentinel": true,
+    "backendPidVerified": true,
+    "jarSha256": "2ef1d67497bda54f4cadb38e19bc142230ecdf5d279cbe3303953e22f82dd0f2"
+  },
+  "scriptSha256": "db8a461b98ccbb90625cf0710e20b2c3b446fee9c9a3de7c0ad032dd909fe3f9",
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "水线真实链分账：余额取水完成→机主70%快照+平台余数→Worker结算入账",
+      "pass": true,
+      "evidence": [
+        "基数 100（订单 200 扣退差），机主 70 + 平台 30"
+      ],
+      "error": "",
+      "durationMs": 30130
+    },
+    {
+      "id": "S2",
+      "name": "配送链三方分账（D-419 分线）：签收即完成→水费按售水线70%、配送费按配送线60%/30%各自计算，平台吃两线余数",
+      "pass": true,
+      "evidence": [
+        "基数 3000：机主 2060 / 配送员 120 / 平台 820"
+      ],
+      "error": "",
+      "durationMs": 30474
+    },
+    {
+      "id": "S3",
+      "name": "口径边界：充值单不分账；水量支付(payWay3)零金额不分账",
+      "pass": true,
+      "evidence": [
+        "充值单 RC7825AF670676DA64A61E50B47C8477 与水量单 WO83F64DE2080B1B9B24A4 均零分账"
+      ],
+      "error": "",
+      "durationMs": 3226
+    },
+    {
+      "id": "S4",
+      "name": "比例版本生效语义：新版本只影响此后新单，历史快照不追溯，过去时点拒绝",
+      "pass": true,
+      "evidence": [
+        "版本 9806 生效于新单（6500），历史行保持 7000；过去时点/超万分比双拒绝"
+      ],
+      "error": "",
+      "durationMs": 4524
+    },
+    {
+      "id": "S5",
+      "name": "库层资金铁闸：分账行/入账流水唯一键防重放，结算恰一次",
+      "pass": true,
+      "evidence": [
+        "两把唯一键闸 + 结算恰一次全库扫描通过"
+      ],
+      "error": "",
+      "durationMs": 7
+    },
+    {
+      "id": "S6",
+      "name": "收益钱包三方一致：API==账户==逐笔流水，非收益人零数据，响应零敏感",
+      "pass": true,
+      "evidence": [
+        "机主余额 2130 三方一致；流水 2 条"
+      ],
+      "error": "",
+      "durationMs": 29
+    },
+    {
+      "id": "S7",
+      "name": "提现骨架：冻结→驳回解冻全链幂等，余额不足拒绝，无真实出金",
+      "pass": true,
+      "evidence": [
+        "冻结 300 → 驳回解冻，四次调用两条流水，余额分毫不差"
+      ],
+      "error": "",
+      "durationMs": 11359
+    },
+    {
+      "id": "S8",
+      "name": "日对账平账：真实链当日五维核对零差异",
+      "pass": true,
+      "evidence": [
+        "账期 20260807 五维 34 项核对全平"
+      ],
+      "error": "",
+      "durationMs": 86
+    },
+    {
+      "id": "S9",
+      "name": "人为差错检出：单边账+金额篡改被抓，重跑整批替换，修复后回归平账",
+      "pass": true,
+      "evidence": [
+        "注入 2 类差错均检出（2 行），重跑替换，修复回平"
+      ],
+      "error": "",
+      "durationMs": 17019
+    },
+    {
+      "id": "S10",
+      "name": "邀请码与归因：确定性派生、一次性绑定、防自邀，新订单快照归因",
+      "pass": true,
+      "evidence": [
+        "码 IVF9D0D82E 绑定一次性成立；9002 新单归因 9001，自邀/重绑/无效码三拒绝"
+      ],
+      "error": "",
+      "durationMs": 138
+    },
+    {
+      "id": "S11",
+      "name": "赠卡发放：幂等恰一张、必带有效期不可退、不占名额、不可充值",
+      "pass": true,
+      "evidence": [
+        "赠卡 GC79E7846EA3384F0AC0 恰一张；名额未占（首购放行）；充值闸拒绝=「活动赠卡在有效期内暂不支持充值，权益用完或到期后可充值转为正式水卡」"
+      ],
+      "error": "",
+      "durationMs": 263
+    },
+    {
+      "id": "S12",
+      "name": "主动查单：超期未付单由权威查单事实驱动关闭，不本地改状态",
+      "pass": true,
+      "evidence": [
+        "超期单 RCA1E0CE409A8E65B89ECD8CC1EB6996 由查单事实驱动关至 4/5"
+      ],
+      "error": "",
+      "durationMs": 25035
+    },
+    {
+      "id": "S13",
+      "name": "鉴权门：财务面未登录/错身份拒绝，高风险动作参数闸有效",
+      "pass": true,
+      "evidence": [
+        "三面未登录/错身份全拒；缺账期/缺字段/缺收益人三闸生效"
+      ],
+      "error": "",
+      "durationMs": 93
+    },
+    {
+      "id": "S14",
+      "name": "三方一致 + 零敏感：PC 分账面 == SQL == 钱包，全量产物无手机号/openid",
+      "pass": true,
+      "evidence": [
+        "分账 7 行三方一致；两收款方账本连续；采样 8 段零敏感"
+      ],
+      "error": "",
+      "durationMs": 59
+    }
+  ],
+  "passed": 14,
+  "total": 14,
+  "pass": true
+}

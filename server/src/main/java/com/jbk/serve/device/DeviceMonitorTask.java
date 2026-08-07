@@ -3,6 +3,7 @@ package com.jbk.serve.device;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.jbk.serve.service.device.IWsCommandService;
 import com.jbk.serve.service.device.IWsDeviceService;
+import com.jbk.serve.service.device.DeviceAvailability;
 import com.jbk.serve.service.ops.IWsAlarmService;
 import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.tool.consts.device.DeviceEnum;
@@ -66,20 +67,54 @@ public class DeviceMonitorTask {
                     .eq(WsDevice::getOnlineStatus, DeviceEnum.OnlineStatus.ONLINE.getValue())
                     .and(w -> w.lt(WsDevice::getLastHeartbeat, deadline)
                             .or().isNull(WsDevice::getLastHeartbeat)));
+            int flipped = 0;
             for (WsDevice device : staleList) {
-                deviceService.update(Wrappers.lambdaUpdate(WsDevice.class)
+                // CAS：ONLINE→OFFLINE 且心跳仍陈旧才算数（捞取与更新之间可能有心跳到达并转在线，
+                // 无前态写会把刚活过来的设备再压回离线）。只有 affected==1 的赢家才产事件与告警——
+                // 多实例并发扫描或扫描与心跳竞争时，恰一个胜出方触发，离线告警不重复。
+                int moved = deviceService.getBaseMapper().update(null, Wrappers.lambdaUpdate(WsDevice.class)
+                        .set(WsDevice::getOnlineStatus, DeviceEnum.OnlineStatus.OFFLINE.getValue())
+                        .set(WsDevice::getUpdateTime, DateUtils.time())
                         .eq(WsDevice::getId, device.getId())
-                        .set(WsDevice::getOnlineStatus, DeviceEnum.OnlineStatus.OFFLINE.getValue()));
+                        .eq(WsDevice::getOnlineStatus, DeviceEnum.OnlineStatus.ONLINE.getValue())
+                        .and(w -> w.lt(WsDevice::getLastHeartbeat, deadline)
+                                .or().isNull(WsDevice::getLastHeartbeat)));
+                if (moved != 1) {
+                    continue;
+                }
+                flipped++;
                 domainEventService.record(OpsEnum.EventType.DEVICE_STATUS, device.getDeviceNo(),
                         DeviceEnum.OnlineStatus.ONLINE.getDesc(), DeviceEnum.OnlineStatus.OFFLINE.getDesc());
                 alarmService.raise(device.getId(), OpsEnum.AlarmType.DEVICE_OFFLINE, 2,
                         "设备心跳超过 " + OFFLINE_THRESHOLD_SECONDS + " 秒，判定离线", null);
             }
-            if (!staleList.isEmpty()) {
-                log.info("离线判定扫描：本次转为离线状态 {} 台", staleList.size());
+            if (flipped > 0) {
+                log.info("离线判定扫描：本次转为离线状态 {} 台", flipped);
             }
         } catch (Exception e) {
             log.error("设备离线判定异常", e);
+        }
+    }
+
+    /**
+     * SIM 档案异常扫描：明确未激活/欠费/停用、已到期或非法到期时间形成一条活动告警；
+     * 运营修正档案后自动恢复。真实运营商查询未接入，本扫描只消费平台档案事实。
+     */
+    @Scheduled(fixedDelay = 60000, initialDelay = 45000)
+    public void simAbnormalScan() {
+        try {
+            String now = DateUtils.time();
+            for (WsDevice device : deviceService.list()) {
+                String reason = DeviceAvailability.simBlockReason(device, now);
+                if (reason == null) {
+                    alarmService.autoRecover(device.getId(), OpsEnum.AlarmType.SIM_ABNORMAL, null);
+                    continue;
+                }
+                alarmService.raise(device.getId(), OpsEnum.AlarmType.SIM_ABNORMAL, 2,
+                        reason, null);
+            }
+        } catch (Exception e) {
+            log.error("SIM异常扫描失败", e);
         }
     }
 }

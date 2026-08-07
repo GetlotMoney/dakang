@@ -123,15 +123,32 @@ class RechargeLimitsTest {
         reject(base().setWaterMl(0L).setUnitPriceSnap("0.01"), "纯金额套餐带非零单价必须拒绝");
     }
 
-    // 有效期越界不拦，会出现「当天就过期」或「近乎永久」的卡，占用额度且无法自然清账
+    /**
+     * 有效期数值边界。
+     *
+     * <p>改走 {@code validateSnapshotValues}：D-213 之后套餐创建路径一律拒绝带有效期的付费套餐
+     * （见 {@link #paidPackageMustNotCarryExpiry}），而 ws_package 的售价下限是 1 分、不存在 0 元套餐，
+     * 因此「有效期合法值」在**创建路径上已不可达**。但历史订单快照里仍可能带着有效期，
+     * 回放与权益入账要读它们，数值边界必须继续守住，故边界覆盖挪到快照校验这条仍然活着的路径。</p>
+     */
     @Test
     void expireDaysBoundary() {
-        pass(base().setExpireDays(null), "null = 永久，是合法配置");
-        reject(base().setExpireDays(0), "0 天等于创建即过期");
-        reject(base().setExpireDays(-1), "负天数");
-        pass(base().setExpireDays(1), "1 天是下界");
-        pass(base().setExpireDays(3650), "3650 天是上界");
-        reject(base().setExpireDays(3651), "超上界");
+        snapshotPass(null, "null = 永久，是合法配置");
+        snapshotReject(0, "0 天等于创建即过期");
+        snapshotReject(-1, "负天数");
+        snapshotPass(1, "1 天是下界");
+        snapshotPass(3650, "3650 天是上界");
+        snapshotReject(3651, "超上界");
+    }
+
+    private void snapshotPass(Integer days, String why) {
+        assertDoesNotThrow(() -> RechargeLimits.validateSnapshotValues(
+                "季卡 100L", 9900L, 100_000L, 0L, "20.00", days), why);
+    }
+
+    private void snapshotReject(Integer days, String why) {
+        assertThrows(JbkException.class, () -> RechargeLimits.validateSnapshotValues(
+                "季卡 100L", 9900L, 100_000L, 0L, "20.00", days), why);
     }
 
     // 极端值必须以业务异常收场：ArithmeticException 逃逸会变成 500 且无业务语义，
@@ -152,5 +169,26 @@ class RechargeLimitsTest {
                 "水量 0 且金额 0 的套餐必须拒绝");
         pass(base().setWaterMl(0L).setPayAmount(1L).setBonusAmount(0L).setUnitPriceSnap("0"),
                 "只要有 1 分权益就成立，不得误伤");
+    }
+
+    /**
+     * D-213：付费套餐一律永久有效，不得设有效期。
+     *
+     * <p>该决策此前<b>只存在于 decisions.md 与 L2 契约</b>，代码零守卫——PC 能建出
+     * 售价&gt;0 且带 expireDays 的套餐并正常上架，用户买完即得到有限期付费卡。
+     * 独立审计（2026-08-06）抓出该缺口后补此闸。</p>
+     */
+    @Test
+    void paidPackageMustNotCarryExpiry() {
+        rejectBecause(base().setExpireDays(365), "付费套餐不得设置有效期",
+                "付费套餐带有效期必须拒绝，且理由要说清是 D-213 而非「超出范围」");
+        reject(base().setExpireDays(1), "1 天也不行——判据是有无，不是长短");
+        // ws_package 售价下限为 1 分，不存在 0 元套餐——赠卡走独立发卡服务，不经本表。
+        // 因此本表内「付费 + 永久」是唯一可达形态，正常路径不受影响。
+        pass(base().setExpireDays(null), "付费永久卡是唯一可达的付费形态");
+        // 历史快照仍可带有效期，不得被本闸误伤（回放与权益入账要读它们）
+        assertDoesNotThrow(() -> RechargeLimits.validateSnapshotValues(
+                "历史季卡", 9900L, 100_000L, 0L, "20.00", 365),
+                "历史有限期快照只做兼容读取，不适用新规则");
     }
 }

@@ -18,9 +18,6 @@ export * from './navigation'
 // 系统管理相关
 export * from './sys'
 
-// 常量定义相关
-export * from './constants'
-
 // 存储相关
 export * from './storage'
 
@@ -29,6 +26,3 @@ export * from './http'
 
 // 表单相关
 export * from './form'
-
-// socket 相关
-export * from './socket'

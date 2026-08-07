@@ -1,114 +1,85 @@
 /**
- * 安全与合规 Demo API 契约。
+ * 安全与合规 API（B23 / REQ-024、REQ-066）。
  *
- * Demo 阶段仅实现 PC 责任范围内的导出申请与任务追踪，不生成文件或虚构备份结果。
- * 接入真实服务时保留入参与状态机契约，并替换为 /system/audit-export/* 接口。
+ * 审计导出申请已接真实后端（/api/auditExport/*）：申请事实、筛选快照、申请人与状态
+ * 全部落 ws_audit_export_task，与操作日志、领域事件同源可查，刷新不再丢失。
+ *
+ * 【能力边界】文件生成依赖对象存储，尚未接入。任务只能停在「待生成」，
+ * fileDigest/expireTime 恒为空，页面不提供下载入口——不做指向空文件的假按钮。
  */
 
-import { recordDemoAuditEvent } from '@/api/demo-audit'
+import request from '@/utils/http'
 
-export type AuditExportTaskStatus = '待生成' | '生成中' | '失败' | '已生成' | '已过期'
+/**
+ * 状态值与后端 ComplianceEnum.AuditExportStatus 一致（字典 1382 是同一套值的后台配置副本，
+ * 服务端并不在运行时查字典）。文案一律用服务端下发的 taskStatusName，前端不自行映射。
+ */
+export enum AuditExportStatus {
+  Pending = 1,
+  Running = 2,
+  Failed = 3,
+  Done = 4,
+  Expired = 5
+}
 
 export interface AuditExportTaskItem {
-  id: number
+  id: string
   taskNo: string
   exportScope: string
   filterSummary: string
   applyReason: string
   maskingRule: string
-  taskStatus: AuditExportTaskStatus
-  createByName: string
+  taskStatus: AuditExportStatus
+  /** 服务端按字典口径下发的状态名称 */
+  taskStatusName: string
+  applyByName: string
   createTime: string
   failureReason?: string
+  /** 对象存储接入前恒为空 */
   fileDigest?: string
+  /** 同 fileDigest，无真实文件即为空 */
   expireTime?: string
 }
 
 export interface AuditExportApplyForm {
+  /** 必须取自 AUDIT_EXPORT_SCOPES；服务端按白名单校验，自由文本会被拒绝 */
   exportScope: string[]
   operatorKeyword?: string
   businessKeyword?: string
+  /** yyyyMMddHHmmss */
   startTime: string
+  /** yyyyMMddHHmmss */
   endTime: string
   applyReason: string
 }
 
-const tasks: AuditExportTaskItem[] = [
-  {
-    id: 1,
-    taskNo: 'AUD-EXP-20260714-001',
-    exportScope: '操作日志、订单追溯',
-    filterSummary: '2026-07-10 00:00 至 2026-07-14 12:00；订单 WO20260712',
-    applyReason: '核对异常取水订单的操作与状态变化记录',
-    maskingRule: '手机号中间四位脱敏；身份信息不导出',
-    taskStatus: '失败',
-    createByName: '超级管理员',
-    createTime: '20260714121000',
-    failureReason: 'Demo 未接入文件生成器与对象存储'
-  },
-  {
-    id: 2,
-    taskNo: 'AUD-EXP-20260714-002',
-    exportScope: '设备事件、指令回执',
-    filterSummary: '2026-07-14 00:00 至 2026-07-14 14:00；设备 DK-DEV-0002',
-    applyReason: '复核离线设备的指令超时与故障告警证据',
-    maskingRule: '手机号中间四位脱敏；身份信息不导出',
-    taskStatus: '待生成',
-    createByName: '超级管理员',
-    createTime: '20260714140500'
-  }
-]
+/** 可申请的导出范围，与服务端 WsAuditExportTaskServiceImpl.ALLOWED_SCOPES 同源 */
+export const AUDIT_EXPORT_SCOPES = [
+  '操作日志',
+  '登录日志',
+  '订单追溯',
+  '设备事件',
+  '指令回执',
+  '领域事件'
+] as const
 
-const delay = <T>(value: T): Promise<T> =>
-  new Promise((resolve) => setTimeout(() => resolve(value), 180))
-
-export function fetchAuditExportTaskList(): Promise<AuditExportTaskItem[]> {
-  return delay(tasks.map((item) => ({ ...item })))
+export function fetchAuditExportTaskPage(params: { current: number; size: number }) {
+  return request.post<{ list: AuditExportTaskItem[]; total: string }>({
+    url: '/api/auditExport/pageData',
+    data: params
+  })
 }
 
-export function fetchCreateAuditExportTask(
-  data: AuditExportApplyForm
-): Promise<AuditExportTaskItem> {
-  const item: AuditExportTaskItem = {
-    id: Math.max(0, ...tasks.map((task) => task.id)) + 1,
-    taskNo: `AUD-EXP-20260714-${String(tasks.length + 1).padStart(3, '0')}`,
-    exportScope: data.exportScope.join('、'),
-    filterSummary: `${data.startTime} 至 ${data.endTime}${data.operatorKeyword ? `；操作人 ${data.operatorKeyword}` : ''}${data.businessKeyword ? `；业务对象 ${data.businessKeyword}` : ''}`,
-    applyReason: data.applyReason,
-    maskingRule: '手机号中间四位脱敏；身份信息不导出',
-    taskStatus: '待生成',
-    createByName: '超级管理员',
-    createTime: '20260714144000'
-  }
-  tasks.unshift(item)
-  recordDemoAuditEvent({
-    eventTypeLabel: '审计导出申请',
-    eventKey: item.taskNo,
-    relatedKeys: [data.businessKeyword, data.operatorKeyword].filter((key): key is string => !!key),
-    actorLabel: '运营后台·超级管理员',
-    newStatus: '待生成',
-    detail: `申请范围：${item.exportScope}；申请原因：${item.applyReason}`,
-    tone: 'primary',
-    targetPath: '/system/compliance'
+export function fetchCreateAuditExportTask(data: AuditExportApplyForm) {
+  return request.post<AuditExportTaskItem>({
+    url: '/api/auditExport/apply',
+    data
   })
-  return delay({ ...item })
 }
 
-export function fetchRetryAuditExportTask(id: number): Promise<boolean> {
-  const task = tasks.find((item) => item.id === id)
-  if (!task || task.taskStatus !== '失败') return delay(false)
-  task.taskStatus = '待生成'
-  task.failureReason = undefined
-  recordDemoAuditEvent({
-    eventTypeLabel: '审计导出重试',
-    eventKey: task.taskNo,
-    relatedKeys: [],
-    actorLabel: '运营后台·超级管理员',
-    oldStatus: '失败',
-    newStatus: '待生成',
-    detail: '重试已提交；Demo 仍不生成真实文件，等待文件服务接真',
-    tone: 'warning',
-    targetPath: '/system/compliance'
+export function fetchRetryAuditExportTask(id: string) {
+  return request.post<AuditExportTaskItem>({
+    url: '/api/auditExport/retry',
+    data: { id }
   })
-  return delay(true)
 }

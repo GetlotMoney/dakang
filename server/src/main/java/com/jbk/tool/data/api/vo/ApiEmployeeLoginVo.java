@@ -63,6 +63,10 @@ public class ApiEmployeeLoginVo extends BaseEntityVo implements Serializable {
     @Schema(description = "会话token（前端存储后经 dakang-token 请求头回传，避免同机多项目 Cookie 串号）")
     @TableField(exist = false)
     private String tokenValue;
+
+    @Schema(description = "是否需先修改初始密码：true 时除改密/退出外的接口会被服务端拒绝，前端应直接进入改密页")
+    @TableField(exist = false)
+    private Boolean pwdChangeRequired;
 }
 
 

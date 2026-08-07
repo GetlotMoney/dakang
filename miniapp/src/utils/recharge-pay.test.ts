@@ -62,7 +62,7 @@ describe('continuePayGate', () => {
   it('截止时间缺失或格式非法一律 fail-closed', () => {
     expect(continuePayGate(status({ payExpireTime: undefined }), NOW)).toEqual({
       visible: false,
-      reason: '该订单缺少付款截止时间，无法继续支付，请联系客服核对。',
+      reason: '无法继续支付，请联系客服核对。',
     })
     expect(continuePayGate(status({ payExpireTime: '2026072212' }), NOW).visible).toBe(false)
   })

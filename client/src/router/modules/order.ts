@@ -44,6 +44,36 @@ export const orderRoutes: AppRouteRecord = {
         keepAlive: true,
         roles: ['R_SUPER', 'R_ADMIN']
       }
+    },
+    {
+      path: 'split',
+      name: 'OrderSplit',
+      component: '/order/split',
+      meta: {
+        title: 'menus.order.split',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
+    },
+    {
+      path: 'reconcile',
+      name: 'OrderReconcile',
+      component: '/order/reconcile',
+      meta: {
+        title: 'menus.order.reconcile',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
+    },
+    {
+      path: 'splitconfig',
+      name: 'OrderSplitConfig',
+      component: '/order/splitconfig',
+      meta: {
+        title: 'menus.order.splitconfig',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
     }
   ]
 }

@@ -8,6 +8,7 @@ function contextWith(capabilities: AccountContext['capabilities']): AccountConte
     userId: '1',
     userName: '测试',
     userPhone: '13800000000',
+    phoneBound: true,
     capabilities,
   }
 }

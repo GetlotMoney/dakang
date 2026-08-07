@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isMockAccountEntryAllowed, resolveApiMode } from './runtime'
+import { resolveApiMode } from './runtime'
 
 /**
  * 模式解析纯函数矩阵（2026-07-20 最终收口轮）：
@@ -76,26 +76,3 @@ describe('resolveApiMode', () => {
  * 复审 B：401 后绝不落 Mock 账号——任一业务域接真时，入口页不得用 Mock 原型账号恢复会话。
  * 关键组合是「auth=mock 且 device/order/card=real」：这是唯一能真正产生 140x 的构建。
  */
-describe('isMockAccountEntryAllowed', () => {
-  it('全域 Mock：允许以原型账号进入', () => {
-    expect(isMockAccountEntryAllowed({ globalMode: 'mock' })).toBe(true)
-    expect(isMockAccountEntryAllowed({})).toBe(true)
-  })
-
-  it('auth=mock 但 device/order/card 接真：禁止用 Mock 账号进入（会话失效后不得落 Mock）', () => {
-    expect(isMockAccountEntryAllowed({
-      globalMode: 'mock',
-      authMode: 'mock',
-      deviceMode: 'real',
-      orderMode: 'real',
-      cardMode: 'real',
-    })).toBe(false)
-  })
-
-  it('任一域接真即禁止原型账号入口', () => {
-    expect(isMockAccountEntryAllowed({ globalMode: 'mock', deviceMode: 'real' })).toBe(false)
-    expect(isMockAccountEntryAllowed({ globalMode: 'mock', authMode: 'real' })).toBe(false)
-    expect(isMockAccountEntryAllowed({ globalMode: 'mock', deliveryMode: 'real' })).toBe(false)
-    expect(isMockAccountEntryAllowed({ globalMode: 'real' })).toBe(false)
-  })
-})

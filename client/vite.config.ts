@@ -67,7 +67,7 @@ export default ({ mode }: { mode: string }) => {
         },
         // 一期业务前缀（后台 5+1）：水站 /station、设备中控 /device、水种套餐 /product、
         // 用户管理 /user、订单中心 /order；配送 /delivery 供订单中心配送 tab 与小程序端共用。
-        // 商业一期启用时追加：/finance（财务）、/workorder（运维工单），并同步 nginx.conf。
+        // /finance 已随 E2E-08 启用（见下方条目）；商业一期启用运维时追加：/workorder，并同步 nginx.conf。
         '/station': {
           target: VITE_API_PROXY_URL,
           changeOrigin: true
@@ -94,6 +94,21 @@ export default ({ mode }: { mode: string }) => {
         },
         // 小程序端接口前缀（L1a 起）：纯接口，不加入 uiPathPattern 的 HTML 导航纠正。
         '/mini': {
+          target: VITE_API_PROXY_URL,
+          changeOrigin: true
+        },
+        // 消息记录只读接口（E2E-07）：新增接口前缀必须与 nginx.conf 同步，漏配=主环境 405
+        '/message': {
+          target: VITE_API_PROXY_URL,
+          changeOrigin: true
+        },
+        // 财务分账与对账（E2E-08）：同上双处同步铁律
+        '/finance': {
+          target: VITE_API_PROXY_URL,
+          changeOrigin: true
+        },
+        // 运营总览聚合（2026-08-02 接真）：同上双处同步铁律
+        '/ws': {
           target: VITE_API_PROXY_URL,
           changeOrigin: true
         }

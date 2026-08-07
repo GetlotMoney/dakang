@@ -25,6 +25,13 @@ public class StpKit {
 
     public static final String EXTRA_NAME = "name";
 
+    /**
+     * 后台会话 JWT extra：是否需先修改初始密码（R-201）。
+     * 登录时随 token 签发；改密与重置密码都会强制下线，重新登录后标记自然刷新，
+     * 因此读取方（PwdChangeGuardInterceptor）只信 token 内标记、不回查数据库。
+     */
+    public static final String EXTRA_PWD_CHANGE = "pwdChange";
+
 
     /**
      * 后台会话对象

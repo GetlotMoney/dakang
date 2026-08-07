@@ -44,6 +44,16 @@ export const userRoutes: AppRouteRecord = {
         keepAlive: true,
         roles: ['R_SUPER', 'R_ADMIN']
       }
+    },
+    {
+      path: 'message',
+      name: 'WsUserMessage',
+      component: '/user/message',
+      meta: {
+        title: 'menus.wsUser.message',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
     }
   ]
 }

@@ -7,6 +7,7 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.jbk.serve.mapper.delivery.WsDeliveryAutoRuleMapper;
+import com.jbk.serve.service.settlement.IInviteService;
 import com.jbk.serve.mapper.delivery.WsDeliveryTaskMapper;
 import com.jbk.serve.mapper.product.WsWaterTypeMapper;
 import com.jbk.serve.mapper.station.WsStationMapper;
@@ -29,6 +30,7 @@ import com.jbk.tool.data.station.po.WsStation;
 import com.jbk.tool.data.trade.po.WsOrder;
 import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.utils.DateUtils;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -46,6 +48,7 @@ import java.util.regex.Pattern;
  * @author dakang
  * @since 2026-07-23
  */
+@Slf4j
 @Service
 public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
 
@@ -57,6 +60,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
     private static final int AUTO_REFILL_MIN_DAYS = 3;
     private static final int AUTO_REFILL_MAX_DAYS = 90;
 
+    @Autowired
+    private IInviteService inviteService;
     @Autowired
     private WsOrderMapper orderMapper;
     @Autowired
@@ -141,31 +146,65 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
                 .eq(WsDeliveryAutoRule::getRuleStatus, DeliveryEnum.AutoRuleStatus.ENABLED.getValue()));
         int generated = 0;
         for (WsDeliveryAutoRule rule : rules) {
-            long period = DeliveryClock.periodIndex(rule.getAnchorTime(), now, rule.getIntervalDays());
-            if (period < 1) {
-                // 第0期是创建规则时的首单，不在生成范围
-                continue;
-            }
-            // 只补当前到期期序（跳过久停机积压的历史期）：一次性连环生成会连环扣款，
-            // 用户停机三个月回来被扣三期钱比漏一期更不可接受。
-            String orderNo = DeliveryOrderNo.deriveAutoRefill(rule.getUserId(), rule.getId(), period);
-            boolean exists = orderMapper.selectCount(Wrappers.lambdaQuery(WsOrder.class)
-                    .eq(WsOrder::getOrderNo, orderNo)) > 0;
-            if (exists) {
-                continue;
-            }
             try {
-                generateOne(rule, orderNo, period, now);
-                generated++;
-            } catch (DuplicateKeyException e) {
-                // 并发生成：本期已被另一实例生成，幂等跳过
-            } catch (JbkException e) {
-                // 卡不足/档案停用等业务失败：可靠留痕后继续其他规则，不让单条规则阻塞全局
-                domainEventService.recordReliable(OpsEnum.EventType.ORDER_STATUS, orderNo, null,
-                        "自动补货第" + period + "期创单失败（规则" + rule.getId() + "）：" + e.getMsg());
+                if (generateForRule(rule, now)) {
+                    generated++;
+                }
+            }
+            catch (RuntimeException isolated) {
+                // 逐规则隔离（B08-S1）：任何一条规则的异常——包括它自己那条失败留痕的写入异常——
+                // 都不得阻断后续规则。这是定时扫描，不是用户请求：一条脏规则若能中断循环，
+                // 排在它后面的所有用户当期都收不到水，而且症状是「静悄悄地少了几单」。
+                log.error("自动补货规则处理异常，跳过该规则 ruleId={} now={}", rule.getId(), now, isolated);
             }
         }
         return generated;
+    }
+
+    /**
+     * 单条规则的当期生成。
+     *
+     * @return 是否真的生成了本期订单
+     */
+    private boolean generateForRule(WsDeliveryAutoRule rule, String now) {
+        long period = DeliveryClock.periodIndex(rule.getAnchorTime(), now, rule.getIntervalDays());
+        if (period < 1) {
+            // 第0期是创建规则时的首单，不在生成范围
+            return false;
+        }
+        // 只补当前到期期序（跳过久停机积压的历史期）：一次性连环生成会连环扣款，
+        // 用户停机三个月回来被扣三期钱比漏一期更不可接受。
+        String orderNo = DeliveryOrderNo.deriveAutoRefill(rule.getUserId(), rule.getId(), period);
+        // 这只是快路径，不是正确性判据：多实例同时扫描时两边都会读到「不存在」。
+        // 真正的互斥在 uk_order_no —— 输方撞唯一键，资金事务整体回滚，零订单零任务零流水。
+        boolean exists = orderMapper.selectCount(Wrappers.lambdaQuery(WsOrder.class)
+                .eq(WsOrder::getOrderNo, orderNo)) > 0;
+        if (exists) {
+            return false;
+        }
+        try {
+            generateOne(rule, orderNo, period, now);
+            return true;
+        }
+        catch (DuplicateKeyException e) {
+            // 并发生成：本期已被另一实例生成，幂等跳过（赢方的单即本期唯一一单）
+            return false;
+        }
+        catch (JbkException e) {
+            // 卡不足/档案停用等业务失败：留痕后继续其他规则。
+            // 幂等键按「规则+期序」而不是订单号+报文：本期条件不恢复的话每一轮扫描都会再失败一次，
+            // 无键的 recordReliable 会把事件表刷成按扫描频率增长的日志。撞键即视为已留痕。
+            // 键只覆盖留痕，不覆盖生成——本期失败后条件恢复，下一轮仍会正常生成这一期的单。
+            domainEventService.recordReliableOnceIndependent(OpsEnum.EventType.ORDER_STATUS, orderNo,
+                    autoRefillFailKey(rule.getId(), period), null,
+                    "自动补货第" + period + "期创单失败（规则" + rule.getId() + "）：" + e.getMsg());
+            return false;
+        }
+    }
+
+    /** 自动补货失败证据的幂等键：同一规则同一期全库最多一条。 */
+    static String autoRefillFailKey(Long ruleId, long period) {
+        return "AUTO_REFILL_FAIL:" + ruleId + ":" + period;
     }
 
     private void generateOne(WsDeliveryAutoRule rule, String orderNo, long period, String now) {
@@ -375,6 +414,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
                 .setOrderNo(orderNo)
                 .setOrderType(TradeEnum.OrderType.DELIVERY.getValue())
                 .setUserId(userId)
+                // E2E-08 归因快照：下单时刻的推荐人（绑定前恒 NULL，绑定不回溯）
+                .setReferrerUserId(inviteService.referrerSnapshotOf(userId))
                 .setStationId(stationId)
                 .setCardId(cardId)
                 .setPackageSnap(snap)

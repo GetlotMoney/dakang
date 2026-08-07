@@ -57,7 +57,11 @@ public class WsDeliveryMedia extends BaseEntity implements Serializable {
     @TableField("MIME_TYPE")
     private String mimeType;
 
-    @Schema(description = "已绑定任务ID（提交举证时原子占用）")
+    @Schema(description = "已绑定任务ID（提交举证时原子占用；工单证据绑定工单ID）")
     @TableField("BOUND_TASK_ID")
     private Long boundTaskId;
+
+    @Schema(description = "登记人门户(1364)：2用户 1管理端。员工与用户ID数值可能相同，引用校验必须门户+ID双匹配")
+    @TableField("OWNER_PORTAL")
+    private Integer ownerPortal;
 }

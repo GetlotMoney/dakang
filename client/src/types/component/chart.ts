@@ -123,6 +123,14 @@ export interface BarChartProps extends BaseChartProps, AxisDisplayProps, Interac
   stack?: boolean
   /** 圆角 */
   borderRadius?: number | number[]
+  /**
+   * Y 轴刻度最小间隔。
+   *
+   * 计数类数据（订单数、告警数）取值常为 0/1/2 这样的小整数，ECharts 默认会补出
+   * 0.2 / 0.4 / 0.6 的小数刻度——「0.4 个订单」一眼就假。传 1 即可强制整数刻度。
+   * 不传时行为与之前完全一致。
+   */
+  yAxisMinInterval?: number
 }
 
 // 折线图数据项接口
@@ -170,6 +178,8 @@ export interface LineChartProps extends BaseChartProps, AxisDisplayProps, Intera
   symbolSize?: number
   /** 多数据动画延迟间隔（毫秒） */
   animationDelay?: number
+  /** 计数类数据的 Y 轴最小刻度间隔 */
+  yAxisMinInterval?: number
 }
 
 // 雷达图数据项接口

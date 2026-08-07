@@ -22,11 +22,13 @@ const EXPECTED_REAL_MODE_MAP = {
   AUTH: 'real',
   // E1b 是扫码取水链验收：配送域必须保持 mock，验收构建不得顺带打开配送真实写链
   DELIVERY: 'mock',
+  // 同理消息域保持 mock：E1b 不验证消息中心
+  MESSAGE: 'mock',
 }
 const EXPECTED_REAL_MODES = formatRuntimeModes(EXPECTED_REAL_MODE_MAP)
 const FULL_STEP_NAMES = [
   '01 首页可编译进入',
-  '02 mock showActionSheet 选真码',
+  '02 mock 微信 scanCode 返回真码',
   '03 扫码解析并进入取水确认',
   '04 确认页真卡余额',
   '05 下单进入取水进度',

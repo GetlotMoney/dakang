@@ -211,6 +211,7 @@
         type: 'value',
         min: 0,
         max: maxValue.value,
+        ...(props.yAxisMinInterval === undefined ? {} : { minInterval: props.yAxisMinInterval }),
         axisLabel: getAxisLabelStyle(props.showAxisLabel),
         axisLine: getAxisLineStyle(props.showAxisLine),
         splitLine: getSplitLineStyle(props.showSplitLine)

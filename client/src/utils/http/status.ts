@@ -5,6 +5,7 @@ export enum ApiStatus {
   success = 0, // 成功（后端返回 code: 0 表示成功）
   error = 400, // 错误
   unauthorized = 401, // 未授权
+  pwdChangeRequired = 626, // 待修改初始密码：服务端拒绝除改密/退出外的接口（R-201）
   tokenExpired = 1401, // 登录状态异常（Token 失效）
   forbidden = 403, // 禁止访问
   notFound = 404, // 未找到

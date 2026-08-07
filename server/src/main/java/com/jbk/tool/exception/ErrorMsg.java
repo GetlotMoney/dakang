@@ -16,6 +16,9 @@ public enum ErrorMsg {
     NETWORK_ERROR(621, "网络通信异常，请联系管理员"),
     RATE_LIMIT_ERROR(622, "系统当前访问量较大，请稍后尝试"),
     REPEAT_SUBMIT(625, "重复提交，请稍后尝试"),
+    // 首改密码门（R-201）：待改密会话访问业务接口的正常拒绝，前端据此跳改密页。
+    // 必须有独立编号——它会被 SPA 每次挂载批量触发，若并入 540 会计入 IP 异常封禁计数
+    PWD_CHANGE_REQUIRED(626, "请先修改初始密码"),
     HTTP_TIME_OUT(700, "请求超时"),
     UA_UNKNOWN(800, "账户操作平台错误"),
 

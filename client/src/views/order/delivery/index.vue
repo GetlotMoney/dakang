@@ -3,15 +3,6 @@
   <div class="delivery-page art-full-height">
     <BusinessModuleNav module-key="order" />
 
-    <ElAlert
-      class="mb-3"
-      type="info"
-      :closable="false"
-      show-icon
-      title="履约状态责任边界"
-      description="用户端创建配送单，配送员端产生接单/离站/送达/签收状态；PC 只读监控与证据核验，不提供任何履约推进按钮。照片以受控媒体元数据呈现（一期无媒体下载出口）。"
-    />
-
     <ElCard class="art-table-card" shadow="never">
       <div class="mb-3 flex flex-wrap items-center gap-3">
         <ElRadioGroup v-model="statusFilter" @change="applyFilters">
@@ -28,7 +19,6 @@
           @input="applyFiltersDebounced"
         />
         <ElButton @click="handleReset" v-ripple>重置</ElButton>
-        <ElTag type="success" effect="plain" class="ml-auto">配送任务数据来自真实后端</ElTag>
       </div>
 
       <ElTable :data="list" row-key="taskId" border v-loading="loading">
@@ -152,7 +142,7 @@
               :closable="false"
               show-icon
               title="配送履约链数据异常"
-              :description="`${detail.linkReason || '任务与订单共键核验未通过'}。已隐藏配送员、费用、时间线与三照等正向证据，请人工核查数据。`"
+              :description="`${detail.linkReason || '任务与订单的数据不一致'}。请人工核查。`"
             />
             <ElDescriptions :column="1" border label-width="92px">
               <ElDescriptionsItem label="配送订单">{{ detail.orderNo || '-' }}</ElDescriptionsItem>
@@ -184,15 +174,12 @@
                     {{ detail.actualDeliveryCount }} 桶（回收
                     {{ detail.actualReturnCount ?? 0 }} 桶）
                   </template>
-                  <template v-else>尚未到签收节点</template>
+                  <template v-else>未签收</template>
                 </ElDescriptionsItem>
                 <ElDescriptionsItem label="价格快照">
                   <template v-if="detail.payWay === 3">
                     水量抵扣单：配送费 {{ fenToYuan(detail.deliveryFeeFen) }} 元 = 应扣
-                    {{
-                      fenToYuan(detail.totalAmountFen)
-                    }}
-                    元（水费以水卡水量抵扣，抵扣量见订单中心追溯）
+                    {{ fenToYuan(detail.totalAmountFen) }} 元
                   </template>
                   <template v-else>
                     水费 {{ fenToYuan(detail.waterAmountFen) }} 元 + 配送费
@@ -213,7 +200,7 @@
                   {{ detail.scheduledTime ? formatTime(detail.scheduledTime) : '即时单' }}
                 </ElDescriptionsItem>
                 <ElDescriptionsItem v-if="detail.appealDeadline" label="申诉截止">
-                  {{ formatTime(detail.appealDeadline) }}（签收后 24 小时）
+                  {{ formatTime(detail.appealDeadline) }}
                 </ElDescriptionsItem>
                 <ElDescriptionsItem v-if="detail.locationStatus" label="签收定位">
                   {{ detail.locationStatus === 1 ? '定位已记录' : '定位未记录' }}
@@ -232,7 +219,7 @@
                 />
               </ElSteps>
 
-              <div class="section-title">三照签收元数据（门牌 / 水品 / 摆放）</div>
+              <div class="section-title">签收三照（门牌 / 水品 / 摆放）</div>
               <template v-if="detail.signPhotos && detail.signPhotos.length">
                 <div class="photo-grid">
                   <div v-for="photo in detail.signPhotos" :key="photo.mediaKey" class="photo-card">

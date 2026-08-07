@@ -1,15 +1,6 @@
 <!-- 安全与合规（REQ-066）：展示当前事实、目标配置和外部依赖，不伪造备份或审计成功。 -->
 <template>
   <div class="compliance-page">
-    <ElAlert
-      class="mb-3"
-      type="warning"
-      :closable="false"
-      show-icon
-      title="Demo 只定型合规责任与状态契约"
-      description="本地 HTTP、演示数据和配置说明不等于生产合规。KMS、TLS 证书、异地灾备、恢复演练和正式审计导出必须在真实环境验收。"
-    />
-
     <ElRow :gutter="16">
       <ElCol v-for="item in summary" :key="item.title" :xs="24" :sm="12" :xl="6">
         <ElCard shadow="never" class="summary-card">
@@ -17,8 +8,6 @@
             <span>{{ item.title }}</span>
             <ElTag :type="item.type" effect="plain">{{ item.status }}</ElTag>
           </div>
-          <div class="summary-card__value">{{ item.value }}</div>
-          <div class="summary-card__desc">{{ item.description }}</div>
         </ElCard>
       </ElCol>
     </ElRow>
@@ -26,11 +15,7 @@
     <ElCard shadow="never" class="section-card">
       <template #header>
         <div class="section-header">
-          <div>
-            <div class="section-title">数据分级与保护责任</div>
-            <div class="section-subtitle">页面字段与后端事实源的正式边界</div>
-          </div>
-          <ElTag type="primary" effect="plain">PC 配置与审计责任</ElTag>
+          <div class="section-title">数据分级与保护责任</div>
         </div>
       </template>
       <ElTable :data="dataClasses" border>
@@ -41,7 +26,7 @@
         <ElTableColumn label="当前状态" width="120">
           <template #default="{ row }">
             <ElTag :type="row.ready ? 'success' : 'warning'" size="small">
-              {{ row.ready ? '基础可用' : '待接生产能力' }}
+              {{ row.ready ? '已达标' : '待完善' }}
             </ElTag>
           </template>
         </ElTableColumn>
@@ -53,11 +38,8 @@
         <ElCard shadow="never" class="section-card">
           <template #header>
             <div class="section-header">
-              <div>
-                <div class="section-title">备份与恢复契约</div>
-                <div class="section-subtitle">没有真实作业记录时，不显示“备份成功”</div>
-              </div>
-              <ElTag type="warning" effect="plain">基础设施待接入</ElTag>
+              <div class="section-title">备份与恢复</div>
+              <ElTag type="warning" effect="plain">未启用</ElTag>
             </div>
           </template>
           <ElTimeline>
@@ -68,8 +50,6 @@
               :hollow="!item.ready"
             >
               <div class="timeline-title">{{ item.stage }}</div>
-              <div class="timeline-desc">{{ item.description }}</div>
-              <div class="timeline-evidence">验收证据：{{ item.evidence }}</div>
             </ElTimelineItem>
           </ElTimeline>
         </ElCard>
@@ -79,12 +59,7 @@
         <ElCard shadow="never" class="section-card">
           <template #header>
             <div class="section-header">
-              <div>
-                <div class="section-title">审计导出合同</div>
-                <div class="section-subtitle"
-                  >申请、状态追踪和失败重试可验收；真实文件仍待生产能力</div
-                >
-              </div>
+              <div class="section-title">审计导出</div>
               <ElButton
                 v-if="hasPermission('system:audit:export')"
                 type="primary"
@@ -94,13 +69,13 @@
               </ElButton>
             </div>
           </template>
-          <ElAlert
-            class="mb-3"
-            type="info"
-            :closable="false"
-            title="手机号固定脱敏、身份信息不导出；Demo 不提供假下载按钮。"
+          <ElAlert class="mb-3" type="info" :closable="false" title="导出文件暂不可下载。" />
+          <ElEmpty
+            v-if="!canViewExport"
+            description="无审计导出权限，请联系管理员开通"
+            :image-size="80"
           />
-          <ElTable :data="exportTasks" border v-loading="exportLoading" max-height="360">
+          <ElTable v-else :data="exportTasks" border v-loading="exportLoading" max-height="360">
             <ElTableColumn prop="taskNo" label="任务号" min-width="190" />
             <ElTableColumn prop="exportScope" label="范围" min-width="150" show-overflow-tooltip />
             <ElTableColumn
@@ -109,29 +84,33 @@
               min-width="220"
               show-overflow-tooltip
             />
+            <ElTableColumn label="申请人" prop="applyByName" width="110" show-overflow-tooltip />
             <ElTableColumn label="状态" width="90">
               <template #default="{ row }">
                 <ElTag :type="exportStatusTag(row.taskStatus)" size="small">
-                  {{ row.taskStatus }}
+                  {{ row.taskStatusName }}
                 </ElTag>
               </template>
             </ElTableColumn>
             <ElTableColumn label="操作" width="120" fixed="right">
               <template #default="{ row }">
                 <ElButton
-                  v-if="row.taskStatus === '失败'"
+                  v-if="row.taskStatus === AuditExportStatus.Failed"
                   type="primary"
                   link
                   @click="retryExport(row.id)"
                 >
                   重试申请
                 </ElButton>
-                <span v-else class="section-subtitle">等待任务推进</span>
               </template>
             </ElTableColumn>
           </ElTable>
           <div class="mt-3 flex justify-between items-center">
-            <span class="section-subtitle">任务终态必须包含文件摘要、过期时间与操作日志。</span>
+            <span v-if="canViewExport" class="section-subtitle">
+              共 {{ exportTotal }} 条<template v-if="exportTotal > EXPORT_PAGE_SIZE">
+                ，仅显示最近 {{ EXPORT_PAGE_SIZE }} 条</template
+              >
+            </span>
             <ElButton @click="router.push('/system/log/operation')">查看操作日志</ElButton>
           </div>
         </ElCard>
@@ -139,19 +118,12 @@
     </ElRow>
 
     <ElDialog v-model="applyVisible" title="申请审计导出" width="620px" align-center>
-      <ElAlert
-        class="mb-4"
-        type="warning"
-        :closable="false"
-        title="提交只创建导出任务；真实文件生成、摘要与到期下载必须由后端和对象存储完成。"
-      />
       <ElForm label-width="96px">
         <ElFormItem label="导出范围" required>
           <ElCheckboxGroup v-model="applyForm.exportScope">
-            <ElCheckbox value="操作日志">操作日志</ElCheckbox>
-            <ElCheckbox value="领域事件">领域事件</ElCheckbox>
-            <ElCheckbox value="订单追溯">订单追溯</ElCheckbox>
-            <ElCheckbox value="设备事件">设备事件</ElCheckbox>
+            <ElCheckbox v-for="scope in exportScopeOptions" :key="scope" :value="scope">
+              {{ scope }}
+            </ElCheckbox>
           </ElCheckboxGroup>
         </ElFormItem>
         <ElFormItem label="操作人">
@@ -161,9 +133,19 @@
           <ElInput v-model="applyForm.businessKeyword" placeholder="订单号、设备号或用户，可不填" />
         </ElFormItem>
         <ElFormItem label="时间范围" required>
-          <ElInput v-model="applyForm.startTime" placeholder="开始时间" />
-          <span class="range-separator">至</span>
-          <ElInput v-model="applyForm.endTime" placeholder="结束时间" />
+          <!-- value-format 直接产出服务端要的 14 位串，展示层仍是人类可读格式
+               （同 device-dialog 的 SIM 到期字段）。不给硬编码默认值：
+               默认值会被原样冻结进 FILTER_SUMMARY 永久留痕，比留空更糟 -->
+          <ElDatePicker
+            v-model="applyTimeRange"
+            type="datetimerange"
+            value-format="YYYYMMDDHHmmss"
+            format="YYYY-MM-DD HH:mm:ss"
+            range-separator="至"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+            :default-time="defaultRangeTime"
+          />
         </ElFormItem>
         <ElFormItem label="申请原因" required>
           <ElInput
@@ -188,12 +170,13 @@
 <script setup lang="ts">
   import { ElMessage, type TagProps } from 'element-plus'
   import {
-    fetchAuditExportTaskList,
+    fetchAuditExportTaskPage,
     fetchCreateAuditExportTask,
     fetchRetryAuditExportTask,
+    AuditExportStatus,
+    AUDIT_EXPORT_SCOPES,
     type AuditExportApplyForm,
-    type AuditExportTaskItem,
-    type AuditExportTaskStatus
+    type AuditExportTaskItem
   } from '@/api/compliance'
   import { useUserStore } from '@/store/modules/user'
 
@@ -210,48 +193,46 @@
   const applyVisible = ref(false)
   const applySubmitting = ref(false)
   const exportTasks = ref<AuditExportTaskItem[]>([])
+  const exportScopeOptions = AUDIT_EXPORT_SCOPES
   const applyForm = reactive<AuditExportApplyForm>({
     exportScope: ['操作日志'],
     operatorKeyword: '',
     businessKeyword: '',
-    startTime: '2026-07-14 00:00',
-    endTime: '2026-07-14 23:59',
+    startTime: '',
+    endTime: '',
     applyReason: ''
   })
+  // ElDatePicker 的区间绑定；起止两个字段仍按契约分别提交
+  const applyTimeRange = ref<[string, string] | null>(null)
+  // 选日期不选时刻时，区间默认覆盖整天，避免生成 00:00:00~00:00:00 的空区间
+  const defaultRangeTime: [Date, Date] = [
+    new Date(2000, 0, 1, 0, 0, 0),
+    new Date(2000, 0, 1, 23, 59, 59)
+  ]
 
   const summary: Array<{
     title: string
     status: string
-    value: string
-    description: string
     type: TagType
   }> = [
     {
       title: '权限隔离',
-      status: '基础可用',
-      value: 'RBAC',
-      description: '员工、角色、菜单和按钮权限已具备',
+      status: '已启用',
       type: 'success'
     },
     {
       title: '操作留痕',
-      status: '基础可用',
-      value: '操作日志',
-      description: '后台操作日志可查询，领域状态另写事件',
+      status: '已启用',
       type: 'success'
     },
     {
-      title: '敏感数据',
-      status: '待接 KMS',
-      value: '密文契约',
-      description: '身份字段禁止明文，生产密钥不得入库',
+      title: '敏感数据加密',
+      status: '未启用',
       type: 'warning'
     },
     {
       title: '灾备恢复',
-      status: '待真实环境',
-      value: 'RPO / RTO',
-      description: '需要作业记录和恢复演练证明',
+      status: '未启用',
       type: 'warning'
     }
   ]
@@ -259,30 +240,30 @@
   const dataClasses = [
     {
       category: '身份与联系方式',
-      examples: '手机号、身份信息、微信 openid',
-      storage: '身份信息密文存储；页面按角色脱敏；禁止写入日志',
-      retention: '按业务必要期限与删除权处理',
+      examples: '手机号、身份信息、微信账号',
+      storage: '加密存储，页面按角色脱敏',
+      retention: '按业务需要保留，可申请删除',
       ready: false
     },
     {
       category: '设备与遥测',
       examples: '心跳、TDS、滤芯、故障码',
-      storage: '原始消息按 msgId 去重；聚合状态保留来源时间',
-      retention: '满足故障追溯与对账窗口',
+      storage: '保留原始上报时间，自动去重',
+      retention: '满足故障追溯与对账',
       ready: true
     },
     {
       category: '业务与审计',
-      examples: '订单、指令、ACK、领域事件',
-      storage: '状态机单向流转；旧值/新值和操作身份留痕',
+      examples: '订单、指令、操作记录',
+      storage: '变更前后值与操作人留痕',
       retention: '按合同与监管要求留存',
       ready: true
     },
     {
       category: '资金与对账',
       examples: '支付、退款、分账、钱包流水',
-      storage: '不可由前端改写；回调幂等；导出需独立权限',
-      retention: '财务口径待甲方确认',
+      storage: '不可修改，导出需单独授权',
+      retention: '按财务要求留存',
       ready: false
     }
   ]
@@ -290,41 +271,48 @@
   const backupContract = [
     {
       stage: '每日全量备份',
-      description: '生产 MySQL 定时全量备份并加密保存',
-      evidence: '作业 ID、文件摘要、开始/结束时间',
       ready: false
     },
     {
       stage: '实时增量备份',
-      description: '启用 binlog 并持续复制到独立存储',
-      evidence: '复制延迟、断点位置、告警记录',
       ready: false
     },
     {
       stage: '异地副本',
-      description: '备份副本与业务主机、主可用区隔离',
-      evidence: '存储位置、保留策略、访问审计',
       ready: false
     },
     {
       stage: '恢复演练',
-      description: '按季度恢复到隔离环境并核对订单/流水一致性',
-      evidence: '演练单、RPO/RTO、核对结果与问题单',
       ready: false
     }
   ]
 
-  const exportStatusTag = (status: AuditExportTaskStatus): TagType => {
-    if (status === '已生成') return 'success'
-    if (status === '失败') return 'danger'
-    if (status === '生成中') return 'primary'
+  const exportStatusTag = (status: AuditExportStatus): TagType => {
+    if (status === AuditExportStatus.Done) return 'success'
+    if (status === AuditExportStatus.Failed) return 'danger'
+    if (status === AuditExportStatus.Running) return 'primary'
     return 'warning'
   }
 
+  // 列表与「申请」按钮共用同一权限：服务端 pageData 端点也带 system:audit:export，
+  // 无权限时若照常请求，用户会吃一条报错 toast 并看到一张空表——
+  // 在审计语境下"空表"极易被读成"从来没人申请过导出"，是危险的假阴性
+  const canViewExport = computed(() => hasPermission('system:audit:export'))
+
+  const exportTotal = ref(0)
+  const EXPORT_PAGE_SIZE = 50
+
   async function loadExportTasks() {
+    if (!canViewExport.value) return
     exportLoading.value = true
     try {
-      exportTasks.value = await fetchAuditExportTaskList()
+      const page = await fetchAuditExportTaskPage({ current: 1, size: EXPORT_PAGE_SIZE })
+      exportTasks.value = page.list
+      exportTotal.value = Number(page.total ?? 0)
+    } catch {
+      // 失败时清空并由模板给出显式提示，不留一张会被误读成"无申请记录"的空表
+      exportTasks.value = []
+      exportTotal.value = 0
     } finally {
       exportLoading.value = false
     }
@@ -335,15 +323,20 @@
       exportScope: ['操作日志'],
       operatorKeyword: '',
       businessKeyword: '',
-      startTime: '2026-07-14 00:00',
-      endTime: '2026-07-14 23:59',
+      startTime: '',
+      endTime: '',
       applyReason: ''
     })
+    applyTimeRange.value = null
     applyVisible.value = true
   }
 
   async function submitApply() {
-    if (!applyForm.exportScope.length || !applyForm.startTime || !applyForm.endTime) {
+    // DatePicker 产出的是 [起, 止] 区间，契约按两个字段提交
+    const [start, end] = applyTimeRange.value ?? ['', '']
+    applyForm.startTime = start
+    applyForm.endTime = end
+    if (!applyForm.exportScope.length || !start || !end) {
       ElMessage.warning('请选择导出范围和时间范围')
       return
     }
@@ -353,6 +346,7 @@
     }
     applySubmitting.value = true
     try {
+      // 服务端错误（范围非法/时间格式/区间倒置）由 http 拦截器统一提示，这里只管成功路径
       await fetchCreateAuditExportTask({
         ...applyForm,
         exportScope: [...applyForm.exportScope],
@@ -360,20 +354,21 @@
       })
       applyVisible.value = false
       await loadExportTasks()
-      ElMessage.success('审计导出任务已创建，等待后端生成能力接入')
+      ElMessage.success('审计导出任务已创建')
     } finally {
       applySubmitting.value = false
     }
   }
 
-  async function retryExport(id: number) {
-    const success = await fetchRetryAuditExportTask(id)
-    if (!success) {
-      ElMessage.warning('仅失败任务可以重试')
-      return
+  async function retryExport(id: string) {
+    try {
+      await fetchRetryAuditExportTask(id)
+      ElMessage.success('已重新提交')
+    } finally {
+      // 无论成败都拉回真实状态：服务端拒绝多半意味着本地这一行已过期
+      //（他人已重试过），此时不刷新会让用户对着同一条陈旧的"失败"反复点击
+      await loadExportTasks()
     }
-    await loadExportTasks()
-    ElMessage.success('任务已回到待生成状态')
   }
 
   onMounted(loadExportTasks)
@@ -389,53 +384,22 @@
     margin-bottom: 16px;
   }
 
-  .summary-card {
-    min-height: 164px;
-  }
-
   .summary-card__top,
   .section-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
   }
 
-  .summary-card__value {
-    margin-top: 18px;
-    font-size: 26px;
-    font-weight: 650;
-  }
-
-  .summary-card__desc,
-  .section-subtitle,
-  .timeline-desc,
-  .timeline-evidence {
-    color: var(--art-text-gray-600);
-  }
-
-  .range-separator {
-    margin: 0 8px;
-    color: var(--art-text-gray-600);
-  }
-
-  .summary-card__desc,
   .section-subtitle {
     margin-top: 6px;
     font-size: 13px;
+    color: var(--art-text-gray-600);
   }
 
   .section-title,
   .timeline-title {
     font-weight: 600;
-  }
-
-  .timeline-desc {
-    margin-top: 4px;
-  }
-
-  .timeline-evidence {
-    margin-top: 4px;
-    font-size: 12px;
   }
 </style>

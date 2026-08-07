@@ -8,7 +8,9 @@ import com.jbk.serve.mapper.product.WsPackageMapper;
 import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
 import com.jbk.serve.service.mini.recharge.IRechargeCreateTx;
 import com.jbk.serve.service.mini.recharge.IRechargePaySourceAdapter;
+import com.jbk.serve.service.mini.recharge.RechargeRefundEvidenceVerifier;
 import com.jbk.serve.service.mini.recharge.RechargeOrderNo;
+import com.jbk.serve.service.mini.recharge.RechargePayExpire;
 import com.jbk.serve.service.mini.recharge.RechargeSnapshot;
 import com.jbk.tool.data.mini.bo.MiniRechargeCreateBo;
 import com.jbk.tool.data.mini.vo.MiniRechargeOrderVo;
@@ -22,6 +24,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.dao.DuplicateKeyException;
 
@@ -91,8 +94,13 @@ class MiniRechargeCreateTest {
         cardService = Mockito.mock(com.jbk.serve.service.user.IWsCardService.class);
         createTx = Mockito.mock(IRechargeCreateTx.class);
         IRechargePaySourceAdapter paySource = () -> IRechargePaySourceAdapter.WECHAT;
-        service = new MiniRechargeServiceImpl(identityMapper, packageMapper, cardService, createTx, paySource,
-                new MiniPayStatusServiceImpl(identityMapper));
+        service = new MiniRechargeServiceImpl(new com.jbk.serve.service.settlement.IInviteService() {
+                    public String myInviteCode(Long userId) { return "IVTEST0000"; }
+                    public void bindReferrer(Long userId, String inviteCode) { }
+                    public Long referrerSnapshotOf(Long userId) { return null; }
+                }, identityMapper, packageMapper, cardService, createTx, paySource,
+                new MiniPayStatusServiceImpl(identityMapper,
+                        Mockito.mock(RechargeRefundEvidenceVerifier.class)));
         when(identityMapper.selectOrdersByOrderNoIncludingDeleted(anyString())).thenReturn(List.of());
         when(identityMapper.selectEventsByOrderNoIncludingDeleted(anyString())).thenReturn(List.of());
         dbCard = card(null);
@@ -157,10 +165,21 @@ class MiniRechargeCreateTest {
     private WsCard card(String expireTime) {
         WsCard c = new WsCard();
         c.setId(CARD_ID);
+        // 审计 P1-2 后赠卡判据含 CARD_TYPE=1（虚拟卡）：fixture 必须显式携带，
+        // 否则带期无锚卡不再被识别为赠卡，整组赠卡用例静默漂进付费有限卡分支
+        c.setCardType(1);
         c.setUserId(ME);
         c.setCardStatus(1);
         c.setScopeJson("{\"scopeType\":\"specified\",\"stationIds\":[1]}");
         c.setExpireTime(expireTime);
+        return c;
+    }
+
+    /** 带剩余权益的赠卡：D-416 后「有效期内且有权益」才是赠卡拒绝充值的形态。 */
+    private WsCard giftWithBalance(String expireTime) {
+        WsCard c = card(expireTime);
+        c.setBalanceAmount(500L);
+        c.setBalanceMl(0L);
         return c;
     }
 
@@ -425,25 +444,26 @@ class MiniRechargeCreateTest {
     //     有限卡（活动赠卡）则在读到卡的第一时间被赠卡闸拒绝
     @Test
     void expiryKindCrossRejected() {
-        // 永久卡买有限套餐
+        // 永久卡买有限套餐：D-213 套餐闸先于类型比较——付费+有效期的套餐本身即非法配置，
+        // 无论买家持什么卡都直接拒绝，不再走到「类型不匹配」那一层
         dbPackage = pkg(365);
         JbkException kind = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
-        assertTrue(kind.getMessage().contains("有限期与永久类型不匹配"), "实际=" + kind.getMessage());
-        // 有限卡买永久套餐：赠卡闸先于类型比较
-        dbCard = card("20270101000000");
+        assertTrue(kind.getMessage().contains("付费套餐不得设置有效期"), "实际=" + kind.getMessage());
+        // 有限卡买永久套餐：有效期内且有权益的赠卡仍被赠卡闸拒绝（D-416 只放行用完/到期）
+        dbCard = giftWithBalance("20270101000000");
         dbPackage = pkg(null);
         JbkException gift = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
-        assertTrue(gift.getMessage().contains("活动赠卡不支持充值"), "实际=" + gift.getMessage());
+        assertTrue(gift.getMessage().contains("有效期内暂不支持充值"), "实际=" + gift.getMessage());
     }
 
-    // 14b) 赠卡闸（D-213）：带有效期的卡=活动赠卡，同款有限套餐续充也一律拒绝且零写入——
-    //      赠卡若可充值，充入的付费余额会被赠卡到期日绑架，客户的钱变成会过期的钱
+    // 14b) 赠卡闸（D-213/D-416）：有效期内且有权益的赠卡一律拒绝且零写入——
+    //      此时若可充值，充入的付费余额会被赠卡到期日绑架，客户的钱变成会过期的钱
     @Test
     void giftCardRechargeRejectedRegardlessOfPackageKind() {
-        dbCard = card("20301231235959");
+        dbCard = giftWithBalance("20301231235959");
         dbPackage = pkg(365);
         JbkException ex = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
-        assertTrue(ex.getMessage().contains("活动赠卡不支持充值"), "实际=" + ex.getMessage());
+        assertTrue(ex.getMessage().contains("有效期内暂不支持充值"), "实际=" + ex.getMessage());
         verify(createTx, never()).create(any(), anyString(), org.mockito.ArgumentMatchers.anyInt());
         // 赠卡闸先于读套餐：不给「按套餐内容讨价还价」留任何分支
         verify(packageMapper, never()).selectOne(any(Wrapper.class));
@@ -465,15 +485,73 @@ class MiniRechargeCreateTest {
         assertThrows(JbkException.class, () -> service.create(okBo(), ME),
                 "空串不得被当作永久卡收款");
 
-        dbCard = card("20260230000000");
+        dbCard = giftWithBalance("20260230000000");
         dbPackage = pkg(365);
         assertThrows(JbkException.class, () -> service.create(okBo(), ME),
-                "非真实日期同样落在赠卡闸内，必须拒绝");
+                "非真实日期解析不出自然到期，按有效期内拒绝");
 
-        // 合法14位有限期 = 活动赠卡：新模型下不再是「可续充」，而是被赠卡闸拒绝（D-213）
-        dbCard = card("20270101000000");
+        // 合法14位有限期 + 剩余权益 = 有效期内的活动赠卡：仍被赠卡闸拒绝（D-213/D-416）
+        dbCard = giftWithBalance("20270101000000");
         JbkException gift = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
-        assertTrue(gift.getMessage().contains("活动赠卡不支持充值"), "实际=" + gift.getMessage());
+        assertTrue(gift.getMessage().contains("有效期内暂不支持充值"), "实际=" + gift.getMessage());
+    }
+
+    // ==================== D-416：赠卡充值转正矩阵（2026-08-06 甲方确认） ====================
+
+    /** 权益用完（余额与水量均 0）+ 无其他付费卡：放行，快照冻结转正标志，付款窗按永久口径。 */
+    @Test
+    void drainedGiftCardWithoutPaidCardCreatesPromoteOrder() {
+        dbCard = card("20270101000000");
+        dbCard.setBalanceAmount(0L);
+        dbCard.setBalanceMl(0L);
+        dbPackage = pkg(null);
+        MiniRechargeOrderVo vo = service.create(okBo(), ME);
+        assertTrue(vo != null && vo.getOrderNo() != null, "耗尽赠卡应放行创单");
+
+        ArgumentCaptor<WsOrder> orderCap = ArgumentCaptor.forClass(WsOrder.class);
+        ArgumentCaptor<String> expireCap = ArgumentCaptor.forClass(String.class);
+        verify(createTx).create(orderCap.capture(), expireCap.capture(),
+                org.mockito.ArgumentMatchers.anyInt());
+        RechargeSnapshot.Parsed snap = RechargeSnapshot.parse(orderCap.getValue().getPackageSnap());
+        assertTrue(snap.promoteToPermanent(), "快照必须冻结转正标志");
+        // 付款窗不被赠卡旧到期日钳制：按创单时刻 + 标准窗口（永久卡口径）
+        assertEquals(RechargePayExpire.compute(snap.capturedTime(), null), expireCap.getValue(),
+                "转正单付款截止必须按永久卡口径");
+    }
+
+    /** 自然过期（状态 3）的赠卡 + 无其他付费卡：loadUsableCard 放行，转正创单成功。 */
+    @Test
+    void naturallyExpiredGiftCardPromotable() {
+        dbCard = card("20200101000000");
+        dbCard.setCardStatus(3);
+        dbCard.setBalanceAmount(120L);
+        dbCard.setBalanceMl(0L);
+        dbPackage = pkg(null);
+        MiniRechargeOrderVo vo = service.create(okBo(), ME);
+        assertTrue(vo != null, "自然过期赠卡应可转正充值");
+    }
+
+    /** 权益用完但已有其他付费卡：拒绝——该走合并动线，不产生第二张付费卡（D-417）。 */
+    @Test
+    void drainedGiftCardWithPaidCardRejected() {
+        when(cardService.count(any(Wrapper.class))).thenReturn(1L);
+        dbCard = card("20270101000000");
+        dbCard.setBalanceAmount(0L);
+        dbCard.setBalanceMl(0L);
+        dbPackage = pkg(null);
+        JbkException ex = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
+        assertTrue(ex.getMessage().contains("已有正式水卡"), "实际=" + ex.getMessage());
+        verify(createTx, never()).create(any(), anyString(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    /** 非自然过期（状态 3 但到期日在未来）的卡不放行：数据自相矛盾走原状态拒绝。 */
+    @Test
+    void abnormallyExpiredStatusStillRejected() {
+        dbCard = card("20990101000000");
+        dbCard.setCardStatus(3);
+        dbPackage = pkg(null);
+        JbkException ex = assertThrows(JbkException.class, () -> service.create(okBo(), ME));
+        assertTrue(ex.getMessage().contains("状态不可充值"), "实际=" + ex.getMessage());
     }
 
     // 16) 下架/不存在套餐拒绝；非法金额拒绝
@@ -557,6 +635,35 @@ class MiniRechargeCreateTest {
     }
 
     // ---------------------------------------------------------------------
+
+    /**
+     * 审计 P1-3：过期赠卡转正单的合法重放必须返回原单。创单与重放共用同一付款窗公式
+     * （promote→按永久口径），快照记真实状态 3——修复前重放侧无条件按旧到期日重算，
+     * 合法重放被误判「付款截止不一致」拒绝。
+     */
+    @Test
+    void promoteOrderReplayReturnsOriginal() {
+        String orderNo = RechargeOrderNo.derive(ME, UUID);
+        WsCard expiredGift = card("20250101120000");
+        expiredGift.setCardStatus(3);
+        WsPackage permanent = pkg(null);
+        String snap = RechargeSnapshot.build(UUID, permanent, expiredGift,
+                com.jbk.serve.service.mini.card.WaterCardScope.normalize(expiredGift.getScopeJson(), "水卡"),
+                null, "20260722100000", true);
+        WsOrder existing = existingOrder(orderNo, "20260722100000", null);
+        existing.setPackageSnap(snap);
+        when(identityMapper.selectOrdersByOrderNoIncludingDeleted(orderNo)).thenReturn(List.of(existing));
+        // 付款窗按转正口径（captured + 永久）：与创单路径同一函数的产物
+        when(identityMapper.selectPaymentsByOrderIdIncludingDeleted(existing.getId()))
+                .thenReturn(List.of(payment(existing,
+                        RechargePayExpire.compute("20260722100000", null))));
+
+        MiniRechargeOrderVo vo = service.create(okBo(), ME);
+
+        assertTrue(vo.getIdempotentHit(), "过期赠卡转正单重放必须命中原单");
+        assertEquals(orderNo, vo.getOrderNo());
+        verify(createTx, never()).create(any(), anyString(), org.mockito.ArgumentMatchers.anyInt());
+    }
 
     private WsOrder existingOrder(String orderNo, String createTime, String expireAtCreate) {
         WsCard c = card(expireAtCreate);

@@ -55,14 +55,15 @@ ALTER TABLE `ws_device`
 ALTER TABLE `ws_order`
   ADD COLUMN `CHANNEL_USER_ID` bigint COMMENT '下单时归属渠道用户ID快照（一期预留，分润归因依据，随归属变更不回溯）' AFTER `USER_ID`;
 
+-- E2E-08 归因：推荐人快照与渠道分列（邀请人≠渠道，两种归属不得挪用同列）
+ALTER TABLE `ws_order`
+  ADD COLUMN `REFERRER_USER_ID` bigint COMMENT '下单时推荐人快照（E2E-08 分润归因依据，随归属变更不回溯；绑定前订单恒 NULL）' AFTER `CHANNEL_USER_ID`;
+
 -- ============================================================
--- D. 领域事件表补身份上下文（REQ-051：操作携带身份上下文写审计；REQ-024：状态变化必写日志）
---    ws_domain_event 兼任状态级审计表：EVENT_PAYLOAD 存旧值/新值，ACTOR_* 存操作者
+-- D. 领域事件身份上下文字典
+--    ACTOR_ID / ACTOR_PORTAL / ACTOR_ROLE 已由 02-ws-business.sql 按终态建表，
+--    此处只维护字典与菜单数据，避免空库初始化时重复加列。
 -- ============================================================
-ALTER TABLE `ws_domain_event`
-  ADD COLUMN `ACTOR_ID`     bigint      COMMENT '操作者ID（员工/用户，系统或设备触发为空）' AFTER `EVENT_PAYLOAD`,
-  ADD COLUMN `ACTOR_PORTAL` tinyint     COMMENT '操作端口(1364)：1公司后台 2用户端 3机主端 4配送端 5渠道端 6系统 7设备' AFTER `ACTOR_ID`,
-  ADD COLUMN `ACTOR_ROLE`   varchar(20) COMMENT '操作者角色/身份名称快照(max20)' AFTER `ACTOR_PORTAL`;
 
 INSERT IGNORE INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`)
 SELECT '操作端口', '1364', '领域事件/审计的操作端口来源'
@@ -105,9 +106,19 @@ INSERT IGNORE INTO `api_rbac_menu`
 (1040,'C端用户',2,NULL,1003,3,'index','/user/index',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1041,'水卡与授权',2,NULL,1003,2,'card','/user/card',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1042,'配送员准入',2,NULL,1003,1,'courier','/user/courier',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
+-- E2E-07 消息记录（REQ-087「后台记录」）：全域站内消息只读查询，挂用户管理（触达对象是 C 端用户）
+(1027,'消息记录',2,NULL,1003,0,'message','/user/message',1,NULL,NULL,1,1,0,1,'20260731120000',1,'20260731120000'),
 (1050,'订单查询',2,NULL,1004,3,'index','/order/index',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1051,'配送履约',2,NULL,1004,2,'delivery','/order/delivery',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1052,'申诉处理',2,NULL,1004,1,'appeal','/order/appeal',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
+-- E2E-08 财务面（挂订单中心组，不动 5+1 契约）：分账明细/日对账/比例配置 + 三个高风险功能点
+(1028,'分账明细',2,NULL,1004,0,'split','/order/split',1,NULL,NULL,1,1,0,1,'20260731120000',1,'20260731120000'),
+(1029,'日对账',2,NULL,1004,0,'reconcile','/order/reconcile',1,NULL,NULL,1,1,0,1,'20260731120000',1,'20260731120000'),
+(1032,'分账比例配置',2,NULL,1004,0,'splitconfig','/order/splitconfig',1,NULL,NULL,1,1,0,1,'20260731120000',1,'20260731120000'),
+(1145,'对账触发',3,NULL,1029,1,NULL,NULL,1,'finance:reconcile:run','finance:reconcile:run',2,1,0,1,'20260731120000',1,'20260731120000'),
+(1146,'比例配置变更',3,NULL,1032,1,NULL,NULL,1,'finance:config:edit','finance:config:edit',2,1,0,1,'20260731120000',1,'20260731120000'),
+(1147,'赠卡发放',3,NULL,1041,2,NULL,NULL,1,'user:card:issue','user:card:issue',2,1,0,1,'20260731120000',1,'20260731120000'),
+(1148,'提现审核',3,NULL,1028,1,NULL,NULL,1,'finance:withdraw:audit','finance:withdraw:audit',2,1,0,1,'20260731120000',1,'20260731120000'),
 (1060,'安全与合规',2,NULL,607,6,'compliance','/system/compliance',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1100,'新增水站',3,NULL,1010,1,NULL,NULL,1,'station:station:add','station:station:add',2,1,0,1,'20260714120000',1,'20260714120000'),
 (1101,'修改水站',3,NULL,1010,2,NULL,NULL,1,'station:station:update','station:station:update',2,1,0,1,'20260714120000',1,'20260714120000'),
@@ -127,7 +138,29 @@ INSERT IGNORE INTO `api_rbac_menu`
 (1135,'审计导出申请',3,NULL,1060,1,NULL,NULL,1,'system:audit:export','system:audit:export',2,1,0,1,'20260714120000',1,'20260714120000'),
 (1136,'新增套餐',3,NULL,1031,1,NULL,NULL,1,'product:package:add','product:package:add',2,1,0,1,'20260719120000',1,'20260719120000'),
 (1137,'修改套餐',3,NULL,1031,2,NULL,NULL,1,'product:package:update','product:package:update',2,1,0,1,'20260719120000',1,'20260719120000'),
-(1138,'套餐上下架',3,NULL,1031,3,NULL,NULL,1,'product:package:shelf','product:package:shelf',2,1,0,1,'20260719120000',1,'20260719120000');
+(1138,'套餐上下架',3,NULL,1031,3,NULL,NULL,1,'product:package:shelf','product:package:shelf',2,1,0,1,'20260719120000',1,'20260719120000'),
+-- E2E-04 包A 售后功能点。必须写在本 VALUES 列表里（而不是文件更下方）：
+-- 下面「超级管理员绑定全部启用菜单」那段是 SELECT ... FROM api_rbac_menu，
+-- 只能绑定到那一刻已存在的行，写在它之后的菜单永远拿不到角色绑定 —— 表现是
+-- 菜单一切正常、点执行恒 403。同一份权限在 migrations/2026-07-29-aftersale-e2e04-a.sql
+-- 里另有一份（供已有库升级），两处的 ID 与权限码必须逐字一致。
+-- 暂挂 1052 申诉处理 之下：包A 尚无独立售后页面，入口在申诉处理与订单详情两处；
+-- 前端售后台账落地后只改 MENU_PARENT_ID，ID 与权限码不变。
+(1139,'售后台账查询',3,NULL,1052,2,NULL,NULL,1,'order:aftersale:query','order:aftersale:query',2,1,0,1,'20260729120000',1,'20260729120000'),
+(1140,'售后执行与核账',3,NULL,1052,3,NULL,NULL,1,'order:aftersale:handle','order:aftersale:handle',2,1,0,1,'20260729120000',1,'20260729120000'),
+-- 包D-5：充值/购卡退款走独立财务审核权限（R0-7）。与配送售后的日常处理权分开——
+-- 「把钱退回用户支付账户」与「处理一条申诉」不是一个风险级别，共用开关等于默认全员可退款
+(1141,'发起充值退款',3,NULL,1052,4,NULL,NULL,1,'order:aftersale:refund','order:aftersale:refund',2,1,0,1,'20260729120000',1,'20260729120000'),
+-- E2E-05 设备运营与运维：三个二级子页面 + 三个功能点。仍在本 VALUES 列表内（超管绑定 SELECT 之前）。
+-- 二级菜单挂 1001 设备中控；sort 依既有排序语义（值小在下）。
+(1024,'告警中心',2,NULL,1001,6,'alarm','/device/alarm',1,NULL,NULL,1,1,0,1,'20260730120000',1,'20260730120000'),
+(1025,'运维工单',2,NULL,1001,5,'workorder','/device/workorder',1,NULL,NULL,1,1,0,1,'20260730120000',1,'20260730120000'),
+(1026,'批量控制',2,NULL,1001,0,'batch','/device/batch',1,NULL,NULL,1,1,0,1,'20260730120000',1,'20260730120000'),
+-- 告警处置（确认/忽略/转工单）与工单处理（确认/驳回/分配/复核）是设备侧日常运维权；
+-- 批量控制单列权限：锁全站/全网设备的破坏半径远大于单设备指令，不与 device:command:send 共用开关
+(1142,'告警处置',3,NULL,1024,1,NULL,NULL,1,'device:alarm:handle','device:alarm:handle',2,1,0,1,'20260730120000',1,'20260730120000'),
+(1143,'工单处理',3,NULL,1025,1,NULL,NULL,1,'device:workorder:handle','device:workorder:handle',2,1,0,1,'20260730120000',1,'20260730120000'),
+(1144,'批量指令执行',3,NULL,1026,1,NULL,NULL,1,'device:batch:execute','device:batch:execute',2,1,0,1,'20260730120000',1,'20260730120000');
 
 -- C 端用户样例仅用于 Demo 查询和跨表追溯；身份证字段保存不可逆占位密文，不放真实身份信息。
 INSERT IGNORE INTO `ws_user`

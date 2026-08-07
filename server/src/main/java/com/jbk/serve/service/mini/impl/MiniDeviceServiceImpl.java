@@ -8,12 +8,14 @@ import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.jbk.serve.mapper.device.WsDeviceMapper;
 import com.jbk.serve.mapper.device.WsDeviceOutletMapper;
-import com.jbk.serve.mapper.device.WsFaultDictMapper;
 import com.jbk.serve.mapper.device.WsQrcodeMapper;
 import com.jbk.serve.mapper.station.WsStationMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.mapper.user.WsCardMapper;
 import com.jbk.serve.mapper.user.WsCardMemberMapper;
+import com.jbk.serve.service.device.DeviceAvailability;
+import com.jbk.serve.service.device.DeviceAvailabilityGuard;
+import com.jbk.serve.service.trade.WaterBillingMath;
 import com.jbk.serve.service.mini.IMiniDeviceService;
 import com.jbk.serve.service.mini.card.CardMemberRule;
 import com.jbk.serve.service.mini.card.WaterCardScope;
@@ -24,7 +26,6 @@ import com.jbk.tool.consts.mini.MiniRejectCode;
 import com.jbk.tool.consts.ops.OpsEnum;
 import com.jbk.tool.data.device.po.WsDevice;
 import com.jbk.tool.data.device.po.WsDeviceOutlet;
-import com.jbk.tool.data.device.po.WsFaultDict;
 import com.jbk.tool.data.device.po.WsQrcode;
 import com.jbk.tool.data.mini.vo.OutletSummaryVo;
 import com.jbk.tool.data.mini.vo.ScanSessionInfo;
@@ -43,7 +44,6 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.Date;
-import java.util.Set;
 
 /**
  * 小程序扫码取水服务实现（L1a）。
@@ -66,8 +66,6 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     private static final int SCAN_TTL_SECONDS = 300;
     /** 二维码类型：3=万能码 */
     private static final int QRCODE_TYPE_UNIVERSAL = 3;
-    /** 拥有专属可用性枚举值的故障码（其余阻断码归 DEVICE_UNAVAILABLE） */
-    private static final Set<String> FAULT_AVAILABILITY_CODES = Set.of("E001", "E003", "E004");
 
     @Autowired
     private WsQrcodeMapper qrcodeMapper;
@@ -83,8 +81,9 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     private WsCardMemberMapper cardMemberMapper;
     @Autowired
     private WsOrderMapper wsOrderMapper;
+    /** 设备可用性唯一加载器：预检与下单事务、指令准备共用同一套字典读取与冲突处理。 */
     @Autowired
-    private WsFaultDictMapper faultDictMapper;
+    private DeviceAvailabilityGuard availabilityGuard;
     @Autowired
     private IWsDomainEventService domainEventService;
 
@@ -144,7 +143,18 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
             throw new JbkException("该出水口已停用，暂不可取水", MiniRejectCode.QR_EXPIRED);
         }
 
+        // S2 报价冻结：水种与单价在扫码这一刻定死，此后确认页展示、下单装配、事务终判全吃这一份。
+        // 缺一不可——只冻水种不冻价，用户确认期间的调价照样会静默改扣款额。
+        Long frozenWaterTypeId = outlet.getWaterTypeId();
+        if (ObjectUtil.isNull(frozenWaterTypeId)) {
+            domainEventService.recordByDevice(OpsEnum.EventType.DEVICE_STATUS, rawCode, null,
+                    "扫码解析失败：出水口未配置水种（outletId=" + outlet.getId() + "）");
+            throw new JbkException("出水口水种配置异常，请联系管理员", MiniRejectCode.QR_EXPIRED);
+        }
+        int frozenUnitPrice = requireOutletPrice(outlet);
+
         String scanSessionId = IdUtil.fastSimpleUUID();
+        String quotedAt = DateUtils.time();
         // qrcodeId/stationId 一并铸入会话：下单事务凭它们在锁内重核共键（预检不是安全边界）。
         JSONObject sessionValue = JSONUtil.createObj()
                 .set("userId", userId)
@@ -152,7 +162,10 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
                 .set("stationId", station.getId())
                 .set("deviceId", device.getId())
                 .set("deviceNo", device.getDeviceNo())
-                .set("outletId", outlet.getId());
+                .set("outletId", outlet.getId())
+                .set("waterTypeId", frozenWaterTypeId)
+                .set("unitPriceFenPerLiter", frozenUnitPrice)
+                .set("quotedAt", quotedAt);
         RedisUtils.set(redis, SCAN_KEY_PREFIX + scanSessionId, sessionValue.toString(), SCAN_TTL_SECONDS);
 
         return new ScanSessionVo()
@@ -165,9 +178,13 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     @Override
     public WaterDeviceContextVo getWaterContext(String scanSessionId, Long userId) {
         JSONObject session = loadSession(scanSessionId, userId);
+        ScanSessionInfo frozen = toSessionInfo(scanSessionId, session);
         WsDeviceOutlet outlet = requireOutlet(session.getLong("outletId"));
         WsDevice device = requireDevice(session.getLong("deviceId"));
         WsStation station = stationMapper.selectById(device.getStationId());
+        // 报价漂移即会话作废：绝不返回「扫码时水种 + 当前价格」这类混合体，
+        // 那会让用户在一个自身矛盾的页面上确认。
+        requireQuoteUnchanged(frozen, outlet);
 
         return new WaterDeviceContextVo()
                 .setScanSessionId(scanSessionId)
@@ -177,7 +194,8 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
                 .setDeviceName(device.getDeviceName())
                 .setOnlineStatus(mapOnlineStatus(device.getOnlineStatus()))
                 .setRunStatus(mapRunStatus(device.getRunStatus()))
-                .setOutlet(buildOutletSummary(outlet))
+                .setOutlet(buildOutletSummary(outlet, frozen))
+                .setQuotedAt(frozen.getQuotedAt())
                 .setExpiresAt(remainExpiresAt(scanSessionId));
     }
 
@@ -196,13 +214,35 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     @Override
     public ScanSessionInfo loadScanSession(String scanSessionId, Long userId) {
         JSONObject session = loadSession(scanSessionId, userId);
+        return toSessionInfo(scanSessionId, session);
+    }
+
+    /**
+     * 会话 → 内部数据，冻结报价字段严格校验。
+     *
+     * <p>S2 之前铸造的会话没有 waterTypeId/unitPriceFenPerLiter/quotedAt。<b>绝不回退去读当前价</b>——
+     * 那正是本包要消灭的行为（页面看到的是扫码时的价，扣款用的是提交时的价）。
+     * 缺字段一律按会话失效处理，代价是升级瞬间的在途会话要重扫一次，换来的是没有一笔按旧会话
+     * 以新价扣款。</p>
+     */
+    private ScanSessionInfo toSessionInfo(String scanSessionId, JSONObject session) {
+        Long waterTypeId = session.getLong("waterTypeId");
+        Integer unitPrice = session.getInt("unitPriceFenPerLiter");
+        String quotedAt = session.getStr("quotedAt");
+        if (ObjectUtil.isNull(waterTypeId) || ObjectUtil.isNull(unitPrice) || StrUtil.isBlank(quotedAt)) {
+            throw new JbkException("扫码会话已过期，请重新扫码", MiniRejectCode.SCAN_SESSION_EXPIRED);
+        }
         return new ScanSessionInfo()
+                .setScanSessionId(scanSessionId)
                 .setUserId(session.getLong("userId"))
                 .setQrcodeId(session.getLong("qrcodeId"))
                 .setStationId(session.getLong("stationId"))
                 .setDeviceId(session.getLong("deviceId"))
                 .setDeviceNo(session.getStr("deviceNo"))
-                .setOutletId(session.getLong("outletId"));
+                .setOutletId(session.getLong("outletId"))
+                .setWaterTypeId(waterTypeId)
+                .setUnitPriceFenPerLiter(WaterBillingMath.requireUnitPrice(unitPrice))
+                .setQuotedAt(quotedAt);
     }
 
     @Override
@@ -213,46 +253,12 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     // ==================== 设备可用性（DeviceAvailability 封闭枚举） ====================
 
     private void fillDeviceAvailability(WaterEligibilityVo vo, WsDevice device, WsDeviceOutlet outlet) {
-        Integer online = device.getOnlineStatus();
-        Integer run = device.getRunStatus();
-        if (!ObjectUtil.equal(online, 1)) {
-            vo.setAvailability("DEVICE_OFFLINE").setReason("设备离线，请稍后再试");
-            return;
-        }
-        if (ObjectUtil.equal(run, 3)) {
-            // 故障态：查故障字典判断是否阻断；未知码默认阻断（产品规则 v1）
-            String faultCode = device.getLastFaultCode();
-            WsFaultDict fault = StrUtil.isBlank(faultCode) ? null
-                    : faultDictMapper.selectOne(
-                            Wrappers.lambdaQuery(WsFaultDict.class).eq(WsFaultDict::getFaultCode, faultCode));
-            if (ObjectUtil.isNull(fault)) {
-                vo.setAvailability("DEVICE_UNAVAILABLE")
-                        .setReason("设备故障（未知故障码" + StrUtil.blankToDefault(faultCode, "未知") + "），安全起见暂不可用");
-                return;
-            }
-            if (ObjectUtil.equal(fault.getBlockOrderFlag(), 2)) {
-                if (FAULT_AVAILABILITY_CODES.contains(faultCode)) {
-                    vo.setAvailability("FAULT_" + faultCode).setReason(fault.getFaultName());
-                } else {
-                    vo.setAvailability("DEVICE_UNAVAILABLE")
-                            .setReason("设备故障（" + faultCode + "）" + fault.getFaultName());
-                }
-                return;
-            }
-            // 命中字典但不阻断：继续按出水口判定
-        } else if (ObjectUtil.equal(run, 4) || ObjectUtil.equal(run, 5)) {
-            vo.setAvailability("DEVICE_UNAVAILABLE").setReason(ObjectUtil.equal(run, 4) ? "设备维护中" : "设备已锁定");
-            return;
-        } else if (ObjectUtil.equal(run, 2)) {
-            vo.setAvailability("DEVICE_UNAVAILABLE").setReason("设备正在出水中，请稍后再试");
-            return;
-        }
-        // 设备可用，检查出水口
-        if (ObjectUtil.notEqual(outlet.getOutletStatus(), 1)) {
-            vo.setAvailability("NO_AVAILABLE_OUTLET").setReason("当前出水口已停用");
-            return;
-        }
-        vo.setAvailability("AVAILABLE");
+        // 判定唯一出处是 DeviceAvailability（E2E-05 包B 抽出）：本方法只负责查字典行并搬运结论。
+        // 在这里重写任何一条状态分支都是第二份真相，评审一票否决。
+        // 字典读取与 0/1/多行处理统一走 Guard：此前这里用单值 selectOne，同一故障码被误录两条时
+        // MyBatis-Plus 直接抛内部异常，重复配置既拿不到 FAULT_DICT_CONFLICT 诊断也不留痕。
+        DeviceAvailability.Verdict verdict = availabilityGuard.judge(device, outlet).verdict();
+        vo.setAvailability(verdict.code()).setReason(verdict.reason());
     }
 
     // ==================== 卡阻断（CardBlockCode） ====================
@@ -378,21 +384,40 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
         return obj;
     }
 
-    private OutletSummaryVo buildOutletSummary(WsDeviceOutlet outlet) {
+    /**
+     * 出水口摘要：档案字段（编号、可用性）取当前档案，<b>水种与单价一律取扫码冻结报价</b>。
+     * 混着取就会出现「当前水种 + 扫码时价格」这种页面上无法自洽的组合。
+     */
+    private OutletSummaryVo buildOutletSummary(WsDeviceOutlet outlet, ScanSessionInfo frozen) {
         return new OutletSummaryVo()
                 .setOutletId(outlet.getId())
                 .setOutletNo(outlet.getOutletNo())
-                .setWaterTypeId(outlet.getWaterTypeId())
+                .setWaterTypeId(frozen.getWaterTypeId())
                 .setWaterTypeName(outlet.getWaterType())
-                .setUnitPriceFenPerLiter(parseUnitPrice(outlet))
+                .setUnitPriceFenPerLiter(frozen.getUnitPriceFenPerLiter())
                 .setAvailable(ObjectUtil.equal(outlet.getOutletStatus(), 1));
     }
 
-    /** OUTLET_PRICE 为 varchar(分/升)，解析为整数；非法配置记审计并拒绝，避免错误计价流入下单 */
-    private Integer parseUnitPrice(WsDeviceOutlet outlet) {
+    /**
+     * 冻结报价与当前出水口的一致性闸（S2）。水种或单价任一变化即本次会话作废，
+     * 用独立拒绝码 SCAN_QUOTE_CHANGED——「会话过期」是时间到了，「报价变化」是内容变了，
+     * 合并成一个码用户看到的原因就是错的。
+     */
+    private void requireQuoteUnchanged(ScanSessionInfo frozen, WsDeviceOutlet outlet) {
+        if (ObjectUtil.notEqual(frozen.getWaterTypeId(), outlet.getWaterTypeId())) {
+            throw new JbkException("出水口水种已调整，请重新扫码确认", MiniRejectCode.SCAN_QUOTE_CHANGED);
+        }
+        if (ObjectUtil.notEqual(frozen.getUnitPriceFenPerLiter(), requireOutletPrice(outlet))) {
+            throw new JbkException("取水价格已调整，请重新扫码确认", MiniRejectCode.SCAN_QUOTE_CHANGED);
+        }
+    }
+
+    /** OUTLET_PRICE 规范化：解析规则唯一实现在 WaterBillingMath；本方法只负责把非法配置留痕。 */
+    private int requireOutletPrice(WsDeviceOutlet outlet) {
         try {
-            return Integer.valueOf(StrUtil.trim(outlet.getOutletPrice()));
-        } catch (NumberFormatException e) {
+            return WaterBillingMath.requireOutletPrice(outlet.getOutletPrice());
+        }
+        catch (JbkException invalid) {
             domainEventService.recordByDevice(OpsEnum.EventType.DEVICE_STATUS, String.valueOf(outlet.getId()), null,
                     "出水口单价配置非法：outletId=" + outlet.getId() + " price=" + outlet.getOutletPrice());
             throw new JbkException("出水口单价配置异常，请联系管理员", MiniRejectCode.QR_EXPIRED);

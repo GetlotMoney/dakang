@@ -33,6 +33,7 @@ public class RechargeDetailVerifier {
     private static final int CARD_FLOW_RECHARGE = 1;
 
     private final RechargeIdentityMapper identityMapper;
+    private final RechargeRefundEvidenceVerifier refundEvidenceVerifier;
 
     public MiniRechargeDetailVo verify(WsOrder order) {
         if (order == null || !ObjectUtil.equals(order.getDataStatus(), 0)
@@ -54,15 +55,17 @@ public class RechargeDetailVerifier {
         }
         RechargeCredit credit = RechargeCredit.of(snapshot);
         boolean purchase = RechargeSnapshot.PURCHASE_MODE_FIRST_CARD.equals(snapshot.purchaseMode());
-        boolean completed = ObjectUtil.equals(order.getOrderStatus(), TradeEnum.OrderStatus.FINISHED.getValue());
-        requireCardTiming(order, purchase, completed);
+        boolean creditedLifecycle = isCreditedLifecycle(order.getOrderStatus());
+        requireCardTiming(order, purchase, creditedLifecycle);
 
         WsPayment payment = requirePayment(order, snapshot);
         List<WsPaymentEvent> events = safe(identityMapper
                 .selectEventsByOrderNoIncludingDeleted(order.getOrderNo()));
         requireEvents(order, payment, events);
         List<WsWalletFlow> flows = safe(identityMapper
-                .selectFlowsByOrderIdIncludingDeleted(order.getId()));
+                .selectFlowsByOrderIdIncludingDeleted(order.getId())).stream()
+                .filter(flow -> ObjectUtil.equals(flow.getFlowType(), CARD_FLOW_RECHARGE))
+                .toList();
 
         MiniRechargeDetailVo result = baseDetail(snapshot, payment, events);
         WsWalletFlow flow = requireFlow(order, payment, events, flows, credit, purchase);
@@ -72,7 +75,8 @@ public class RechargeDetailVerifier {
                     .setFlowAmountAfter(flow.getAmountAfter())
                     .setFlowMlAfter(flow.getMlAfter());
         }
-        if (purchase && !completed) {
+        refundEvidenceVerifier.requireIfRefunded(order);
+        if (purchase && !creditedLifecycle) {
             return result;
         }
 
@@ -180,7 +184,7 @@ public class RechargeDetailVerifier {
         if (!state.ok()) {
             throw new JbkException("充值状态证据不一致：" + state.reason());
         }
-        if (!ObjectUtil.equals(order.getOrderStatus(), RechargePayStatus.ORDER_FINISHED)) {
+        if (!isCreditedLifecycle(order.getOrderStatus())) {
             return null;
         }
         WsWalletFlow flow = flows.get(0);
@@ -200,6 +204,11 @@ public class RechargeDetailVerifier {
             throw new JbkException("首次购卡流水 AFTER 与零初始权益不一致");
         }
         return flow;
+    }
+
+    private boolean isCreditedLifecycle(Integer status) {
+        return ObjectUtil.equals(status, TradeEnum.OrderStatus.FINISHED.getValue())
+                || RechargeRefundEvidenceVerifier.isRefundedStatus(status);
     }
 
     private WsCard requireCard(WsOrder order, RechargeSnapshot.Parsed snapshot, boolean purchase) {

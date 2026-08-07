@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 三照签收单个照片位（D04）：仅调用 uni.chooseImage 记录本地临时路径；
- * Mock 构建最多到 mock-recorded（蓝图 9.5 图片状态），不宣称云端上传成功；
+ * Mock 构建最多到 mock-recorded，不宣称云端上传成功；
  * delivery 接真构建由页面传入 recordedTag（提交时统一上传为受控媒体）。
  */
 withDefaults(
@@ -10,10 +10,10 @@ withDefaults(
     modelValue: string
     /** 提交前置校验时高亮缺失位（D04：三照缺一不可）。 */
     missing?: boolean
-    /** 已选照片的状态标签文案；缺省为 Mock 边界口径。 */
+    /** 已选照片的状态标签文案；缺省为「未上传」（mock 回落态，页面通常各自传入）。 */
     recordedTag?: string
   }>(),
-  { recordedTag: 'mock-recorded（未上传云端）' },
+  { recordedTag: '未上传' },
 )
 
 const emit = defineEmits<{
@@ -34,7 +34,7 @@ function choosePhoto() {
       }
     },
     fail: () => {
-      // 取消选择或授权失败：停留当前状态，不伪造已选结果（蓝图 9.5 微信能力状态）。
+      // 取消选择或授权失败：停留当前状态，不伪造已选结果。
     },
   })
 }

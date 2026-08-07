@@ -1,5 +1,6 @@
 package com.jbk.serve.service.mini.recharge.impl;
 
+import com.jbk.tool.utils.DateUtils;
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.StrUtil;
 import com.jbk.serve.mapper.trade.RechargeCreditMapper;
@@ -14,8 +15,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 
 /** L2 v2 §6.5：失败后重新锁定现状，绝不沿用失败事务的对象。 */
 @Slf4j
@@ -23,7 +22,6 @@ import java.time.format.DateTimeFormatter;
 @RequiredArgsConstructor
 public class RechargeCreditFailureTxImpl implements IRechargeCreditFailureTx {
 
-    private static final DateTimeFormatter TIME = com.jbk.tool.utils.DateUtils.COMPACT_FORMATTER;
     private static final int ORDER_PAID = 2;
     private static final int ORDER_FINISHED = 4;
     private static final int PAY_SUCCESS = 2;
@@ -88,7 +86,7 @@ public class RechargeCreditFailureTxImpl implements IRechargeCreditFailureTx {
                 throw new JbkException("支付事实组含不可覆盖的失败状态：" + expected);
             }
             int changed = retryable
-                    ? mapper.markEventRetryWait(row.getId(), expected, plusSeconds(now, 60), reason, now)
+                    ? mapper.markEventRetryWait(row.getId(), expected, DateUtils.plusSeconds(now, 60), reason, now)
                     : mapper.markEventReconciliation(row.getId(), expected, reason, now);
             if (changed != 1) {
                 throw new JbkException("支付事实组失败落痕影响行数异常");
@@ -135,11 +133,4 @@ public class RechargeCreditFailureTxImpl implements IRechargeCreditFailureTx {
                 && StrUtil.equals(row.getPaySuccessTime(), payment.getPaySuccessTime());
     }
 
-    private String plusSeconds(String value, long seconds) {
-        try {
-            return LocalDateTime.parse(value, TIME).plusSeconds(seconds).format(TIME);
-        } catch (RuntimeException e) {
-            throw new JbkException("业务时间格式非法，无法安排重试");
-        }
-    }
 }

@@ -36,16 +36,16 @@
             size="small"
             effect="plain"
           >
-            快照数据异常，禁止按页面推算权益
+            数据异常
           </ElTag>
-          <template v-else>未记录套餐快照</template>
+          <template v-else>未记录</template>
         </ElDescriptionsItem>
         <ElDescriptionsItem label="授权范围">
           <ElTag v-if="scopeContract.scopeType === 'all'" type="success" size="small">
-            已显式配置：全场通用
+            全场通用
           </ElTag>
           <ElTag v-else-if="scopeContract.scopeType === 'unconfigured'" type="warning" size="small">
-            未配置，默认拒绝
+            未配置，不可用卡
           </ElTag>
           <template v-else>{{ scopeContract.scopeText }}</template>
         </ElDescriptionsItem>
@@ -84,36 +84,6 @@
         description="暂无授权成员"
         :image-size="60"
       />
-
-      <div class="mt-5 mb-2 font-medium">刷卡授权与离线策略（REQ-074 / REQ-075）</div>
-      <ElAlert
-        class="mb-3"
-        type="info"
-        :closable="false"
-        show-icon
-        title="PC 只维护授权规则；设备发起请求，平台返回允许或拒绝"
-        description="当前设备协议和实体卡离线缓存能力尚未确认，因此 Demo 不提供模拟刷卡按钮，也不产生余额或水量扣减。"
-      />
-      <ElDescriptions :column="1" border label-width="116px">
-        <ElDescriptionsItem label="在线授权">
-          <ElTag type="success" size="small">默认强制</ElTag>
-          设备上报卡号、设备、出水口、请求时间和计划水量
-        </ElDescriptionsItem>
-        <ElDescriptionsItem label="离线策略">
-          <ElTag type="warning" size="small">默认拒绝</ElTag>
-          白名单、单次限额、日限额待设备厂协议确认后启用
-        </ElDescriptionsItem>
-        <ElDescriptionsItem label="校验顺序">
-          卡状态 → 有效期 → 授权成员 → 使用范围 → 单日限额 → 余额/水量 → 设备状态
-        </ElDescriptionsItem>
-        <ElDescriptionsItem label="拒绝原因">
-          CARD_FROZEN / CARD_EXPIRED / SCOPE_MISMATCH / DAILY_LIMIT / INSUFFICIENT_BALANCE /
-          DEVICE_OFFLINE
-        </ElDescriptionsItem>
-        <ElDescriptionsItem label="补传幂等">
-          离线记录必须携带 msgId；平台按唯一键去重，不得重复扣减
-        </ElDescriptionsItem>
-      </ElDescriptions>
     </div>
   </ElDrawer>
 </template>
@@ -178,7 +148,7 @@
   /** 授权范围合同：空值必须 fail-closed；只有 scopeType=all 才表示全场。 */
   const scopeContract = computed(() => {
     if (!detail.value.scopeJson) {
-      return { scopeType: 'unconfigured', scopeText: '未配置授权范围，默认拒绝用卡' }
+      return { scopeType: 'unconfigured', scopeText: '未配置授权范围，不可用卡' }
     }
     try {
       const scope = JSON.parse(detail.value.scopeJson) as {
@@ -206,10 +176,10 @@
       ].filter(Boolean)
       return {
         scopeType: scope.scopeType || 'specified',
-        scopeText: parts.join('；') || '指定范围内容为空，默认拒绝用卡'
+        scopeText: parts.join('；') || '范围为空，不可用卡'
       }
     } catch {
-      return { scopeType: 'invalid', scopeText: '范围配置格式异常，需运营复核' }
+      return { scopeType: 'invalid', scopeText: '范围配置异常，不可用卡' }
     }
   })
 

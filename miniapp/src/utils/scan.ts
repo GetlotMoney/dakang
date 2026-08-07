@@ -1,53 +1,60 @@
 import type { ScanSession } from '@/api/device'
 import { deviceApi } from '@/api/device'
-import { apiMode } from '@/api/runtime'
 import { ContractError } from '@/api/common'
 
-/**
- * Mock 扫码适配器的固定样例码（蓝图 S03/S04）：
- * 覆盖可用、第二水种、离线故障、过期码与无效码五类入口，保证阻断分支可复现。
- * 原始二维码只在适配器内部消费，不进入路由、日志或可复制文本。
- */
-const MOCK_SCAN_OPTIONS: { label: string, code: string }[] = [
-  { label: '光谷1号机 · 1号口（纯净水，在线）', code: 'DK-QR-DEV0001-O1' },
-  { label: '光谷1号机 · 2号口（矿物质水，在线）', code: 'DK-QR-DEV0001-O2' },
-  { label: '南湖1号机（离线故障样例）', code: 'DK-QR-DEV0002-O1' },
-  { label: '万能码（选择流程待定型）', code: 'DK-QR-UNIVERSAL-001' },
-  { label: '已过期二维码（阻断样例）', code: 'DK-QR-EXPIRED' },
-  { label: '无效二维码（阻断样例）', code: 'INVALID-CODE' },
-]
+/** 用户主动取消（而非调用失败）的标记：调用方据此静默返回，不弹错误提示。 */
+const USER_CANCELED = Symbol('scan-canceled')
+type ScanOutcome = string | typeof USER_CANCELED
 
-function pickMockCode(): Promise<string | null> {
-  return new Promise((resolve) => {
-    uni.showActionSheet({
-      alertText: '模拟扫码（开发适配器）',
-      itemList: MOCK_SCAN_OPTIONS.map(item => item.label),
-      success: result => resolve(MOCK_SCAN_OPTIONS[result.tapIndex]?.code ?? null),
-      fail: () => resolve(null),
-    })
-  })
+/** 平台回调 errMsg 含 cancel/取消 即用户主动放弃，其余一律按失败处理。 */
+function isUserCancel(errMsg?: string): boolean {
+  const msg = String(errMsg ?? '')
+  return msg.includes('cancel') || msg.includes('取消')
 }
 
-function scanRealCode(): Promise<string | null> {
-  return new Promise((resolve) => {
+/**
+ * 真实扫码：调起微信扫一扫。
+ *
+ * <p>onlyFromCamera=false 允许从相册选图——真机现场没有实体码时可先把码存成图片再扫；
+ * 微信开发者工具点击后弹出工具自带的模拟扫码窗口，可直接粘贴码值联调。</p>
+ *
+ * <p>取消与失败必须分开：取消是正常动线（用户点返回），失败要让用户看见
+ * （未授权相机、平台不支持等）。二者都静默返回 null，按钮就表现为「点了没反应」。</p>
+ */
+function scanRealCode(): Promise<ScanOutcome> {
+  return new Promise((resolve, reject) => {
     uni.scanCode({
       onlyFromCamera: false,
-      success: result => resolve(result.result ?? null),
-      fail: () => resolve(null),
+      scanType: ['qrCode', 'barCode'],
+      success: (result) => {
+        const raw = String(result.result ?? '').trim()
+        if (!raw) {
+          reject(new ContractError('SCAN_FAILED', '未识别到二维码内容，请对准设备上的取水码重试'))
+          return
+        }
+        resolve(raw)
+      },
+      fail: (error) => {
+        if (isUserCancel(error?.errMsg)) {
+          resolve(USER_CANCELED)
+          return
+        }
+        reject(new ContractError('SCAN_FAILED', `无法调起扫码：${error?.errMsg ?? '请检查相机权限后重试'}`))
+      },
     })
   })
 }
 
 /**
  * U01 原位扫码入口（扫码不占独立路由）：
- * 取消/未选择返回 null，解析失败抛 ContractError 由调用方原位提示；
+ * 用户取消返回 null，其余失败一律抛 ContractError 由调用方原位提示；
  * 成功返回短期扫码会话，页面凭 scanSessionId 进入 U04。
  */
 export async function scanWaterCode(): Promise<ScanSession | null> {
-  // TODO(方案A真机)：真扫码接入时改按 device 域判定（不用全局 apiMode，否则全局翻 real 会牵连其它域）；
-  // 当前全局 mock 下走样例选择器取码 + device real 适配器解析，是 L1a 方案 B 的 dev 桥接。
-  const rawCode = apiMode === 'real' ? await scanRealCode() : await pickMockCode()
-  if (rawCode === null) {
+  // 恒走真实扫码（mock 样例选择器已随 Mock 期结束退役）：
+  // 微信开发者工具会弹自带的模拟扫码窗，可直接粘贴种子码值联调；真机扫测试码图片。
+  const rawCode = await scanRealCode()
+  if (rawCode === USER_CANCELED) {
     return null
   }
   try {

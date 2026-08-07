@@ -16,13 +16,11 @@ import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
 import EvidencePicker from '@/components/evidence-picker.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
-import { taskDepartConfirmMsg } from '@/components/runtime-notice'
 import {
   APPEAL_STATUS_LABELS,
   APPEAL_STATUS_TONES,
   formatBizTime,
   TASK_STATUS_LABELS,
-  TASK_STATUS_TONES,
 } from '@/utils/format'
 import { backOr, goTo } from '@/utils/navigation'
 
@@ -88,7 +86,7 @@ onShow(refresh)
 
 async function refresh() {
   if (!taskNo.value) {
-    errorMessage.value = '缺少任务参数 taskNo'
+    errorMessage.value = '无法识别该任务，请返回任务列表重新打开'
     status.value = 'error'
     return
   }
@@ -103,7 +101,7 @@ async function refresh() {
     status.value = 'ready'
   }
   catch (error) {
-    // TASK_NOT_FOUND / TASK_ACCESS_DENIED 等按契约原因展示错误态，不白屏（蓝图 9.5 详情状态）。
+    // TASK_NOT_FOUND / TASK_ACCESS_DENIED 等按契约原因展示错误态，不白屏。
     task.value = null
     errorMessage.value = error instanceof ContractError ? error.message : '任务详情加载失败'
     status.value = 'error'
@@ -150,7 +148,7 @@ function handleAccept() {
   }
   confirmThenAct(
     '确认接单',
-    `接单后由您负责任务 ${current.taskNo} 的配送履约；服务端将再次校验非本人下单、服务范围与任务版本。`,
+    `接单后由您负责配送任务 ${current.taskNo}。`,
     async () => {
       await deliveryApi.acceptTask(current.taskNo, current.version)
     },
@@ -162,10 +160,10 @@ function handleAdvance(targetStatus: 3 | 4) {
   if (!current) {
     return
   }
-  // 离站口径按 delivery 模式取自 runtime-notice：real 由服务端记录离站时间且不采集定位，mock 保持原型快照口径。
+  // 离站时间由服务端在收到确认时记录；当前版本不采集定位与轨迹。
   const copy = targetStatus === 3
-    ? { title: '确认离站', msg: taskDepartConfirmMsg(currentMode('delivery')) }
-    : { title: '确认送达', msg: '确认已送达收货地址？送达后需在三照签收页完成签收确认。' }
+    ? { title: '确认离站', msg: '确认已从水站取水出发？' }
+    : { title: '确认送达', msg: '确认已送达收货地址？' }
   confirmThenAct(copy.title, copy.msg, async () => {
     await deliveryApi.advanceTask(current.taskNo, targetStatus, current.version)
   })
@@ -173,7 +171,7 @@ function handleAdvance(targetStatus: 3 | 4) {
 
 function handleCall() {
   // 两种模式都不拨真实电话（记录仅保存脱敏号），不冠以「原型」以免在 real 构建下误标。
-  toast.show('不拨打真实电话，仅展示脱敏号码')
+  toast.show('暂不支持拨打电话')
 }
 
 async function handleAppendEvidence() {
@@ -189,7 +187,7 @@ async function handleAppendEvidence() {
   try {
     await message.confirm({
       title: '提交申诉举证',
-      msg: '举证材料将与三照一并交由 PC 运营核验，小程序只消费裁决结果。确认提交？',
+      msg: '举证提交后无法修改。确认提交？',
     })
   }
   catch {
@@ -252,12 +250,18 @@ async function handleAppendEvidence() {
             <view class="status-title">
               {{ TASK_STATUS_LABELS[task.taskStatus] }}
             </view>
-            <wd-tag :type="TASK_STATUS_TONES[task.taskStatus]" plain>
-              状态版本 v{{ task.version }}
-            </wd-tag>
+            <view class="status-tags">
+              <!-- 补送任务标识（E2E-04 包C）：服务端标明才显示；补送单不产生二次收款 -->
+              <wd-tag v-if="task.isResend" type="primary" plain>
+                补送
+              </wd-tag>
+            </view>
           </view>
           <view class="muted-text">
             {{ task.taskNo }} · {{ task.stationName }}
+          </view>
+          <view v-if="task.isResend" class="muted-text">
+            补送单不向用户收款。
           </view>
         </wd-card>
       </view>
@@ -271,7 +275,7 @@ async function handleAppendEvidence() {
         <wd-card custom-class="detail-card">
           <template #title>
             <view class="card-title-row">
-              <view>申诉处理（等待运营裁决）</view>
+              <view>申诉处理</view>
               <wd-tag v-if="focusAppeal" type="danger" plain>
                 消息定位
               </wd-tag>
@@ -305,7 +309,7 @@ async function handleAppendEvidence() {
                   {{ item.description }}
                 </view>
                 <view class="muted-text">
-                  {{ formatBizTime(item.time) }} · 凭证 {{ item.evidenceRefs.length }} 张{{ isDeliveryReal ? '（受控媒体）' : '（mock-recorded）' }}
+                  {{ formatBizTime(item.time) }} · 凭证 {{ item.evidenceRefs.length }} 张
                 </view>
               </view>
             </view>
@@ -321,7 +325,7 @@ async function handleAppendEvidence() {
                 auto-height
                 placeholder="请说明配送过程与证据情况（必填）"
               />
-              <EvidencePicker v-model="evidenceModel.photos" domain="delivery" />
+              <EvidencePicker v-model="evidenceModel.photos" />
               <wd-button
                 block
                 :loading="evidenceSubmitting"
@@ -368,7 +372,7 @@ async function handleAppendEvidence() {
 
       <view class="page-section">
         <!-- D-214 展示分流：payWay=3 呈现「水量抵扣 X L + 配送费」，不把 0 元水费渲染成免费 -->
-        <wd-cell-group title="价格快照" border>
+        <wd-cell-group title="费用明细" border>
           <wd-cell
             v-for="line in deliveryPriceLines(task)"
             :key="line.label"
@@ -388,18 +392,6 @@ async function handleAppendEvidence() {
               :description="node.time ? formatBizTime(node.time) : '待推进'"
             />
           </wd-steps>
-          <view class="muted-text location-row">
-            <wd-icon name="location" size="14px" />
-            <view>
-              {{ task.locationStatus === 'prototype-snapshot'
-                ? '定位：确定性原型快照（固定坐标，不绘制轨迹）'
-                : task.locationStatus === 'recorded'
-                  ? '定位：已随三照记录'
-                  : isDeliveryReal
-                    ? '定位：未记录（定位采集未接入，不作虚假声明）'
-                    : '定位：未记录（签收时以原型快照记录；外部快照未含定位）' }}
-            </view>
-          </view>
         </wd-card>
       </view>
 
@@ -427,13 +419,8 @@ async function handleAppendEvidence() {
                 {{ formatBizTime(photo.time) }}
               </view>
               <view v-if="photo.latitude !== undefined && photo.longitude !== undefined" class="muted-text">
-                坐标 {{ photo.latitude }}, {{ photo.longitude }}{{ photo.evidenceMode === 'real' ? '' : '（原型快照）' }}
+                坐标 {{ photo.latitude }}, {{ photo.longitude }}
               </view>
-              <wd-tag :type="photo.evidenceMode === 'real' ? 'success' : 'warning'" plain>
-                {{ photo.evidenceMode === 'prototype'
-                  ? 'mock-recorded（未上传云端）'
-                  : photo.evidenceMode === 'real' ? '受控媒体已记录' : '外部快照' }}
-              </wd-tag>
             </view>
           </view>
           <view v-if="task.signTime" class="muted-text">
@@ -461,13 +448,13 @@ async function handleAppendEvidence() {
               {{ record.description }}
             </view>
             <view class="muted-text">
-              凭证 {{ record.evidenceRefs.length }} 张{{ isDeliveryReal ? '（受控媒体）' : '（mock-recorded）' }}
+              凭证 {{ record.evidenceRefs.length }} 张
             </view>
           </view>
         </wd-card>
       </view>
 
-      <!-- 动作区：按状态渲染唯一主动作，每次只推进一个状态，无跳步按钮（蓝图 §10 D03）；
+      <!-- 动作区：按状态渲染唯一主动作，每次只推进一个状态，无跳步按钮；
            可用性判定统一走契约纯函数，与包A 服务端拒因同源，页面不写第二份状态规则 -->
       <view v-if="canAcceptDeliveryTask(task)" class="page-section">
         <wd-button block size="large" :loading="acting" @click="handleAccept">
@@ -542,18 +529,17 @@ async function handleAppendEvidence() {
   font-weight: 600;
 }
 
+.status-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .phone-value {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-}
-
-.location-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 10px;
 }
 
 .block-subtitle {

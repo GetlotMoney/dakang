@@ -103,7 +103,7 @@ onLoad((query) => {
   cardId.value = query?.cardId ?? ''
   memberId.value = query?.memberId ?? ''
   if (!cardId.value) {
-    loadError.value = '缺少必填参数 cardId，无法进入成员授权'
+    loadError.value = '未指定水卡，无法进入成员授权'
     loading.value = false
     return
   }
@@ -172,7 +172,7 @@ async function handleRevoke() {
   try {
     await message.confirm({
       title: '撤销授权',
-      msg: `撤销后「${editingMember.value.memberName}」将失去本卡取水授权；仅更新平台契约，不写入设备白名单。`,
+      msg: `撤销后「${editingMember.value.memberName}」将失去本卡取水授权。`,
     })
   }
   catch {
@@ -196,7 +196,7 @@ async function handleRevoke() {
     <AppNavbar title="成员授权" back-to="U11" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice />
+    <AppPrototypeNotice domain="card" />
 
     <template v-if="loadError">
       <view class="page-section">
@@ -224,7 +224,7 @@ async function handleRevoke() {
         </wd-tag>
       </view>
       <view v-if="editingMember" class="muted-text form-hint">
-        契约仅返回脱敏手机号（{{ editingMember.maskedPhone }}），保存修改需重新填写完整手机号。
+        保存修改需重新填写完整手机号。
       </view>
 
       <view class="page-section">
@@ -294,10 +294,6 @@ async function handleRevoke() {
           撤销授权
         </wd-button>
       </view>
-
-      <view class="muted-text boundary-note">
-        成员授权只影响平台契约：不写入设备白名单，设备端离线授权不在本期范围；手机号提交后接口返回脱敏值。
-      </view>
     </template>
   </view>
 </template>
@@ -323,12 +319,6 @@ async function handleRevoke() {
 
 .form-hint {
   margin-top: 8px;
-  padding: 0 4px;
-  line-height: 1.6;
-}
-
-.boundary-note {
-  margin-top: 16px;
   padding: 0 4px;
   line-height: 1.6;
 }

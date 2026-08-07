@@ -1,5 +1,7 @@
 package com.jbk.serve.service.delivery.impl;
 
+import com.jbk.serve.service.aftersale.impl.ResendFulfillmentTxServiceImpl;
+import com.jbk.serve.service.aftersale.IResendFulfillmentTxService;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.jbk.serve.mapper.delivery.WsDeliveryAppealMapper;
 import com.jbk.serve.mapper.delivery.WsDeliveryAutoRuleMapper;
@@ -10,10 +12,17 @@ import com.jbk.serve.mapper.message.WsMessageMapper;
 import com.jbk.serve.mapper.ops.WsDomainEventMapper;
 import com.jbk.serve.mapper.product.WsWaterTypeMapper;
 import com.jbk.serve.mapper.station.WsStationMapper;
+import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
+import com.jbk.serve.mapper.aftersale.WsEntitlementAllocationMapper;
 import com.jbk.serve.mapper.trade.TradeCardMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.mapper.trade.WsWalletFlowMapper;
 import com.jbk.serve.mapper.user.WsCourierMapper;
+import com.jbk.serve.mapper.aftersale.WsAfterSaleActionMapper;
+import com.jbk.serve.service.aftersale.batch.EntitlementFixture;
+import com.jbk.serve.service.aftersale.batch.EntitlementLedger;
+import com.jbk.serve.service.aftersale.IAfterSaleActionTxService;
+import com.jbk.serve.service.aftersale.impl.AfterSaleActionTxServiceImpl;
 import com.jbk.serve.service.delivery.DeliveryClock;
 import com.jbk.serve.service.delivery.DeliveryMediaStore;
 import com.jbk.serve.service.delivery.IDeliveryAppealTxService;
@@ -208,6 +217,26 @@ class DeliveryFulfillmentTxDbTest {
             return mapper(WsDomainEventMapper.class, t);
         }
 
+        @Bean
+        MapperFactoryBean<WsCardEntitlementBatchMapper> wsCardEntitlementBatchMapper(SqlSessionTemplate t) {
+            // 包D-4：配送创单扣减同事务写权益分摊，故本上下文必须提供这两个 Mapper
+            return mapper(WsCardEntitlementBatchMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<WsEntitlementAllocationMapper> wsEntitlementAllocationMapper(SqlSessionTemplate t) {
+            return mapper(WsEntitlementAllocationMapper.class, t);
+        }
+
+        @Bean
+        EntitlementLedger entitlementLedger(WsCardEntitlementBatchMapper batchMapper,
+                                            WsEntitlementAllocationMapper allocationMapper,
+                                            TradeCardMapper tradeCardMapper,
+                                            WsWalletFlowMapper walletFlowMapper) {
+            // 真实台账而不是 Mock：分摊要摊到真表上，才验证得了「卡扣了、批次也扣了」
+            return new EntitlementLedger(batchMapper, allocationMapper, tradeCardMapper, walletFlowMapper);
+        }
+
         private static <M> MapperFactoryBean<M> mapper(Class<M> type, SqlSessionTemplate template) {
             MapperFactoryBean<M> bean = new MapperFactoryBean<>(type);
             bean.setSqlSessionTemplate(template);
@@ -248,6 +277,18 @@ class DeliveryFulfillmentTxDbTest {
         }
 
         @Bean
+        com.jbk.serve.service.settlement.IInviteService inviteService() {
+            // E2E-08 归因快照协作方：mock 恒返回 null 推荐人，归因行为由 AttributionDbTest 锁定
+            return org.mockito.Mockito.mock(com.jbk.serve.service.settlement.IInviteService.class);
+        }
+
+        @Bean
+        com.jbk.serve.service.settlement.ISplitService splitService() {
+            // E2E-08 完成挂点协作方：本类锁既有资金事实，分账行为由 SettlementDbTest 用真库锁定
+            return org.mockito.Mockito.mock(com.jbk.serve.service.settlement.ISplitService.class);
+        }
+
+        @Bean
         IDeliveryOrderService deliveryOrderService() {
             return new DeliveryOrderServiceImpl();
         }
@@ -255,6 +296,37 @@ class DeliveryFulfillmentTxDbTest {
         @Bean
         IDeliveryTaskTxService deliveryTaskTxService() {
             return new DeliveryTaskTxServiceImpl();
+        }
+
+        /**
+         * E2E-04 包C：签收事务在成功后会调用它把补送售后动作推成完成。
+         * 普通配送任务签收时它恒返回 false、不产生写入，但 Bean 必须存在——
+         * 缺它整个上下文起不来，这也正是本类此前一次性红掉 14 条的原因。
+         */
+        @Bean
+        IResendFulfillmentTxService resendFulfillmentTxService(WsAfterSaleActionMapper a,
+                                                               WsDeliveryAppealMapper ap,
+                                                               WsDeliveryTaskMapper t,
+                                                               WsOrderMapper o) {
+            return new ResendFulfillmentTxServiceImpl(a, ap, t, o);
+        }
+
+        @Bean
+        MapperFactoryBean<WsAfterSaleActionMapper> wsAfterSaleActionMapper(SqlSessionTemplate t) {
+            return mapper(WsAfterSaleActionMapper.class, t);
+        }
+
+        @Bean
+        IAfterSaleActionTxService afterSaleActionTxService(WsAfterSaleActionMapper actionMapper,
+                                                          WsOrderMapper orderMapper,
+                                                          TradeCardMapper tradeCardMapper,
+                                                          WsWalletFlowMapper walletFlowMapper,
+                                                          IWsDomainEventService domainEventService,
+                                                          EntitlementLedger entitlementLedger) {
+            // 真实现而非 mock：裁决登记的待执行动作要真的撞到 uk_after_sale_source，
+            // 幂等与「同事务回滚一并消失」这两条性质 mock 证不了
+            return new AfterSaleActionTxServiceImpl(actionMapper, orderMapper, tradeCardMapper,
+                    walletFlowMapper, domainEventService, entitlementLedger);
         }
 
         @Bean
@@ -291,6 +363,8 @@ class DeliveryFulfillmentTxDbTest {
                 + "VALUES(?,?,1,2,1)", WATER_TYPE_ID, "纯净水");
         jdbc.update("INSERT INTO ws_card(ID,DATA_STATUS,CARD_NO,CARD_TYPE,USER_ID,BALANCE_AMOUNT,BALANCE_ML,"
                 + "CARD_STATUS) VALUES(?,0,'VC-TEST-100',1,?,?,0,1)", CARD_ID, USER_ID, BALANCE_FEN);
+        // 包D-4：卡是裸 INSERT，补历史聚合批次；创单扣减会从它摊走额度，返还再回补进来
+        EntitlementFixture.seedLegacyBatch(jdbc, CARD_ID, USER_ID, BALANCE_FEN, 0L);
         seedCourier(COURIER_USER, String.valueOf(STATION_ID), 2);
         seedCourier(FOREIGN_COURIER_USER, String.valueOf(STATION_ID), 2);
     }
@@ -743,20 +817,24 @@ class DeliveryFulfillmentTxDbTest {
                 () -> appealService.createAppeal(appealBo(task, signed), USER_ID, inWindow));
         assertEquals(1, count("ws_delivery_appeal"));
 
-        // 裁决只允许 3/5/2
-        DeliveryAppealDecideBo bad = decideBo(appeal.getId(), 4, "撤销不属于裁决结果");
+        // 策略码白名单：字典外的码一律拒绝，绝不当作 REJECT 兜底
+        DeliveryAppealDecideBo bad = decideBo(appeal.getId(), "WITHDRAW", null, "撤销不属于裁决策略");
         assertThrows(JbkException.class, () -> appealService.decideAppeal(bad, 1L, DateUtils.time()));
-        DeliveryAppealDecideBo pendingBack = decideBo(appeal.getId(), 1, "回到待处理非法");
+        DeliveryAppealDecideBo pendingBack = decideBo(appeal.getId(), "product_only", 1, "大小写不符也拒绝");
         assertThrows(JbkException.class, () -> appealService.decideAppeal(pendingBack, 1L, DateUtils.time()));
-        DeliveryAppealDecideBo noReason = decideBo(appeal.getId(), 3, "  ");
+        DeliveryAppealDecideBo noReason = decideBo(appeal.getId(), "REJECT", null, "  ");
         assertThrows(JbkException.class, () -> appealService.decideAppeal(noReason, 1L, DateUtils.time()));
+        // 数量越界：QUANTITY 的上界是「计划−实收」，越界拒绝且本事务零写入
+        DeliveryAppealDecideBo tooMany = decideBo(appeal.getId(), "PRODUCT_ONLY", 999, "批准数量越界");
+        assertThrows(JbkException.class, () -> appealService.decideAppeal(tooMany, 1L, DateUtils.time()));
 
         long flowsBefore = count("ws_wallet_flow");
         long balanceBefore = jdbc.queryForObject("SELECT BALANCE_AMOUNT FROM ws_card WHERE ID=?",
                 Long.class, CARD_ID);
 
-        // 资金补偿裁决：只落「成立待补偿」，绝不写退款成功/入账（规则18）
-        assertTrue(appealService.decideAppeal(decideBo(appeal.getId(), 2, "核实少送一桶，转资金补偿待处理"),
+        // 资金补偿裁决：只落「成立待补偿」+ 一条待执行售后动作，绝不写退款成功/入账（规则18）
+        assertTrue(appealService.decideAppeal(
+                decideBo(appeal.getId(), "PRODUCT_ONLY", 1, "核实少送一桶，转资金补偿待处理"),
                 1L, DateUtils.time()));
         assertEquals(2, jdbc.queryForObject("SELECT APPEAL_STATUS FROM ws_delivery_appeal WHERE ID=?",
                 Integer.class, appeal.getId()));
@@ -766,10 +844,14 @@ class DeliveryFulfillmentTxDbTest {
         assertEquals(flowsBefore, count("ws_wallet_flow"), "裁决不产生任何资金流水");
         assertEquals(balanceBefore, jdbc.queryForObject("SELECT BALANCE_AMOUNT FROM ws_card WHERE ID=?",
                 Long.class, CARD_ID), "裁决不动卡余额");
+        assertEquals(1, count("ws_after_sale_action"), "资金策略裁决登记恰一条待执行售后动作");
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT ACTION_STATUS FROM ws_after_sale_action WHERE ORDER_ID=?",
+                Integer.class, signed.getOrderId()), "售后动作只到待执行，裁决事务不执行返还");
 
         // 重复裁决：拒
-        assertThrows(JbkException.class,
-                () -> appealService.decideAppeal(decideBo(appeal.getId(), 3, "再裁一次"), 1L, DateUtils.time()));
+        assertThrows(JbkException.class, () -> appealService.decideAppeal(
+                decideBo(appeal.getId(), "REJECT", null, "再裁一次"), 1L, DateUtils.time()));
 
         // 裁决后活动位释放：窗口内可再次申诉（生成列唯一键只约束活动申诉）
         WsDeliveryAppeal second = appealService.createAppeal(appealBo(task, signed), USER_ID,
@@ -778,10 +860,16 @@ class DeliveryFulfillmentTxDbTest {
         assertEquals(2, count("ws_delivery_appeal"));
     }
 
-    private DeliveryAppealDecideBo decideBo(Long appealId, int outcome, String result) {
+    /**
+     * 裁决入参只有策略码一个真相源（E2E-04 R0-2）：申诉终态由 AfterSaleStrategy.deriveOutcome 派生，
+     * Bo 上不再有 outcome。数量对 REJECT 无意义，传 null。
+     */
+    private DeliveryAppealDecideBo decideBo(Long appealId, String strategyCode, Integer approvedCount,
+                                            String result) {
         DeliveryAppealDecideBo bo = new DeliveryAppealDecideBo();
         bo.setAppealId(String.valueOf(appealId));
-        bo.setOutcome(outcome);
+        bo.setStrategyCode(strategyCode);
+        bo.setApprovedCount(approvedCount);
         bo.setHandleResult(result);
         return bo;
     }
@@ -799,7 +887,7 @@ class DeliveryFulfillmentTxDbTest {
         WsDeliveryAppeal appeal = appealService.createAppeal(appealBo(task, signed), USER_ID,
                 DeliveryClock.plusHours(signed.getSignTime(), 1));
         long orderId = signed.getOrderId();
-        DeliveryAppealDecideBo decide = decideBo(appeal.getId(), 2, "核实成立，转补偿待处理");
+        DeliveryAppealDecideBo decide = decideBo(appeal.getId(), "PRODUCT_ONLY", 1, "核实成立，转补偿待处理");
 
         // ① 订单缺失（逻辑删）：拒
         jdbc.update("UPDATE ws_order SET DATA_STATUS=1 WHERE ID=?", orderId);
@@ -962,7 +1050,7 @@ class DeliveryFulfillmentTxDbTest {
                 () -> appealService.listTaskExceptionsForCourier(task.getTaskNo(), FOREIGN_COURIER_USER));
 
         // 裁决后任务回 5：举证关闭
-        appealService.decideAppeal(decideBo(appeal.getId(), 3, "证据充分，驳回"), 1L, DateUtils.time());
+        appealService.decideAppeal(decideBo(appeal.getId(), "REJECT", null, "证据充分，驳回"), 1L, DateUtils.time());
         assertThrows(JbkException.class,
                 () -> appealService.appendCourierEvidence(second, COURIER_USER, DateUtils.time()));
     }

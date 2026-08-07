@@ -158,4 +158,8 @@ public class MiniDeliveryTaskVo implements Serializable {
         @Schema(description = "经度（定位已记录时存在）")
         private Double longitude;
     }
+
+    @Schema(description = "是否为补送任务（E2E-04 包C/包E）。由 ws_after_sale_action.RESULT_TASK_ID 反查得出，"
+            + "不是按「金额为 0 / 无回收桶」推断——那种推断会把任何零金额任务误标成补送")
+    private Boolean isResend;
 }

@@ -27,6 +27,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -97,17 +99,26 @@ public class DeviceUplinkHandlerImpl implements DeviceUplinkHandler {
     // ==================== 心跳（在线判定，REQ-028） ====================
 
     private void onHeartbeat(WsDevice device) {
-        boolean wasOffline = DeviceEnum.OnlineStatus.ONLINE.getValue() != device.getOnlineStatus();
-        String oldDesc = DeviceEnum.OnlineStatus.getType(device.getOnlineStatus()).getDesc();
+        String now = DateUtils.time();
+        // 心跳时间无条件刷新——它是离线扫描的判据，晚到的心跳也是真实心跳
         deviceService.update(Wrappers.lambdaUpdate(WsDevice.class)
                 .eq(WsDevice::getId, device.getId())
-                .set(WsDevice::getLastHeartbeat, DateUtils.time())
-                .set(WsDevice::getOnlineStatus, DeviceEnum.OnlineStatus.ONLINE.getValue()));
-        if (wasOffline) {
-            // 设备由离线或未激活转为在线时，记录状态事件并将离线告警推进至恢复终态。
+                .set(WsDevice::getLastHeartbeat, now));
+        // 转在线单独一条 CAS：WHERE 带前态，affected==1 的那一次心跳才是「恢复事件的赢家」。
+        // 此前无前态的写法与离线扫描互相覆盖——扫描判离线、心跳同时到达，两边都无条件写，
+        // 最终状态取决于谁后提交；且 wasOffline 取自事务外读到的旧行，会重复触发恢复事件。
+        // 恢复事件、离线告警恢复、ONLINE 状态由同一次 CAS 胜出方触发，三者天然同源。
+        int recovered = deviceService.getBaseMapper().update(null, Wrappers.lambdaUpdate(WsDevice.class)
+                .set(WsDevice::getOnlineStatus, DeviceEnum.OnlineStatus.ONLINE.getValue())
+                .set(WsDevice::getUpdateTime, now)
+                .eq(WsDevice::getId, device.getId())
+                .ne(WsDevice::getOnlineStatus, DeviceEnum.OnlineStatus.ONLINE.getValue()));
+        if (recovered == 1) {
+            String oldDesc = DeviceEnum.OnlineStatus.getType(device.getOnlineStatus()).getDesc();
             domainEventService.recordByDevice(OpsEnum.EventType.DEVICE_STATUS, device.getDeviceNo(),
                     oldDesc, DeviceEnum.OnlineStatus.ONLINE.getDesc());
-            alarmService.autoRecover(device.getId(), OpsEnum.AlarmType.DEVICE_OFFLINE);
+            // 心跳恢复只恢复离线告警（任务书 3.6）：故障/滤芯告警各有自己的恢复来源
+            alarmService.autoRecover(device.getId(), OpsEnum.AlarmType.DEVICE_OFFLINE, null);
         }
     }
 
@@ -117,26 +128,59 @@ public class DeviceUplinkHandlerImpl implements DeviceUplinkHandler {
         Integer runStatus = json.getInt("runStatus");
         // 非法状态值通过异常终止处理，并将消息状态记录为处理失败。
         DeviceEnum.RunStatus target = DeviceEnum.RunStatus.getType(runStatus);
-        String faultCode = json.getStr("faultCode");
+        String statusTime = requireDeviceTime(json.getStr("ts"));
+        String reportedFaultCode = StrUtil.trim(json.getStr("faultCode"));
+        boolean faultState = target == DeviceEnum.RunStatus.FAULT;
+        if (!faultState && StrUtil.isNotBlank(reportedFaultCode)) {
+            // 运行态与故障码必须表达同一事实，否则 DeviceAvailability 会把“空闲+故障码”误判为可用。
+            throw new IllegalArgumentException("非故障运行状态不得携带故障码");
+        }
+        // 设备明确上报故障却未给出厂商码时，仍以 UNKNOWN 形成阻断投影和高风险告警，不能静默放行。
+        String faultCode = faultState
+                ? StrUtil.blankToDefault(reportedFaultCode, "UNKNOWN")
+                : null;
+
+        int updated = deviceService.getBaseMapper().update(null, Wrappers.lambdaUpdate(WsDevice.class)
+                .eq(WsDevice::getId, device.getId())
+                .set(WsDevice::getRunStatus, runStatus)
+                .set(WsDevice::getLastFaultCode, faultCode)
+                .set(WsDevice::getLastStatusDeviceTime, statusTime)
+                // 状态补传必须服从设备时间。旧报文只保留原始消息证据，不得回滚当前运行投影。
+                .and(w -> w.isNull(WsDevice::getLastStatusDeviceTime)
+                        .or().le(WsDevice::getLastStatusDeviceTime, statusTime)));
+        if (updated == 0) {
+            domainEventService.recordByDevice(OpsEnum.EventType.DEVICE_STATUS, device.getDeviceNo(),
+                    null, "忽略早于当前设备状态的补传消息（deviceTime=" + statusTime + "）");
+            return;
+        }
 
         if (ObjectUtil.notEqual(device.getRunStatus(), runStatus)) {
             String oldDesc = DeviceEnum.RunStatus.getType(device.getRunStatus()).getDesc();
             domainEventService.recordByDevice(OpsEnum.EventType.DEVICE_STATUS, device.getDeviceNo(),
                     oldDesc, target.getDesc());
         }
-        deviceService.update(Wrappers.lambdaUpdate(WsDevice.class)
-                .eq(WsDevice::getId, device.getId())
-                .set(WsDevice::getRunStatus, runStatus)
-                .set(StrUtil.isNotBlank(faultCode), WsDevice::getLastFaultCode, faultCode));
+        if (StrUtil.isNotBlank(device.getLastFaultCode())
+                && !StrUtil.equals(device.getLastFaultCode(), faultCode)) {
+            // 恢复或切换到另一故障码时释放旧活动键，否则历史故障会永久挂在告警中心。
+            alarmService.autoRecover(device.getId(), OpsEnum.AlarmType.FAULT_CODE, device.getLastFaultCode());
+        }
 
         // 根据故障字典判定告警级别与下单阻断规则；取水链路读取同一字典生成用户提示。
         if (StrUtil.isNotBlank(faultCode)) {
-            WsFaultDict fault = faultDictMapper.selectOne(Wrappers.lambdaQuery(WsFaultDict.class)
-                    .eq(WsFaultDict::getFaultCode, faultCode).last("LIMIT 1"));
-            int level = ObjectUtil.isNotNull(fault) ? fault.getFaultLevel() : 2;
-            String faultName = ObjectUtil.isNotNull(fault) ? fault.getFaultName() : "未登记故障码";
-            boolean blockOrder = ObjectUtil.isNotNull(fault)
-                    && ApiEnum.Flag.YES.value() == fault.getBlockOrderFlag();
+            // 读全部有效行而不是 LIMIT 1：同码多条时任选一条，会把「一条严重阻断、一条提示不阻断」
+            // 静默压成不告警。0 行=未登记按高风险；多行=配置冲突同样按最高风险 fail-closed。
+            java.util.List<WsFaultDict> faults = faultDictMapper.selectByCodeForShare(faultCode);
+            boolean unknown = faults.isEmpty();
+            boolean conflict = faults.size() > 1;
+            WsFaultDict fault = unknown || conflict ? null : faults.get(0);
+            // 未登记故障码按未知高风险 fail-closed（任务书 3.6）：level=3 产告警并由
+            // 可用性策略阻断取水。兜底成 2 会让厂商新增故障码在字典跟上之前静默放行取水。
+            int level = ObjectUtil.isNotNull(fault) ? fault.getFaultLevel() : 3;
+            String faultName = ObjectUtil.isNotNull(fault) ? fault.getFaultName()
+                    : (conflict ? "故障码字典存在 " + faults.size() + " 条冲突配置（按高风险处理）"
+                            : "未登记故障码（按高风险处理）");
+            boolean blockOrder = ObjectUtil.isNull(fault)
+                    || ApiEnum.Flag.YES.value() == fault.getBlockOrderFlag();
             if (level >= 3 || blockOrder) {
                 alarmService.raise(device.getId(), OpsEnum.AlarmType.FAULT_CODE, level,
                         "设备上报故障 " + faultCode + "（" + faultName + "）"
@@ -148,12 +192,15 @@ public class DeviceUplinkHandlerImpl implements DeviceUplinkHandler {
     // ==================== 遥测（REQ-038/039 骨架） ====================
 
     private void onTelemetry(WsDevice device, JSONObject json) {
+        // 逐字段范围校验（任务书 5.3）：非法值置 NULL 而不是整条丢弃——一个坏字段
+        // 不该拖垮其余合法读数；置 NULL 后页面按「暂无数据」降级展示，绝不伪造数值。
+        // 上界防的是溢出/错单位（ppm 报成 ppb、温度报成毫度），负值只有信号强度合法。
         WsDeviceTelemetry telemetry = new WsDeviceTelemetry()
                 .setDeviceId(device.getId())
-                .setTdsValue(json.getInt("tds"))
-                .setRawTdsValue(json.getInt("rawTds"))
-                .setWaterTemp(json.getInt("waterTemp"))
-                .setSignalStrength(json.getInt("signal"))
+                .setTdsValue(sanitizeRange(json.getInt("tds"), 0, 10000))
+                .setRawTdsValue(sanitizeRange(json.getInt("rawTds"), 0, 10000))
+                .setWaterTemp(sanitizeRange(json.getInt("waterTemp"), -30, 100))
+                .setSignalStrength(sanitizeRange(json.getInt("signal"), -140, 0))
                 .setReportTime(StrUtil.blankToDefault(json.getStr("ts"), DateUtils.time()));
         JSONArray filterLife = json.getJSONArray("filterLife");
         if (ObjectUtil.isNotNull(filterLife)) {
@@ -165,6 +212,9 @@ public class DeviceUplinkHandlerImpl implements DeviceUplinkHandler {
             if (expired) {
                 alarmService.raise(device.getId(), OpsEnum.AlarmType.FILTER_EXPIRE, 1,
                         "设备滤芯已超期，请安排换芯", null);
+            } else if (!filterLife.isEmpty()) {
+                // 只有设备明确上报了至少一个滤芯且全部正常，才足以恢复此前的超期告警。
+                alarmService.autoRecover(device.getId(), OpsEnum.AlarmType.FILTER_EXPIRE, null);
             }
         }
         telemetryMapper.insert(telemetry);
@@ -175,6 +225,30 @@ public class DeviceUplinkHandlerImpl implements DeviceUplinkHandler {
         // TDS 告警阈值待甲方确认；当前阶段仅持久化遥测数据（REQ-038）。
     }
 
+    /** 遥测数值域校验：越界即 NULL（页面降级为"暂无数据"），绝不让脏值污染最新读数。 */
+    private Integer sanitizeRange(Integer value, int min, int max) {
+        if (value == null || value < min || value > max) {
+            return null;
+        }
+        return value;
+    }
+
+    /** 状态设备时间是乱序保护锚点；缺失或非法时拒绝处理，不能用服务器时间伪造设备先后顺序。 */
+    private String requireDeviceTime(String value) {
+        if (StrUtil.length(value) != 14) {
+            throw new IllegalArgumentException("状态报文 ts 必须为 yyyyMMddHHmmss");
+        }
+        try {
+            LocalDateTime parsed = LocalDateTime.parse(value, DateUtils.COMPACT_FORMATTER);
+            if (!value.equals(parsed.format(DateUtils.COMPACT_FORMATTER))) {
+                throw new DateTimeParseException("日期发生宽松归一化", value, 0);
+            }
+            return value;
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException("状态报文 ts 必须为合法 yyyyMMddHHmmss", e);
+        }
+    }
+
     // ==================== 指令回执 / 执行结果（REQ-032/033/034） ====================
 
     private void handleAck(WsDevice device, JSONObject json) {
@@ -182,7 +256,8 @@ public class DeviceUplinkHandlerImpl implements DeviceUplinkHandler {
         if (StrUtil.isBlank(cmdNo)) {
             throw new IllegalArgumentException("ack 报文缺少 cmdNo");
         }
-        // ackTs 设备回执时间（P0-06 时间双存）；ackCode 回执结果码（缺省 accepted 兼容旧设备/模拟器）
+        // ackTs 设备回执时间（P0-06 时间双存）；ackCode 回执结果码——缺省不再兼容为 accepted，
+        // 判定口径见 WsCommandServiceImpl#onAck（缺 ackCode 一律按失败收口）
         commandService.onAck(device.getId(), cmdNo, json.getStr("ackTs"), json.getStr("ackCode"));
     }
 

@@ -8,6 +8,7 @@ import com.jbk.serve.mapper.product.WsPackageMapper;
 import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
 import com.jbk.serve.service.mini.recharge.IRechargeCreateTx;
 import com.jbk.serve.service.mini.recharge.IRechargePaySourceAdapter;
+import com.jbk.serve.service.mini.recharge.RechargeRefundEvidenceVerifier;
 import com.jbk.serve.service.mini.recharge.RechargeOrderNo;
 import com.jbk.serve.service.mini.recharge.RechargePayExpire;
 import com.jbk.serve.service.mini.card.WaterCardScope;
@@ -84,12 +85,17 @@ class MiniRechargePurchaseCreateTest {
         cardService = Mockito.mock(com.jbk.serve.service.user.IWsCardService.class);
         createTx = Mockito.mock(IRechargeCreateTx.class);
         IRechargePaySourceAdapter paySource = () -> IRechargePaySourceAdapter.WECHAT;
-        service = new MiniRechargeServiceImpl(identityMapper, packageMapper, cardService, createTx, paySource,
-                new MiniPayStatusServiceImpl(identityMapper));
+        service = new MiniRechargeServiceImpl(new com.jbk.serve.service.settlement.IInviteService() {
+                    public String myInviteCode(Long userId) { return "IVTEST0000"; }
+                    public void bindReferrer(Long userId, String inviteCode) { }
+                    public Long referrerSnapshotOf(Long userId) { return null; }
+                }, identityMapper, packageMapper, cardService, createTx, paySource,
+                new MiniPayStatusServiceImpl(identityMapper,
+                        Mockito.mock(RechargeRefundEvidenceVerifier.class)));
         when(identityMapper.selectOrdersByOrderNoIncludingDeleted(anyString())).thenReturn(List.of());
         when(identityMapper.selectEventsByOrderNoIncludingDeleted(anyString())).thenReturn(List.of());
         when(identityMapper.selectCountLiveCardsByUser(ME)).thenReturn(0L);
-        dbPackage = pkg(365, PKG_SCOPE);
+        dbPackage = pkg(null, PKG_SCOPE); // D-213：可售套餐一律永久
         when(packageMapper.selectOne(any(Wrapper.class))).thenAnswer(inv ->
                 dbPackage != null && matches(inv.getArgument(0), packageRow(dbPackage)) ? dbPackage : null);
         when(createTx.create(any(), anyString(), org.mockito.ArgumentMatchers.anyInt()))
@@ -124,7 +130,7 @@ class MiniRechargePurchaseCreateTest {
         RechargeSnapshot.Parsed snap = RechargeSnapshot.parse(order.getPackageSnap());
         assertEquals(RechargeSnapshot.PURCHASE_MODE_FIRST_CARD, snap.purchaseMode());
         assertEquals(Integer.valueOf(RechargeSnapshot.PLANNED_CARD_TYPE_VIRTUAL), snap.plannedCardType());
-        assertEquals(Integer.valueOf(365), snap.expireDays());
+        assertNull(snap.expireDays(), "D-213：可售套餐一律永久，快照有效期恒为 null");
         assertNull(snap.cardStatusAtCreate(), "purchase 快照没有目标卡资格状态字段");
         assertNull(snap.expireTimeAtCreate());
         // 决策 A6：新卡精确继承套餐范围
@@ -149,15 +155,15 @@ class MiniRechargePurchaseCreateTest {
     // 3) 套餐范围（决策 A6）：SCOPE_JSON 空=未配置默认拒绝；非法 JSON 同样拒绝，绝不自动扩为 all
     @Test
     void packageWithoutUsableScopeRejected() {
-        dbPackage = pkg(365, null);
+        dbPackage = pkg(null, null);
         JbkException blank = assertThrows(JbkException.class,
                 () -> service.create(purchaseBo(String.valueOf(PKG_ID)), ME));
         assertTrue(blank.getMessage().contains("套餐未配置可用范围"), "实际=" + blank.getMessage());
 
-        dbPackage = pkg(365, "  ");
+        dbPackage = pkg(null, "  ");
         assertThrows(JbkException.class, () -> service.create(purchaseBo(String.valueOf(PKG_ID)), ME));
 
-        dbPackage = pkg(365, "{\"scopeType\":\"weird\"}");
+        dbPackage = pkg(null, "{\"scopeType\":\"weird\"}");
         assertThrows(JbkException.class, () -> service.create(purchaseBo(String.valueOf(PKG_ID)), ME));
         verify(createTx, never()).create(any(), anyString(), org.mockito.ArgumentMatchers.anyInt());
     }
@@ -306,7 +312,7 @@ class MiniRechargePurchaseCreateTest {
 
     /** 既有 purchase 单：CARD_ID=NULL + buildForPurchase 快照。 */
     private WsOrder purchaseOrder(String orderNo, String createTime) {
-        String snap = RechargeSnapshot.buildForPurchase(UUID, pkg(365, PKG_SCOPE),
+        String snap = RechargeSnapshot.buildForPurchase(UUID, pkg(null, PKG_SCOPE),
                 WaterCardScope.normalize(PKG_SCOPE, "套餐"), createTime);
         WsOrder o = new WsOrder();
         o.setId(777L);

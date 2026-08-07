@@ -1,12 +1,9 @@
 import type { EntityId, MoneyFen, VolumeMl } from './common'
 import type { CardSummary } from './card'
-import type { OrderDetail, OrderStatus } from './order'
-import { cloneContractData, ContractError, prototypeMeta } from './common'
-import { rechargeBlockFromLegacySnapshot } from './order'
+import type { OrderStatus } from './order'
+import { ContractError } from './common'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { currentMode, selectAdapter } from './runtime'
-import { scenarioStore } from '@/scenario/store'
 
 export type PayStatus = 1 | 2 | 3 | 4
 
@@ -100,183 +97,13 @@ export const rechargeEndpoints = {
   paySim: '/mini/pay-sim/pay',
 } as const
 
-function mockUnitPriceSnap(payAmountFen: number, waterMl: number): string {
-  return waterMl > 0 ? ((payAmountFen * 1000) / waterMl).toFixed(2) : '0.00'
-}
-
-function rechargeRequestId(detail: OrderDetail): string | undefined {
-  if (!detail.order.packageSnapshot) {
-    return undefined
-  }
-  try {
-    const snapshot = JSON.parse(detail.order.packageSnapshot) as { requestId?: unknown }
-    return typeof snapshot.requestId === 'string' ? snapshot.requestId : undefined
-  }
-  catch {
-    return undefined
-  }
-}
-
-function mockResult(detail: OrderDetail): RechargeOrderResult {
-  return {
-    orderId: detail.order.orderId,
-    orderNo: detail.order.orderNo,
-    payAmountFen: detail.order.orderAmountFen,
-    payStatus: detail.order.orderStatus === 1 ? 1 : 2,
-    prepayId: `PREPAY-${detail.order.orderNo}`,
-    payParams: { mode: 'prototype' },
-  }
-}
-
-const mockRechargeApi: RechargeApi = {
-  async listPackages() {
-    return cloneContractData(
-      scenarioStore.packages.map(item => ({
-        ...item,
-        unitPriceSnap: mockUnitPriceSnap(item.payAmountFen, item.waterMl),
-        packageStatus: 1 as const,
-        // Mock 账号均已有卡；这里只补齐列表契约，不新增 Mock 首次购卡剧本。
-        purchasable: true,
-      })),
-    )
-  },
-  async createRechargeOrder(input) {
-    const requestId = input.requestId.trim()
-    if (!requestId || requestId.length > 64) {
-      throw new ContractError('RECHARGE_REQUEST_ID_INVALID', '充值请求编号不能为空且不能超过 64 个字符')
-    }
-
-    if (input.cardId === undefined) {
-      throw new ContractError(
-        'MOCK_PURCHASE_UNAVAILABLE',
-        'Mock 域不提供首次购卡剧本，请在接真环境验证该业务链',
-      )
-    }
-
-    const account = scenarioStore.activeAccount()
-    const existing = scenarioStore.orderDetails.find(
-      item =>
-        item.order.userId === account.userId
-        && item.order.orderType === 2
-        && rechargeRequestId(item) === requestId,
-    )
-    if (existing) {
-      // 幂等命中必须核对购买参数（2026-07-20 最终收口轮，对齐 L2 契约 §2 步 3）：
-      // 同一 requestId 指向不同 card/package 属参数冲突，拒绝而非静默返回旧单。
-      let existingPackageId: string | undefined
-      try {
-        const snapshot = JSON.parse(existing.order.packageSnapshot ?? '{}') as { packageId?: unknown }
-        existingPackageId = snapshot.packageId == null ? undefined : String(snapshot.packageId)
-      }
-      catch {
-        existingPackageId = undefined
-      }
-      if (existing.order.cardId !== input.cardId || existingPackageId !== input.packageId) {
-        throw new ContractError(
-          'RECHARGE_REQUEST_CONFLICT',
-          '同一充值请求编号不能对应不同的水卡或套餐，请刷新后重新发起购买',
-        )
-      }
-      return cloneContractData(mockResult(existing))
-    }
-
-    const card = scenarioStore.cards.find(
-      item => item.cardId === input.cardId && item.userId === account.userId,
-    )
-    if (!card) {
-      throw new ContractError('CARD_NOT_FOUND', '水卡不存在或无权使用')
-    }
-    if (card.cardStatus !== 1) {
-      throw new ContractError('CARD_NOT_USABLE', '水卡状态不可用（冻结/过期/注销），请先联系客服处理')
-    }
-
-    const selectedPackage = scenarioStore.packages.find(item => item.id === input.packageId)
-    if (!selectedPackage) {
-      throw new ContractError('PACKAGE_NOT_FOUND', '套餐不存在或已下架')
-    }
-
-    const sequence = scenarioStore.nextOrderSequence()
-    const orderNo = `MR20260716${sequence}`
-    const createTime = scenarioStore.takeBusinessTime()
-    const detail: OrderDetail = {
-      order: {
-        orderId: `MO-${sequence}`,
-        orderNo,
-        userId: account.userId,
-        orderType: 2,
-        orderStatus: 1,
-        orderAmountFen: selectedPackage.payAmountFen,
-        payWay: 1,
-        cardId: card.cardId,
-        packageSnapshot: JSON.stringify({
-          requestId,
-          packageId: selectedPackage.id,
-          packageName: selectedPackage.packageName,
-          payAmount: selectedPackage.payAmountFen,
-          waterMl: selectedPackage.waterMl,
-          bonusAmount: selectedPackage.bonusAmountFen,
-          // 有效期写入订单快照；待支付原型单不修改水卡有效期。
-          expireDays: selectedPackage.expireDays,
-          unitPriceSnap: mockUnitPriceSnap(selectedPackage.payAmountFen, selectedPackage.waterMl),
-        }),
-        createTime,
-        mockMeta: { ...prototypeMeta },
-      },
-      trace: [
-        {
-          node: 'pending-payment',
-          label: '等待支付能力接入',
-          time: createTime,
-          tone: 'warning',
-        },
-      ],
-      flowCount: 0,
-    }
-    scenarioStore.orderDetails.unshift(detail)
-    scenarioStore.recordAudit(
-      'USER_BASE',
-      'order.recharge.create',
-      'order',
-      orderNo,
-      'success',
-      createTime,
-    )
-    return cloneContractData(mockResult(detail))
-  },
-  async getPayStatus(orderNo) {
-    const account = scenarioStore.activeAccount()
-    const detail = scenarioStore.orderDetails.find(
-      item => item.order.orderNo === orderNo && item.order.userId === account.userId,
-    )
-    if (!detail || detail.order.orderType !== 2) {
-      throw new ContractError('ORDER_NOT_FOUND', '充值订单不存在或无权访问')
-    }
-    const orderStatus = detail.order.orderStatus
-    const payStatus: PayStatus = orderStatus === 1
-      ? 1
-      : orderStatus === 5
-        ? 4
-        : [2, 4, 7, 8].includes(orderStatus)
-            ? 2
-            : 3
-    return cloneContractData({ orderNo, payStatus, orderStatus })
-  },
-  // Mock 原型没有支付能力，也不该假装有：明确拒绝，避免演示时把「点了就到账」当成真链路。
-  async simulatePay(orderNo) {
-    throw new ContractError(
-      'PAY_SIM_UNAVAILABLE',
-      `原型模式不提供支付能力（${orderNo}），请切换到充值域接真的构建`,
-    )
-  },
-}
-
 /** null 明确表示永久；字段缺失、非整数或非正数均拒绝，禁止把坏响应静默解释为永久套餐。 */
 export function normalizeRechargeExpireDays(value: unknown): number | null {
   if (value === null) {
     return null
   }
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    throw new ContractError('PACKAGE_EXPIRE_DAYS_INVALID', '套餐有效期缺失或格式错误，不能继续充值')
+    throw new ContractError('PACKAGE_EXPIRE_DAYS_INVALID', '套餐信息有误，暂时无法充值')
   }
   return value
 }
@@ -291,10 +118,6 @@ export function normalizeRechargeExpireDays(value: unknown): number | null {
  * 不用 `crypto.randomUUID()`：小程序运行时没有该 API。
  */
 export function createRechargeRequestId(): string {
-  if (currentMode('recharge') === 'mock') {
-    const sequence = scenarioStore.nextRechargeRequestSequence()
-    return `recharge-mock-${String(sequence).padStart(4, '0')}`
-  }
   return uuidV4()
 }
 
@@ -308,61 +131,6 @@ function uuidV4(): string {
   bytes[8] = (bytes[8] & 0x3F) | 0x80
   const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
-
-export type OrderDetailDataSource = 'real' | 'local-mock'
-
-export function findLocalRechargeOrder(orderNo: string): OrderDetail | null {
-  const account = scenarioStore.activeAccount()
-  const found = scenarioStore.orderDetails.find(
-    item => item.order.orderNo === orderNo
-      && item.order.userId === account.userId
-      && item.order.orderType === 2,
-  )
-  if (!found) {
-    return null
-  }
-  const normalized = cloneContractData(found)
-  normalized.order.recharge = rechargeBlockFromLegacySnapshot(
-    normalized.order.packageSnapshot,
-    normalized.order.orderType,
-  )
-  return normalized
-}
-
-/**
- * U06 的数据源由路由合同显式指定；无 source 的深链一律返回 null，由页面读取真实 order API。
- * 这样固定 WO 快照可本地回看，同时不会用同号 Mock 覆盖真实后端订单。
- */
-export function findLocalRechargeOrderForRoute(
-  orderNo: string,
-  source?: string,
-): OrderDetail | null {
-  if (source !== 'local-mock') {
-    return null
-  }
-  if (currentMode('recharge') !== 'mock') {
-    throw new ContractError('LOCAL_RECHARGE_DISABLED', '充值域已切换为真实接口，不能读取本地充值快照')
-  }
-  return findLocalRechargeOrder(orderNo)
-}
-
-export function listLocalRechargeOrders(): OrderDetail[] {
-  const account = scenarioStore.activeAccount()
-  return scenarioStore.orderDetails
-    .filter(
-      item => item.order.userId === account.userId
-        && item.order.orderType === 2
-        && !!item.order.mockMeta,
-    )
-    .map((item) => {
-      const normalized = cloneContractData(item)
-      normalized.order.recharge = rechargeBlockFromLegacySnapshot(
-        normalized.order.packageSnapshot,
-        normalized.order.orderType,
-      )
-      return normalized
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -397,32 +165,32 @@ function requireNumber(value: unknown, field: string): number {
   if (typeof value === 'string' && /^(?:0|-?[1-9]\d*)$/.test(value)) {
     const parsed = Number(value)
     if (!Number.isSafeInteger(parsed)) {
-      throw new ContractError('RECHARGE_FIELD_INVALID', `充值响应字段 ${field} 超出安全整数范围`)
+      throw new ContractError(`RECHARGE_FIELD_INVALID:${field}`, '充值数据异常，请稍后重试')
     }
     return parsed
   }
-  throw new ContractError('RECHARGE_FIELD_INVALID', `充值响应字段 ${field} 缺失或非法`)
+  throw new ContractError(`RECHARGE_FIELD_INVALID:${field}`, '充值数据异常，请稍后重试')
 }
 
 /** ID 字段：保留字符串原样（不转 number，避免大 ID 精度丢失），只校验是正十进制。 */
 function requireId(value: unknown, field: string): string {
   const raw = typeof value === 'number' ? String(value) : value
   if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) {
-    throw new ContractError('RECHARGE_FIELD_INVALID', `充值响应字段 ${field} 缺失或非法`)
+    throw new ContractError(`RECHARGE_FIELD_INVALID:${field}`, '充值数据异常，请稍后重试')
   }
   return raw
 }
 
 function requireText(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new ContractError('RECHARGE_FIELD_INVALID', `充值响应字段 ${field} 缺失或非法`)
+    throw new ContractError(`RECHARGE_FIELD_INVALID:${field}`, '充值数据异常，请稍后重试')
   }
   return value
 }
 
 function requireBoolean(value: unknown, field: string): boolean {
   if (typeof value !== 'boolean') {
-    throw new ContractError('RECHARGE_FIELD_INVALID', `充值响应字段 ${field} 缺失或非法`)
+    throw new ContractError(`RECHARGE_FIELD_INVALID:${field}`, '充值数据异常，请稍后重试')
   }
   return value
 }
@@ -461,7 +229,7 @@ export function buildRechargeCreateBody(input: CreateRechargeOrderInput): Record
   if (input.cardId !== undefined) {
     const cardId = String(input.cardId)
     if (!/^[1-9]\d*$/.test(cardId)) {
-      throw new ContractError('RECHARGE_CARD_ID_INVALID', '水卡编号格式错误，不能创建充值订单')
+      throw new ContractError('RECHARGE_CARD_ID_INVALID', '水卡信息有误，无法创建充值订单')
     }
     body.cardId = cardId
   }
@@ -529,4 +297,4 @@ const realRechargeApi: RechargeApi = {
   },
 }
 
-export const rechargeApi = selectAdapter(mockRechargeApi, realRechargeApi, 'recharge')
+export const rechargeApi = realRechargeApi

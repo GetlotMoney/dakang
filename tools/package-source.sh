@@ -56,12 +56,22 @@ rsync -a --delete --prune-empty-dirs \
   --exclude='server/target/' \
   --exclude='deploy/dist/' \
   --exclude='deploy/backups/' \
+  --exclude='deploy/backup/' \
   --exclude='deploy/logs/' \
+  --exclude='*.bak' \
+  --exclude='*.sql.gz' \
   --exclude='miniapp/dist/' \
-  --exclude='/data/' \
   --exclude='*.log' \
+  --exclude='/.env' \
+  --exclude='/deploy/.env' \
+  --exclude='/deploy/acceptance/.env' \
   --exclude='.env.local' \
   --exclude='.env.*.local' \
+  --exclude='/data/' \
+  --exclude='/deploy/data/' \
+  --exclude='/deploy/acceptance/data/' \
+  --exclude='/tools/device-sim/data/' \
+  --exclude='**/data/delivery-media/' \
   "$ROOT/" "$STAGE/dakang/"
 
 required_files=(
@@ -128,10 +138,22 @@ if find "$STAGE/dakang" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' 
   exit 1
 fi
 
-if rg -n -i --glob '!docs/requirements/source/**' \
+# 用 grep 而非 rg：rg 在本仓运行环境里是 Claude Code 注入的 shell 函数、不是二进制，
+# 子进程中不存在。原写法 `if rg ...; then 报错` 在 rg 缺失时退出码 127（非零）→ 不进 then
+# → **污染检查静默通过**，是 fail-open。改为显式判状态码，缺工具即报错。
+set +e
+pollution_hits="$(grep -rEin \
   'new_user|newuser|quanzhan|课程管理|教练管理|学员管理|/course|worktab|work-tab|fastenter|fast-enter|\.cursor/rules|\.cursor/mcp|perl: warning' \
-  "$STAGE/dakang/client" "$STAGE/dakang/miniapp" "$STAGE/dakang/server" "$STAGE/dakang/deploy"; then
+  "$STAGE/dakang/client" "$STAGE/dakang/miniapp" "$STAGE/dakang/server" "$STAGE/dakang/deploy" 2>&1)"
+pollution_status=$?
+set -e
+if [[ $pollution_status -eq 0 ]]; then
+  printf '%s\n' "$pollution_hits" >&2
   echo "错误：交付源码仍包含旧领域、旧导航或工具配置污染。" >&2
+  exit 1
+elif [[ $pollution_status -ne 1 ]]; then
+  printf '%s\n' "$pollution_hits" >&2
+  echo "错误：无法完成交付源码污染检查。" >&2
   exit 1
 fi
 
@@ -147,8 +169,23 @@ fi
 ENTRY_LIST="$STAGE/archive-entries.txt"
 unzip -Z1 "$ARCHIVE" > "$ENTRY_LIST"
 
-if grep -Eq '(^|/)__MACOSX/|(^|/)\.DS_Store$|(^|/)\.git(/|$)|(^|/)\.(gitattributes|husky)(/|$)|(^|/)\.(cursor|claude|playwright-mcp)(/|$)|(^|/)project\.private\.config\.json$|(^|/)node_modules/|(^|/)target/|(^|/)dist/|(^|/)deploy/(backups|logs)/|^dakang/data/|(^|/)__pycache__/|\.pyc$' "$ENTRY_LIST"; then
+if grep -Eq '(^|/)__MACOSX/|(^|/)\.DS_Store$|(^|/)\.git(/|$)|(^|/)\.(gitattributes|husky)(/|$)|(^|/)\.(cursor|claude|playwright-mcp)(/|$)|(^|/)project\.private\.config\.json$|(^|/)node_modules/|(^|/)target/|(^|/)dist/|(^|/)deploy/(backups?|logs)/|^dakang/data/|(^|/)__pycache__/|\.pyc$|\.bak$|\.sql\.gz$' "$ENTRY_LIST"; then
   echo "错误：压缩包包含 Git 元数据、IDE/浏览器工具配置、私有配置、数据库备份、运行日志、依赖缓存、Python 缓存或构建产物。" >&2
+  exit 1
+fi
+
+# 凭据与运行期媒体：按**条目名**拒绝。
+# client/.env 与 miniapp/env/.env* 是有意入库的公开档（只含公钥与 Mock 开关），予以放行；
+# 其余任何 .env（尤其仓库根与 deploy/ 下的软链）都携带真实口令，绝不允许出包。
+if grep -Eq '(^|/)\.env$' "$ENTRY_LIST" \
+   && grep -E '(^|/)\.env$' "$ENTRY_LIST" | grep -qvE '^dakang/(client|miniapp/env)/\.env$'; then
+  echo "错误：压缩包包含携带真实口令的 .env（仓库根或 deploy/ 软链）。" >&2
+  grep -E '(^|/)\.env$' "$ENTRY_LIST" | grep -vE '^dakang/(client|miniapp/env)/\.env$' >&2
+  exit 1
+fi
+
+if grep -Eq 'delivery-media/' "$ENTRY_LIST"; then
+  echo "错误：压缩包包含配送受控媒体（真机签收照片含 EXIF，属隐私事故）。" >&2
   exit 1
 fi
 
@@ -161,15 +198,38 @@ ARCHIVE_CHECK="$STAGE/archive-check"
 mkdir -p "$ARCHIVE_CHECK"
 unzip -qq "$ARCHIVE" -d "$ARCHIVE_CHECK"
 
+# 对**解压后的真实内容**做凭据扫描。
+# 为什么不能只靠 .github/scripts/check-secrets.sh：那份只查 git 已跟踪文件，
+# 而交付包是 rsync 从工作树复制的——未跟踪的 .env、备份与运行期媒体对它完全不可见。
+# 本仓已因此漏过两次（deploy/backup/ 490MB 含主库 dump；仓库根 .env 含全部口令）。
+set +e
+secret_hits="$(
+  cd "$ARCHIVE_CHECK/dakang" &&
+    grep -rEn --exclude='*.md' --exclude='check-secrets.sh' \
+      -e 'DAKANG_[A-Z_]*(PASSWORD|SECRET|KEY|TOKEN)[[:space:]]*=[[:space:]]*[^[:space:]#<'"'"'"]' \
+      -e '-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+      -e 'jdbc:mysql://[^"'"'"' ]*[?&]password=[^&"'"'"' ]+' \
+      . 2>&1 | grep -vE ':[[:space:]]*(#|//|\*|--)'
+)"
+secret_status=$?
+set -e
+if [[ $secret_status -eq 0 ]]; then
+  printf '%s\n' "$secret_hits" >&2
+  echo "错误：压缩包内含真实凭据（带值的 DAKANG_* 变量、私钥块或内联口令）。" >&2
+  exit 1
+elif [[ $secret_status -ne 1 ]]; then
+  printf '%s\n' "$secret_hits" >&2
+  echo "错误：无法完成压缩包凭据扫描。" >&2
+  exit 1
+fi
+
 users_dir='Users'
 folders_dir='folders'
 private_path_pattern="/(${users_dir}|home)/[^/[:space:]]+/|/var/${folders_dir}/[^[:space:]]+|[A-Za-z]:\\\\${users_dir}\\\\[^\\\\[:space:]]+\\\\"
 set +e
 private_path_matches="$(
   cd "$ARCHIVE_CHECK/dakang" &&
-    rg -n -a --hidden --no-ignore \
-      "$private_path_pattern" \
-      . 2>&1
+    grep -rEn "$private_path_pattern" . 2>&1
 )"
 private_path_status=$?
 set -e

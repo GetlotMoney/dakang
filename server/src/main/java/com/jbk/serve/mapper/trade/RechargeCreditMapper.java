@@ -261,14 +261,6 @@ public interface RechargeCreditMapper {
     // ------------------------------------------------------------------
 
     /**
-     * 目标卡（跨 DATA_STATUS 读，逻辑删除的卡也要看得见——钱已收，不能因为看不见卡就当无事发生）。
-     */
-    @Select("SELECT ID AS id, CARD_NO AS cardNo, USER_ID AS userId, BALANCE_AMOUNT AS balanceAmount, "
-            + "BALANCE_ML AS balanceMl, EXPIRE_TIME AS expireTime, CARD_STATUS AS cardStatus, "
-            + "DATA_STATUS AS dataStatus FROM ws_card WHERE ID = #{cardId}")
-    WsCard selectCardIncludingDeleted(@Param("cardId") Long cardId);
-
-    /**
      * 事务 B 锁卡读取（{@code FOR UPDATE}）。契约 §6.4 要求按固定顺序锁定并读取跨全部 DATA_STATUS 的卡，
      * 后续的 CAS 前态全部取自这一次锁内读取，不允许用锁外的旧值。
      */
@@ -400,8 +392,12 @@ public interface RechargeCreditMapper {
      * 冻结/过期/注销但未删除的卡同样占用「首次购卡」资格——口径与创单侧
      * {@code RechargeIdentityMapper#selectCountLiveCardsByUser} 必须一致，两处不同就会出现
      * 「创单放行、发卡拒绝」或反之的裂缝。
+     * <p>E2E-08 修正（两处同步）：仅排除活动赠卡（判据与 {@code CardEligibility#isGiftCard}
+     * 逐条同构：CARD_TYPE=1 + 带 EXPIRE_TIME + 无 ISSUE_ORDER_ID 订单锚，审计 P1-2 补齐
+     * 虚拟卡限定）——赠卡不占「一人一卡」名额；有限期<b>付费</b>卡与实体带期卡仍占名额。</p>
      */
-    @Select("SELECT COUNT(*) FROM ws_card WHERE USER_ID = #{userId} AND DATA_STATUS = 0")
+    @Select("SELECT COUNT(*) FROM ws_card WHERE USER_ID = #{userId} AND DATA_STATUS = 0"
+            + " AND " + com.jbk.serve.service.mini.card.CardEligibility.SQL_NOT_GIFT)
     long countLiveCardsByUser(@Param("userId") Long userId);
 
     /**

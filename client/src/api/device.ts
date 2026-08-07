@@ -5,7 +5,6 @@
  * 二维码/遥测/告警为详情页只读数据（完整管理为商业一期）。
  */
 import request from '@/utils/http'
-import { recordDemoAuditEvent } from '@/api/demo-audit'
 
 /** 设备列表项 / 详情 */
 export interface DeviceItem {
@@ -20,12 +19,18 @@ export interface DeviceItem {
   firmwareVersion?: string
   simIccid?: string
   simCarrier?: string
+  /** SIM状态(1368)：1正常 2未激活 3欠费 4停用；真实运营商查询未接入 */
+  simStatus?: number
+  simExpireTime?: string
   /** 在线状态(1300)：1在线 2离线 3未激活 */
   onlineStatus: number
   /** 运行状态(1301)：1空闲 2出水中 3故障 4维护中 5锁机 */
   runStatus: number
   lastHeartbeat?: string
   lastFaultCode?: string
+  orderAvailabilityCode?: string
+  orderAvailabilityReason?: string
+  orderAvailable?: boolean
   signalStrength?: number
   outletCount?: number
   deviceRemark?: string
@@ -55,6 +60,8 @@ export interface DeviceFormData {
   firmwareVersion?: string
   simIccid?: string
   simCarrier?: string
+  simStatus?: number
+  simExpireTime?: string
   deviceRemark?: string
 }
 
@@ -137,10 +144,11 @@ export interface TelemetryItem {
   reportTime: string
 }
 
-/** 告警（只读提醒） */
+/** 告警（告警中心 + 设备详情只读提醒） */
 export interface AlarmItem {
   id: number
   deviceId: number
+  deviceNo?: string
   /** 告警类型(1360) */
   alarmType: number
   /** 等级(1304)：1提示 2一般 3严重 */
@@ -150,6 +158,11 @@ export interface AlarmItem {
   /** 状态(1361)：1待处理 2已转工单 3已忽略 4自动恢复 */
   alarmStatus: number
   recoverTime?: string
+  /** 转出的工单（详情联查，回看关联工单） */
+  workOrderId?: number
+  workOrderNo?: string
+  handleBy?: number
+  handleTime?: string
   createTime?: string
 }
 
@@ -270,121 +283,265 @@ export function fetchSendCommand(data: { deviceId: number; cmdType: number; cmdP
   })
 }
 
-// ==================== 设备运营配置（Demo Mock，后续按同名契约接真） ====================
+// ==================== 告警中心（E2E-05 包C/D，接真） ====================
 
-export interface DeviceDisplayPolicy {
-  showOnlineStatus: boolean
-  showTds: boolean
-  showFilterLife: boolean
-  heartbeatTimeoutSeconds: number
-  unavailableAction: 'hide_order' | 'disable_order'
-  updateReason: string
-  updateTime: string
+export interface AlarmSearchParams {
+  current: number
+  size: number
+  deviceId?: number
+  alarmStatus?: number
+  alarmType?: number
+  alarmLevel?: number
 }
 
-export interface DeviceAnnouncementItem {
+export function fetchAlarmPage(params: AlarmSearchParams) {
+  return request.post<{ total: number; list: AlarmItem[] }>({
+    url: '/device/alarm/page',
+    data: params
+  })
+}
+
+export function fetchAlarmDetail(id: number) {
+  return request.post<AlarmItem>({
+    url: '/device/alarm/detail',
+    data: { id }
+  })
+}
+
+/** 忽略告警（仅待处理可忽略；键清空后同型告警可再次触发） */
+export function fetchIgnoreAlarm(id: number) {
+  return request.post<boolean>({
+    url: '/device/alarm/ignore',
+    data: { id }
+  })
+}
+
+/** 告警转工单（一个告警最多一单，重复转单返回既有工单ID） */
+export function fetchAlarmToWorkOrder(id: number) {
+  return request.post<number>({
+    url: '/device/alarm/toWorkOrder',
+    data: { id }
+  })
+}
+
+// ==================== 运维工单（E2E-05 包C/D，接真） ====================
+
+export interface WorkOrderTraceItem {
+  eventTime: string
+  /** 操作端口(1364)：1公司后台 2用户端 3机主端 6系统 */
+  actorPortal?: number
+  actorId?: number
+  payload?: string
+}
+
+export interface WorkOrderItem {
   id: number
-  title: string
-  content: string
-  scopeType: 'all' | 'station' | 'device'
-  scopeText: string
-  startTime: string
-  endTime: string
-  publishReason: string
-  /** PC 配置状态，不代表小程序已读取。 */
-  pcStatus: '待生效' | '生效中' | '已失效'
-  version: string
-  clientSyncStatus: '待跨端同步' | '已同步'
-  lastSyncTime?: string
+  orderNo: string
+  /** 工单类型(1365)：1维修 2配件 3巡检 */
+  workType: number
+  deviceId?: number
+  deviceNo?: string
+  stationName?: string
+  /** 来源：1告警转入 2机主申报 3后台创建 */
+  sourceType: number
+  alarmId?: number
+  alarmContent?: string
+  applicantUserId?: number
+  orderTitle: string
+  orderContent?: string
+  /** 申报证据媒体键 JSON 数组（受控 mediaKey） */
+  orderPhotos?: string
+  assigneeId?: number
+  assigneeName?: string
+  /** 工单状态(1362)：1待确认 2待分配 3处理中 4待复核 5已关闭 6已驳回 */
+  orderStatus: number
+  assignTime?: string
+  finishTime?: string
+  finishResult?: string
+  resultPhotos?: string
+  reviewBy?: number
+  reviewTime?: string
+  reviewRemark?: string
+  rejectReason?: string
+  closeTime?: string
+  createTime?: string
+  /** 完整状态轨迹（仅详情返回） */
+  trace?: WorkOrderTraceItem[]
 }
 
-export interface DeviceAnnouncementForm {
-  title: string
-  content: string
-  scopeType: DeviceAnnouncementItem['scopeType']
-  scopeText: string
-  startTime: string
-  endTime: string
-  publishReason: string
+export interface WorkOrderSearchParams {
+  current: number
+  size: number
+  orderNo?: string
+  orderStatus?: number
+  filterWorkType?: number
+  sourceType?: number
+  filterDeviceId?: number
+  filterAssigneeId?: number
 }
 
-let displayPolicy: DeviceDisplayPolicy = {
-  showOnlineStatus: true,
-  showTds: true,
-  showFilterLife: true,
-  heartbeatTimeoutSeconds: 90,
-  unavailableAction: 'disable_order',
-  updateReason: '一期默认策略：不可用设备展示原因并禁用下单',
-  updateTime: '20260714120000'
-}
-
-const announcements: DeviceAnnouncementItem[] = [
-  {
-    id: 1,
-    title: '南湖水站设备检修提示',
-    content: '南湖 1 号机故障检修中，请前往附近可用水站。',
-    scopeType: 'station',
-    scopeText: '南湖社区水站',
-    startTime: '20260714120000',
-    endTime: '20260715200000',
-    publishReason: 'E003 故障阻断取水，向用户说明不可用原因',
-    pcStatus: '生效中',
-    version: 'ANN-20260714-001',
-    clientSyncStatus: '待跨端同步'
-  }
-]
-
-const mockDelay = <T>(value: T): Promise<T> =>
-  new Promise((resolve) => setTimeout(() => resolve(value), 180))
-
-export function fetchDeviceDisplayPolicy(): Promise<DeviceDisplayPolicy> {
-  return mockDelay({ ...displayPolicy })
-}
-
-export function fetchSaveDeviceDisplayPolicy(
-  data: Omit<DeviceDisplayPolicy, 'updateTime'>
-): Promise<DeviceDisplayPolicy> {
-  const before = { ...displayPolicy }
-  displayPolicy = { ...data, updateTime: '20260714143000' }
-  recordDemoAuditEvent({
-    eventTypeLabel: '设备展示策略修改',
-    eventKey: 'DEVICE-DISPLAY-POLICY',
-    relatedKeys: [],
-    actorLabel: '运营后台·超级管理员',
-    oldStatus:
-      before.unavailableAction === 'disable_order' ? '不可用时禁止下单' : '不可用时隐藏下单',
-    newStatus: data.unavailableAction === 'disable_order' ? '不可用时禁止下单' : '不可用时隐藏下单',
-    detail: `心跳超时 ${before.heartbeatTimeoutSeconds}→${data.heartbeatTimeoutSeconds} 秒；修改原因：${data.updateReason}`,
-    tone: 'warning',
-    targetPath: '/device/operations'
+export function fetchWorkOrderPage(params: WorkOrderSearchParams) {
+  return request.post<{ total: number; list: WorkOrderItem[] }>({
+    url: '/device/workorder/page',
+    data: params
   })
-  return mockDelay({ ...displayPolicy })
 }
 
-export function fetchDeviceAnnouncementList(): Promise<DeviceAnnouncementItem[]> {
-  return mockDelay(announcements.map((item) => ({ ...item })))
-}
-
-export function fetchCreateDeviceAnnouncement(
-  data: DeviceAnnouncementForm
-): Promise<DeviceAnnouncementItem> {
-  const item: DeviceAnnouncementItem = {
-    id: Math.max(0, ...announcements.map((announcement) => announcement.id)) + 1,
-    ...data,
-    pcStatus: '待生效',
-    version: `ANN-20260714-${String(announcements.length + 1).padStart(3, '0')}`,
-    clientSyncStatus: '待跨端同步'
-  }
-  announcements.unshift(item)
-  recordDemoAuditEvent({
-    eventTypeLabel: '设备公告配置',
-    eventKey: item.version,
-    relatedKeys: [item.title, item.scopeText],
-    actorLabel: '运营后台·超级管理员',
-    newStatus: '待生效（待跨端同步）',
-    detail: `新增公告「${item.title}」，范围：${item.scopeText}；发布原因：${item.publishReason}`,
-    tone: 'primary',
-    targetPath: '/device/operations'
+export function fetchWorkOrderDetail(id: number) {
+  return request.post<WorkOrderItem>({
+    url: '/device/workorder/detail',
+    data: { id }
   })
-  return mockDelay({ ...item })
+}
+
+/** 后台建单（维修/配件/巡检，直接进待分配） */
+export function fetchCreateWorkOrder(data: {
+  workType: number
+  deviceId?: number
+  orderTitle: string
+  orderContent?: string
+}) {
+  return request.post<number>({
+    url: '/device/workorder/create',
+    data
+  })
+}
+
+export function fetchConfirmWorkOrder(id: number) {
+  return request.post<boolean>({
+    url: '/device/workorder/confirm',
+    data: { id }
+  })
+}
+
+export function fetchRejectWorkOrder(id: number, rejectReason: string) {
+  return request.post<boolean>({
+    url: '/device/workorder/reject',
+    data: { id, rejectReason }
+  })
+}
+
+export function fetchAssignWorkOrder(id: number, assigneeId: number) {
+  return request.post<boolean>({
+    url: '/device/workorder/assign',
+    data: { id, assigneeId }
+  })
+}
+
+export function fetchSubmitWorkOrderResult(
+  id: number,
+  finishResult: string,
+  resultPhotos?: string[]
+) {
+  return request.post<boolean>({
+    url: '/device/workorder/submitResult',
+    data: { id, finishResult, resultPhotos }
+  })
+}
+
+export function fetchReviewPassWorkOrder(id: number, reviewRemark?: string) {
+  return request.post<boolean>({
+    url: '/device/workorder/reviewPass',
+    data: { id, reviewRemark }
+  })
+}
+
+export function fetchReviewReturnWorkOrder(id: number, reviewRemark: string) {
+  return request.post<boolean>({
+    url: '/device/workorder/reviewReturn',
+    data: { id, reviewRemark }
+  })
+}
+
+/** 员工登记工单处理证据（base64，仅 purpose=4；返回受控 mediaKey） */
+export function fetchUploadWorkOrderMedia(data: { mimeType: string; contentBase64: string }) {
+  return request.post<string>({
+    url: '/device/workorder/media/upload',
+    data: { purpose: 4, ...data }
+  })
+}
+
+// ==================== 批量控制（E2E-05 包B/D，两步确认） ====================
+
+export interface BatchPreviewResult {
+  operationTicket: string
+  ticketTtlSeconds: number
+  cmdType: number
+  cmdTypeDesc: string
+  scopeType: number
+  /** 目标设备数量（服务端解析结果，非前端提交值） */
+  targetCount: number
+  /** 目标设备编号预览（最多前 20 台） */
+  deviceNos: string[]
+  targetDigest: string
+  paramDigest: string
+  /** 紧急停止锚定的活动订单号（仅紧急停止返回） */
+  activeOrderNo?: string
+}
+
+export interface BatchItem {
+  id: number
+  batchNo: string
+  /** 范围类型(1366)：1指定设备 2指定水站 3全部设备 */
+  scopeType: number
+  scopeSnapshot?: string
+  cmdType: number
+  cmdPayload?: string
+  paramDigest?: string
+  totalCount: number
+  successCount: number
+  failCount: number
+  timeoutCount: number
+  /** 聚合状态(1367)：1处理中 2全部成功 3部分成功 4全部失败 */
+  batchStatus: number
+  finishTime?: string
+  createTime?: string
+  /** 子指令明细（仅详情返回） */
+  commands?: CommandItem[]
+}
+
+/** 第一步预览：服务端解析目标并冻结参数，返回一次性操作凭据 */
+export function fetchBatchPreview(data: {
+  scopeType: number
+  deviceIds?: number[]
+  stationId?: number
+  cmdType: number
+  cmdPayload?: string
+}) {
+  return request.post<BatchPreviewResult>({
+    url: '/device/batch/preview',
+    data
+  })
+}
+
+/** 第二步确认：GETDEL 领取凭据（过期/重复/换人/参数变化全部拒绝），返回批次ID */
+export function fetchBatchConfirm(data: {
+  operationTicket: string
+  targetDigest: string
+  paramDigest: string
+}) {
+  return request.post<number>({
+    url: '/device/batch/confirm',
+    data
+  })
+}
+
+export function fetchBatchPage(params: {
+  current: number
+  size: number
+  batchNo?: string
+  batchStatus?: number
+  filterCmdType?: number
+}) {
+  return request.post<{ total: number; list: BatchItem[] }>({
+    url: '/device/batch/page',
+    data: params
+  })
+}
+
+export function fetchBatchDetail(id: number) {
+  return request.post<BatchItem>({
+    url: '/device/batch/detail',
+    data: { id }
+  })
 }

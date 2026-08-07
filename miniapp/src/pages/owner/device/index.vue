@@ -5,7 +5,6 @@ import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   ONLINE_STATUS_LABELS,
   ONLINE_STATUS_TONES,
@@ -24,7 +23,7 @@ definePage({
 
 /**
  * 单列状态筛选：值与路由合同 O02 status 枚举逐字一致，
- * 在线/离线映射 onlineStatus，其余映射 runStatus（蓝图 §6.6）。
+ * 在线/离线映射 onlineStatus，其余映射 runStatus。
  */
 const STATUS_FILTER_COLUMNS = [
   { label: '全部状态', value: '' },
@@ -96,7 +95,6 @@ async function refresh() {
 <template>
   <view class="page-shell">
     <AppNavbar title="机主设备" back-to="O01" />
-    <AppPrototypeNotice />
 
     <view v-if="loading" class="page-section muted-text">
       加载中…
@@ -124,12 +122,12 @@ async function refresh() {
           />
         </wd-cell-group>
         <view v-if="stationScopeName" class="muted-text filter-note">
-          已限定水站：{{ stationScopeName }}（来自路由参数，筛选不扩大授权范围）
+          已限定水站：{{ stationScopeName }}
         </view>
       </view>
 
       <view v-if="!devices.length" class="page-section">
-        <wd-status-tip image="content" tip="授权范围内暂无设备" />
+        <wd-status-tip image="content" tip="暂无设备" />
       </view>
 
       <view v-else-if="!filteredDevices.length" class="page-section">
@@ -168,11 +166,6 @@ async function refresh() {
               故障码 {{ item.lastFaultCode }}
             </text>
           </view>
-        </view>
-
-        <view class="page-section readonly-footer">
-          <wd-icon name="lock-on" size="14px" color="#646a73" />
-          <text>设备列表为只读监控：无远程控制、无提现</text>
         </view>
       </template>
     </template>
@@ -225,15 +218,5 @@ async function refresh() {
 
 .fault-code-text {
   color: #fa4350;
-}
-
-.readonly-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 12px 0;
-  color: var(--app-text-secondary);
-  font-size: 13px;
 }
 </style>

@@ -1,3 +1,6 @@
 /node_modules/*
 /dist/*
 /src/main.ts
+# unplugin 生成的声明文件：内容由插件全量重写，格式检查只会与生成器打架
+/src/types/import/auto-imports.d.ts
+/src/types/import/components.d.ts

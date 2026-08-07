@@ -12,9 +12,5 @@ public interface IWsUserService extends IService<WsUser> {
 
     WsUserVo getData(Long id);
 
-    WsUserVo getByXcxOpenid(String openid);
-
-    WsUserVo registerToXcx(WsUserBo wsUserBo);
-
     WsUserVo updateData(WsUserBo wsUserBo);
 }

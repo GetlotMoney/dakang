@@ -83,6 +83,13 @@ class AdminDeliveryLinkStateTest {
         return order;
     }
 
+    /** 待接单取消后的订单形态（E2E-04 包A）：原路返还落 7已退款。 */
+    private WsOrder refundedOrder() {
+        WsOrder order = order();
+        order.setOrderStatus(7);
+        return order;
+    }
+
     private WsWalletFlow flow() {
         WsWalletFlow flow = new WsWalletFlow()
                 .setCardId(9L)
@@ -173,10 +180,27 @@ class AdminDeliveryLinkStateTest {
     }
 
     @Test
-    void stateRejectsCancelledStatusNotProducedByMachine() {
-        // 6已取消当前无产生路径：出现即外力改库，宁可 mismatch 不猜测语义
-        WsDeliveryTask cancelled = pendingTask().setTaskStatus(6);
-        String reason = AdminDeliveryServiceImpl.deliveryStateMismatch(order(), cancelled, 0);
+    void stateOkForCancelledTaskWithRefundedOrder() {
+        // E2E-04 包A：待接单取消是合法终态——任务落 6已取消、订单原路返还落 7已退款。
+        // 取消只发生在 1待接单，因此履约维度必须与待接单完全一致。
+        WsDeliveryTask cancelled = pendingTask().setTaskStatus(6).setVersion(2);
+        assertNull(AdminDeliveryServiceImpl.deliveryStateMismatch(refundedOrder(), cancelled, 0));
+    }
+
+    @Test
+    void stateRejectsCancelledTaskCarryingFulfillmentTraces() {
+        // 带着履约痕迹的"取消"意味着履约中途被改库，一律拒绝
+        assertNotNull(AdminDeliveryServiceImpl.deliveryStateMismatch(refundedOrder(),
+                pendingTask().setTaskStatus(6).setVersion(2).setCourierId(3L), 0));
+        assertNotNull(AdminDeliveryServiceImpl.deliveryStateMismatch(refundedOrder(),
+                pendingTask().setTaskStatus(6).setVersion(2).setAcceptTime("20260724101000"), 0));
+        assertNotNull(AdminDeliveryServiceImpl.deliveryStateMismatch(refundedOrder(),
+                pendingTask().setTaskStatus(6).setVersion(2).setSignPhotos(threePhotos()), 0));
+        assertNotNull(AdminDeliveryServiceImpl.deliveryStateMismatch(refundedOrder(),
+                pendingTask().setTaskStatus(6).setVersion(2).setActualDeliveryCount(0), 0));
+        // 订单未随取消退款：耦合脱钩
+        String reason = AdminDeliveryServiceImpl.deliveryStateMismatch(order(),
+                pendingTask().setTaskStatus(6).setVersion(2), 0);
         assertNotNull(reason);
         assertTrue(reason.contains("不属于当前配送状态机"));
     }

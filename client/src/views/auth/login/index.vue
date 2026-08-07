@@ -10,11 +10,7 @@
         <div class="form">
           <h3 class="title">{{ $t('login.title') }}</h3>
           <p class="sub-title">
-            {{
-              demoLoginAutofill
-                ? '本地 Demo 账号密码已自动填充，完成滑块验证即可登录'
-                : $t('login.subTitle')
-            }}
+            {{ demoLoginAutofill ? '完成滑块验证即可登录' : $t('login.subTitle') }}
           </p>
           <ElForm
             ref="formRef"
@@ -179,6 +175,13 @@
       userStore.setUserInfo(loginData as Api.Auth.UserInfo)
       // 存储登录状态
       userStore.setLoginStatus(true)
+
+      // 首次登录强改（R-201）：服务端已拒绝除改密/退出外的接口，改密页是唯一出口
+      if (loginData.pwdChangeRequired) {
+        ElMessage.info('首次登录需先修改初始密码')
+        void router.replace('/auth/change-password')
+        return
+      }
 
       // 登录成功处理
       showLoginSuccessNotice()

@@ -8,9 +8,13 @@
     <ElCard class="art-table-card">
       <ArtTableHeader v-model:columns="columnChecks" :loading="loading" @refresh="refreshData">
         <template #left>
-          <ElText type="info" size="small">
-            当前支持水卡状态、成员和授权范围核验；开卡/充值/迁移属商业一期并需财务审核
-          </ElText>
+          <ElButton
+            v-if="hasPermission('user:card:issue')"
+            type="success"
+            size="small"
+            @click="giftVisible = true"
+            >赠卡发放</ElButton
+          >
         </template>
       </ArtTableHeader>
 
@@ -27,16 +31,59 @@
 
       <!-- 详情抽屉（含授权成员） -->
       <CardDetailDrawer v-model:visible="drawerVisible" :card-id="currentRow.id" />
+
+      <!-- 赠卡发放（E2E-08：D-213 口径带有效期不可充值；请求号幂等） -->
+      <ElDialog v-model="giftVisible" title="运营赠卡发放" width="480px">
+        <ElAlert
+          type="warning"
+          :closable="false"
+          show-icon
+          title="赠卡带有效期、不可充值，不占用户「一人一卡」名额"
+          class="mb-3"
+        />
+        <ElForm label-width="100px">
+          <ElFormItem label="收卡用户ID" required>
+            <ElInput v-model="giftForm.userId" placeholder="请输入用户ID" />
+          </ElFormItem>
+          <ElFormItem label="赠送水量(L)">
+            <ElInputNumber v-model="giftForm.liters" :min="0" :precision="1" style="width: 100%" />
+          </ElFormItem>
+          <ElFormItem label="赠送余额(元)">
+            <ElInputNumber v-model="giftForm.yuan" :min="0" :precision="2" style="width: 100%" />
+          </ElFormItem>
+          <ElFormItem label="有效期(天)" required>
+            <ElInputNumber v-model="giftForm.expireDays" :min="1" :max="3650" style="width: 100%" />
+          </ElFormItem>
+          <ElFormItem label="备注">
+            <ElInput v-model="giftForm.remark" maxlength="100" />
+          </ElFormItem>
+        </ElForm>
+        <template #footer>
+          <ElButton @click="giftVisible = false">取消</ElButton>
+          <ElButton type="primary" :loading="giftBusy" @click="submitGift">确认发放</ElButton>
+        </template>
+      </ElDialog>
     </ElCard>
   </div>
 </template>
 
 <script setup lang="ts">
-  import { h } from 'vue'
-  import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
+  import { h, watch } from 'vue'
+  import {
+    ElAlert,
+    ElButton,
+    ElDialog,
+    ElForm,
+    ElFormItem,
+    ElInput,
+    ElInputNumber,
+    ElMessage,
+    ElMessageBox,
+    ElTag
+  } from 'element-plus'
   import ArtButtonTable from '@/components/core/forms/art-button-table/index.vue'
   import { useTable } from '@/hooks/core/useTable'
-  import { fetchCardPage, fetchChangeCardStatus, type CardItem } from '@/api/user'
+  import { fetchCardPage, fetchChangeCardStatus, fetchGiftIssue, type CardItem } from '@/api/user'
   import { fetchDictOptions, toDictOptions } from '@/utils/dict'
   import { DictTypeEnum } from '@/constants/dict'
   import { useUserStore } from '@/store/modules/user'
@@ -213,7 +260,7 @@
     const freeze = row.cardStatus === 1
     const action = freeze ? '冻结' : '解冻'
     ElMessageBox.prompt(
-      `${action}水卡「${row.cardNo}」：${freeze ? '冻结后该卡立即不可取水/刷卡' : '解冻后恢复正常使用'}，请填写${action}原因`,
+      `${action}水卡「${row.cardNo}」${freeze ? '，冻结后立即不可取水' : ''}，请填写${action}原因`,
       `${action}水卡`,
       {
         confirmButtonText: `确认${action}`,
@@ -227,5 +274,63 @@
       ElMessage.success(`${action}成功`)
       getData()
     })
+  }
+
+  // -------------------------------------------------------------------------
+  // 赠卡发放（E2E-08）：请求号在对话框打开期间持有，提交重试不翻倍发卡
+  // -------------------------------------------------------------------------
+  const giftVisible = ref(false)
+  const giftBusy = ref(false)
+  const giftForm = ref<{
+    userId?: string
+    liters?: number
+    yuan?: number
+    expireDays?: number
+    remark?: string
+  }>({
+    expireDays: 30
+  })
+  let giftRequestId = ''
+
+  watch(giftVisible, (open) => {
+    if (open) {
+      giftRequestId = crypto.randomUUID()
+    }
+  })
+
+  const submitGift = async () => {
+    const form = giftForm.value
+    const userId = String(form.userId ?? '').trim()
+    if (!/^\d+$/.test(userId)) {
+      ElMessage.warning('收卡用户ID必须是数字')
+      return
+    }
+    const grantMl = Math.round((form.liters ?? 0) * 1000)
+    const grantFen = Math.round((form.yuan ?? 0) * 100)
+    if (grantMl <= 0 && grantFen <= 0) {
+      ElMessage.warning('水量或余额至少填一项')
+      return
+    }
+    if (!form.expireDays) {
+      ElMessage.warning('有效期必填')
+      return
+    }
+    giftBusy.value = true
+    try {
+      await fetchGiftIssue({
+        requestId: giftRequestId,
+        userId: Number(userId),
+        grantMl,
+        grantFen,
+        expireDays: form.expireDays,
+        remark: form.remark
+      })
+      ElMessage.success('赠卡已发放')
+      giftVisible.value = false
+      giftForm.value = { expireDays: 30 }
+      refreshData()
+    } finally {
+      giftBusy.value = false
+    }
   }
 </script>

@@ -26,6 +26,7 @@ public final class RechargePayStatus {
     public static final int ORDER_CANCELLED = 5;
     public static final int ORDER_ABNORMAL = 6;
     public static final int ORDER_REFUNDED = 7;
+    public static final int ORDER_PART_REFUNDED = 8;
     /** 事件处理态。 */
     public static final int P_PENDING = 1;
     public static final int P_PROCESSING = 2;
@@ -146,10 +147,24 @@ public final class RechargePayStatus {
             return Resolved.ok("RECONCILIATION_REQUIRED", "订单异常，待人工对账");
         }
 
-        if (pay == PAY_SUCCESS && ord == ORDER_REFUNDED) {
-            // 退款合同（REQ-044）未冻结、未启用：fail-closed，绝不把状态 7 拼成成功
-            return new Resolved(false, "REFUND_CONTRACT_NOT_ENABLED",
-                    "退款流程尚未启用，请联系客服", "order 7 预留给后续真实退款合同");
+        if (pay == PAY_SUCCESS && (ord == ORDER_REFUNDED || ord == ORDER_PART_REFUNDED)) {
+            // 本函数只核对原支付与原充值入账事实；退款动作/退款单证据由
+            // RechargeRefundEvidenceVerifier 在服务入口统一校验，避免在状态矩阵里复制售后共键算法。
+            if (flowCount != 1) {
+                return Resolved.mismatch("退款订单的原充值流水必须恰好一条");
+            }
+            if (!closeds.isEmpty()) {
+                return Resolved.mismatch("退款订单不应存在关闭支付事实");
+            }
+            if (successes.stream().noneMatch(e -> isProcessed(e) && inTime(e, payment))) {
+                return Resolved.mismatch("退款订单缺少已处理且按时的原支付成功事实");
+            }
+            if (successes.stream().anyMatch(RechargePayStatus::isReconciliation)) {
+                return Resolved.mismatch("退款订单不应混入待对账的原支付成功事实");
+            }
+            return ord == ORDER_REFUNDED
+                    ? Resolved.ok("REFUNDED", "订单已退款")
+                    : Resolved.ok("PART_REFUNDED", "订单已部分退款");
         }
 
         return Resolved.mismatch("payment " + pay + " / order " + ord + " 不是合法组合");

@@ -14,7 +14,6 @@ import {
 } from '@/api/recharge'
 import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { CARD_STATUS_LABELS, CARD_STATUS_TONES, formatFen, formatMl } from '@/utils/format'
 import { backOr, redirectTo } from '@/utils/navigation'
 import { payAndSettle } from '@/utils/recharge-pay'
@@ -29,7 +28,6 @@ definePage({
 const toast = useToast()
 const message = useMessage()
 const isRechargeMock = currentMode('recharge') === 'mock'
-const isCardReal = currentMode('card') === 'real'
 
 const loading = ref(true)
 const loadError = ref('')
@@ -50,16 +48,7 @@ const selectedPackage = computed(
   () => visiblePackages.value.find(item => item.id === selectedPackageId.value) ?? null,
 )
 
-const boundaryNotice = computed(() => {
-  if (isRechargeMock) {
-    return `${isCardReal ? '水卡余额来自真实 card 接口' : '水卡余额为 Mock/固定快照'}；充值套餐与充值订单固定为 Mock。`
-  }
-  return isPurchase.value
-    ? '首次购卡已接真实后端；只展示服务端确认范围配置合法的套餐，支付由 Pay-Sim 模拟，不发生真实扣款。'
-    : '充值域已接真：创单、支付事实与入账均走真实后端；当前支付由 Pay-Sim 模拟，不发生真实扣款。'
-})
-
-/** 价格快照演示：套餐售价 payAmountFen / 兑换水量 waterMl 折算为 元/升，保留两位小数（蓝图 U10）。 */
+/** 价格快照演示：套餐售价 payAmountFen / 兑换水量 waterMl 折算为 元/升，保留两位小数。 */
 const unitPriceText = computed(() => {
   const pkg = selectedPackage.value
   if (!pkg || pkg.waterMl <= 0) {
@@ -87,7 +76,7 @@ async function refresh(cardId: string, packageId: string) {
     ])
     card.value = cardResult
     packages.value = packageList
-    // packageId 参数只做预选中；不在套餐列表内则忽略，等待用户自行选择（蓝图 §6.6 U10 行）。
+    // packageId 参数只做预选中；不在套餐列表内则忽略，等待用户自行选择。
     const available = visiblePackagesForMode(packageList, resolveRechargePageMode(cardResult))
     if (packageId && available.some(item => item.id === packageId)) {
       selectedPackageId.value = packageId
@@ -128,7 +117,7 @@ async function handleSubmit() {
     return
   }
   if (!selectedPackage.value) {
-    toast.show(isPurchase.value ? '请先选择购卡套餐' : '请先选择充值套餐（本期仅支持套餐充值）')
+    toast.show(isPurchase.value ? '请先选择购卡套餐' : '请先选择充值套餐')
     return
   }
   submitting.value = true
@@ -139,12 +128,6 @@ async function handleSubmit() {
       requestId: requestId.value,
     })
     if (isRechargeMock) {
-      await message
-        .alert({
-          title: '提示',
-          msg: '已生成待支付原型订单：微信支付未接入，不发生真实扣款、到账或赠送发放；即将进入订单详情。',
-        })
-        .catch(() => null)
       redirectTo('U06', { orderNo: created.orderNo, source: 'local-mock' })
     }
     else {
@@ -173,9 +156,6 @@ async function handleSubmit() {
     <AppNavbar :title="pageTitle" back-to="U03" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice
-      :text="boundaryNotice"
-    />
 
     <template v-if="loadError">
       <view class="page-section">
@@ -232,7 +212,7 @@ async function handleSubmit() {
             加载中…
           </view>
           <view v-else class="muted-text">
-            当前账号暂无水卡。请选择可购套餐，支付成功后系统将创建本人虚拟卡并原子入账权益。
+            当前账号暂无水卡，请选择套餐购卡。
           </view>
         </wd-card>
       </view>
@@ -242,7 +222,7 @@ async function handleSubmit() {
           <wd-status-tip
             v-if="!loading && isPurchase && visiblePackages.length === 0"
             image="content"
-            tip="暂无可购套餐，请联系客服配置"
+            tip="暂无可购套餐，请联系客服"
           />
           <wd-cell-group v-else border>
             <wd-cell
@@ -267,35 +247,21 @@ async function handleSubmit() {
             </wd-cell>
           </wd-cell-group>
           <view v-if="unitPriceText" class="muted-text snapshot-note">
-            价格快照演示：该套餐折算单价约 {{ unitPriceText }} 元/升，下单后以订单套餐快照为准。
-          </view>
-          <view class="muted-text snapshot-note">
-            {{ isPurchase
-              ? '首次购卡只使用服务端确认可购的套餐；新卡类型、到账权益与范围均以订单及发卡结果为准。'
-              : '本期仅支持套餐充值（L2 契约：packageId 必填、到账金额由服务端套餐快照决定）；不提供自定义金额。' }}
+            折算单价约 {{ unitPriceText }} 元/升
           </view>
         </wd-card>
       </view>
 
-      <view class="page-section">
-        <wd-card title="支付能力" custom-class="block-card">
-          <wd-cell :title="isRechargeMock ? '微信支付' : 'Pay-Sim 模拟支付'" icon="money-circle">
-            <wd-tag :type="isRechargeMock ? 'warning' : 'primary'" plain>
-              {{ isRechargeMock ? '待接入' : '测试环境可用' }}
-            </wd-tag>
-          </wd-cell>
-          <view class="muted-text pay-note">
-            <template v-if="isRechargeMock">
-              原型最多生成待支付订单，不发生真实到账；未接入退款与赠送发放。
-            </template>
-            <template v-else>
-              当前由 Pay-Sim 模拟支付，走与真实回调同一条处理链路，{{ isPurchase ? '支付成功后会创建虚拟卡并入账' : '会真实入账到本卡' }}但不发生真实扣款；
-              真实微信支付与退款尚未接入。
-            </template>
-          </view>
-        </wd-card>
-      </view>
-
+      <!--
+        这里曾有一张「支付能力」卡：按构建期 recharge 模式渲染「模拟支付／可用」，
+        并附一句「模拟支付不实际扣款，充值余额真实到账」。两点致命：
+        1) 出货三份 env 都是 recharge=real，卡片恒定播报同一句，等于把内部接入进度
+           挂在用户面前，用户据此做不了任何决定；
+        2) 换上 requestPayment 那天，「不实际扣款」会变成对着真扣款说不扣——
+           这是本轮最危险的一类残留，宁可不说也不能说反。
+        某笔钱究竟走没走真微信，由服务端 paySource 逐单记录，订单详情的「支付来源」
+        照实展示，接真前后都成立，不需要本页再声明一次。
+      -->
       <view class="page-section">
         <wd-button
           block
@@ -304,18 +270,12 @@ async function handleSubmit() {
           :disabled="loading || (isPurchase ? visiblePackages.length === 0 : !card)"
           @click="handleSubmit"
         >
-          {{ isRechargeMock ? '生成待支付原型订单' : isPurchase ? '创建购卡订单' : '创建充值订单' }}
+          {{ isPurchase ? '创建购卡订单' : '创建充值订单' }}
         </wd-button>
-        <view class="muted-text meta-note">
-          <template v-if="isRechargeMock">
-            当前充值域固定为 Mock：生成待支付原型单后进入订单详情，并可从订单 Tab 回看；不生成真实支付、到账或赠送结果。
-          </template>
-          <template v-else>
-            创建订单后会弹出模拟支付确认；到账与否只以服务端返回的状态为准，不以点击成功为准。
-            {{ isPurchase
-              ? '有限期新卡从支付成功时间起算套餐天数；永久套餐的新卡永久有效。'
-              : '有限期套餐到账后按「原有效期与支付时间的较晚者 + 套餐天数」顺延卡有效期。' }}
-          </template>
+        <view v-if="!isRechargeMock" class="muted-text meta-note">
+          {{ isPurchase
+            ? '有效期从支付成功时间起算。'
+            : '充值到账后卡有效期顺延套餐天数。' }}
         </view>
       </view>
     </template>
@@ -370,11 +330,6 @@ async function handleSubmit() {
 
 .snapshot-note {
   margin-top: 10px;
-  line-height: 1.6;
-}
-
-.pay-note {
-  margin-top: 8px;
   line-height: 1.6;
 }
 </style>

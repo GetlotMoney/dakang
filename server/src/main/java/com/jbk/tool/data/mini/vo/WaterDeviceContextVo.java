@@ -52,4 +52,12 @@ public class WaterDeviceContextVo implements Serializable {
 
     @Schema(description = "会话过期时间 yyyyMMddHHmmss")
     private String expiresAt;
+
+    /**
+     * 报价生成时间 yyyyMMddHHmmss（S2）。与 expiresAt 一起构成「本次扫码报价有效至 X」的展示依据，
+     * 价格与水种在此刻定死，页面据此提示用户过期需重扫。
+     */
+    @Schema(description = "报价生成时间 yyyyMMddHHmmss")
+    private String quotedAt;
+
 }

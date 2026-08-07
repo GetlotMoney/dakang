@@ -15,7 +15,6 @@ export interface BusinessModuleNavItem {
 
 export interface BusinessModuleNavigation {
   title: string
-  description: string
   items: readonly BusinessModuleNavItem[]
 }
 
@@ -54,16 +53,17 @@ export const PRIMARY_BUSINESS_MENU_CONTRACTS: readonly PrimaryBusinessMenuContra
 export const BUSINESS_MODULE_NAVIGATION: Record<BusinessModuleKey, BusinessModuleNavigation> = {
   device: {
     title: '设备中控',
-    description: '统一管理设备档案、在线状态与指令全程回执',
     items: [
       { label: '设备档案', path: '/device/index', icon: 'ri:cpu-line' },
+      { label: '告警中心', path: '/device/alarm', icon: 'ri:alarm-warning-line' },
+      { label: '运维工单', path: '/device/workorder', icon: 'ri:file-list-3-line' },
+      { label: '批量控制', path: '/device/batch', icon: 'ri:stack-line' },
       { label: '指令记录', path: '/device/command', icon: 'ri:terminal-box-line' },
       { label: '运营配置', path: '/device/operations', icon: 'ri:settings-3-line' }
     ]
   },
   product: {
     title: '水种套餐',
-    description: '维护水种基础字典与套餐定价规则',
     items: [
       { label: '水种管理', path: '/product/water', icon: 'ri:drop-line' },
       { label: '套餐管理', path: '/product/package', icon: 'ri:coupon-3-line' }
@@ -71,20 +71,22 @@ export const BUSINESS_MODULE_NAVIGATION: Record<BusinessModuleKey, BusinessModul
   },
   user: {
     title: '用户管理',
-    description: '统一查看 C端用户、水卡状态与配送员准入',
     items: [
       { label: 'C端用户', path: '/user/index', icon: 'ri:user-3-line' },
       { label: '水卡与授权', path: '/user/card', icon: 'ri:bank-card-line' },
-      { label: '配送员准入', path: '/user/courier', icon: 'ri:user-follow-line' }
+      { label: '配送员准入', path: '/user/courier', icon: 'ri:user-follow-line' },
+      { label: '消息记录', path: '/user/message', icon: 'ri:notification-3-line' }
     ]
   },
   order: {
     title: '订单中心',
-    description: '统一追踪交易订单、配送履约与申诉处置',
     items: [
       { label: '订单查询', path: '/order/index', icon: 'ri:file-search-line' },
       { label: '配送任务', path: '/order/delivery', icon: 'ri:truck-line' },
-      { label: '申诉处理', path: '/order/appeal', icon: 'ri:customer-service-2-line' }
+      { label: '申诉处理', path: '/order/appeal', icon: 'ri:customer-service-2-line' },
+      { label: '分账明细', path: '/order/split', icon: 'ri:pie-chart-2-line' },
+      { label: '日对账', path: '/order/reconcile', icon: 'ri:scales-3-line' },
+      { label: '分账比例配置', path: '/order/splitconfig', icon: 'ri:percent-line' }
     ]
   }
 }

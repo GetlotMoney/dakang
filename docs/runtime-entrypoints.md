@@ -4,7 +4,7 @@
 
 ## 微信小程序入口状态
 
-`miniapp/` 已完成一期页面基座，并在受控配置下完成 E2E-01 扫码取水、E2E-02 水卡生命周期和 E2E-03 水配送的模拟环境验收。日常页面开发仍可使用全域 Mock；链路验收构建按域连接本地后端、Pay-Sim 或设备模拟器。正式微信能力和物理设备尚未接入，测试账号能力只允许在受控验收开关下使用。小程序不复用 PC 的 `8081`、`13321` 作为页面入口；`13330` 仅作为联调 API 后端。
+`miniapp/` 已完成一期页面基座。**全部业务域恒接真实后端**（Mock 基建已于 2026-08-02 整体退役，无 mock 兜底）；链路验收按域连接隔离验收环境、Pay-Sim 或设备模拟器。正式微信能力和物理设备尚未接入，测试账号能力只允许在受控验收开关下使用。业务链进度见 `requirements/demo-business-chain-matrix.md`，本文不复制状态。小程序不复用 PC 的 `8081`、`13321` 作为页面入口；`13330` 仅作为联调 API 后端。
 
 | 用途 | 唯一命令 / 目录 | 验收边界 |
 |---|---|---|
@@ -13,10 +13,10 @@
 | 微信开发构建 | `pnpm dev:mp-weixin` → `dist/dev/mp-weixin` | 导入微信开发者工具进行开发调试 |
 | 类型检查 | `pnpm type-check` | 必须无 TypeScript 错误 |
 | 代码规范 | `pnpm lint` | 必须无 ESLint 错误 |
-| 契约测试 | `pnpm test` | 路由、能力和关键 Mock 规则回归 |
+| 契约测试 | `pnpm test` | 路由、能力与运行态模式规则回归 |
 | H5 生产构建 | `pnpm build:h5` | 仅作为补充构建检查 |
-| 微信生产构建 | `pnpm build:mp-weixin` → `dist/build/mp-weixin` | 当前日常交付包为全域 Mock，不触达真实业务写入 |
-| D4 全域 Mock 构建 | 见 `miniapp/e2e/README.md`；可直接使用日常构建，也可显式传六项 Mock 环境变量（含 `VITE_API_MODE_AUTH`）重建 | 运行态会再次校验 fingerprint 与六域模式（GLOBAL/DEVICE/ORDER/CARD/RECHARGE/AUTH，逐域断言）；行为/截图双结论 |
+| 微信生产构建 | `pnpm build:mp-weixin` → `dist/build/mp-weixin` | production 模式只读 `env/.env`（AppID=touristappid）；**验收产物须用 `dev:mp-weixin`**，真实 AppID 只在不入库的 `.env.development.local` |
+| E1b GUI 走查构建 | 见 `miniapp/e2e/README.md`；须显式传逐域模式变量（`device/order/card=real、recharge/delivery=mock、auth=real`） | 运行态再次校验 fingerprint 与逐域模式断言；行为/截图双结论。**注**：旧「D4 全域 Mock 走查」已随 Mock 基建退役删除 |
 
 当前微信 AppID 为 `touristappid`。接真实微信登录、手机号、隐私和订阅消息前必须替换为甲方 AppID 并重新评审契约。小程序最终 D4 仍以微信开发者工具中的实际编译、页面栈和交互为准。
 

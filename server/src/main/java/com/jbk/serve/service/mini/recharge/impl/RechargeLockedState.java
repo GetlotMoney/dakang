@@ -47,6 +47,15 @@ final class RechargeLockedState {
         if (order == null || order.getCardId() == null) {
             throw new JbkException("订单缺失或未关联目标卡");
         }
+        // 转正单（D-416，审计 P1-1）：在锁卡前先锁用户行，锁序 payment→order→user→card
+        // 与首购发卡（RechargeIssueTxImpl 决策 A4）完全同序——它是「一人一张付费卡」在
+        // 并发下的唯一串行化锚，两张赠卡并发转正、转正与首购并发都在这里排队。
+        // 快照仅作提示（解析失败不在此拦截，verify 阶段会正式拒绝）；普通充值不加用户锁。
+        if (promoteHint(order.getPackageSnap())) {
+            if (mapper.lockUserRow(order.getUserId()) == null) {
+                throw new JbkException("用户不存在，无法入账");
+            }
+        }
         WsCard card = mapper.lockCard(order.getCardId());
         List<WsPaymentEvent> events = mapper.lockEventsByOrderNo(order.getOrderNo());
         List<WsWalletFlow> flows = mapper.lockCardFlows(order.getCardId());
@@ -55,6 +64,15 @@ final class RechargeLockedState {
                 .findFirst()
                 .orElseThrow(() -> new JbkException("支付事实与订单号错位"));
         return new Locked(payment, order, card, event, List.copyOf(events), List.copyOf(flows));
+    }
+
+    /** 锁序提示：快照能解析且带转正标志才需要用户锁；解析异常按非转正处理（verify 兜底拒绝）。 */
+    private boolean promoteHint(String packageSnap) {
+        try {
+            return RechargeSnapshot.parse(packageSnap).promoteToPermanent();
+        } catch (Exception unparsable) {
+            return false;
+        }
     }
 
     Verified verifyForCredit(Locked locked) {
@@ -94,7 +112,9 @@ final class RechargeLockedState {
                 || !ObjectUtil.equals(snap.payAmount(), order.getOrderAmount())) {
             throw new JbkException("订单快照与订单共键错位");
         }
-        String expectedExpire = RechargePayExpire.compute(snap.capturedTime(), snap.expireTimeAtCreate());
+        // 转正单（D-416）按永久卡口径重算：创单时就是这么算的，重验必须同式同输入
+        String expectedExpire = RechargePayExpire.compute(snap.capturedTime(),
+                snap.promoteToPermanent() ? null : snap.expireTimeAtCreate());
         if (!StrUtil.equals(payment.getPayExpireTime(), expectedExpire)) {
             throw new JbkException("付款截止时间与不可变资格快照不一致");
         }

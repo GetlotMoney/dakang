@@ -10,7 +10,7 @@
         <ElInput
           v-model="formData.deviceNo"
           :disabled="props.type === 'edit'"
-          placeholder="如 DK-DEV-0003，MQTT 身份，建档后不可改"
+          placeholder="如 DK-DEV-0003，建档后不可修改"
           maxlength="50"
           show-word-limit
         />
@@ -69,6 +69,32 @@
       <ElFormItem label="SIM ICCID" prop="simIccid">
         <ElInput v-model="formData.simIccid" placeholder="选填" maxlength="50" />
       </ElFormItem>
+      <ElRow :gutter="12">
+        <ElCol :span="12">
+          <ElFormItem label="SIM 状态" prop="simStatus">
+            <ElSelect v-model="formData.simStatus" placeholder="未配置" clearable>
+              <ElOption
+                v-for="item in simStatusOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </ElSelect>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :span="12">
+          <ElFormItem label="SIM 到期" prop="simExpireTime">
+            <ElDatePicker
+              v-model="formData.simExpireTime"
+              type="datetime"
+              value-format="YYYYMMDDHHmmss"
+              format="YYYY-MM-DD HH:mm:ss"
+              placeholder="选填"
+              clearable
+            />
+          </ElFormItem>
+        </ElCol>
+      </ElRow>
       <ElFormItem label="备注" prop="deviceRemark">
         <ElInput
           v-model="formData.deviceRemark"
@@ -94,6 +120,8 @@
   import { fetchAddDevice, fetchUpdateDevice, type DeviceItem } from '@/api/device'
   import { fetchStationList, type StationItem } from '@/api/station'
   import { fetchWsUserPage, type WsUserItem } from '@/api/user'
+  import { fetchDictOptions, toDictOptions } from '@/utils/dict'
+  import { DictTypeEnum } from '@/constants/dict'
 
   interface Props {
     visible: boolean
@@ -130,6 +158,8 @@
     firmwareVersion: '',
     simIccid: '',
     simCarrier: '',
+    simStatus: undefined as number | undefined,
+    simExpireTime: '',
     deviceRemark: ''
   })
 
@@ -145,6 +175,7 @@
   // 机主远程搜索
   const ownerOptions = ref<WsUserItem[]>([])
   const ownerLoading = ref(false)
+  const simStatusOptions = ref<{ label: string; value: number }[]>([])
 
   async function searchOwner(keyword: string) {
     if (!keyword) {
@@ -172,6 +203,9 @@
     if (!stationOptions.value.length) {
       stationOptions.value = await fetchStationList()
     }
+    if (!simStatusOptions.value.length) {
+      simStatusOptions.value = toDictOptions(await fetchDictOptions(DictTypeEnum.SIM状态))
+    }
     await nextTick()
     formRef.value?.clearValidate()
     const row = props.deviceData
@@ -186,6 +220,8 @@
         firmwareVersion: row.firmwareVersion || '',
         simIccid: row.simIccid || '',
         simCarrier: row.simCarrier || '',
+        simStatus: row.simStatus,
+        simExpireTime: row.simExpireTime || '',
         deviceRemark: row.deviceRemark || ''
       })
       // 编辑回显机主选项（远程下拉初始为空会导致只显示 ID）
@@ -205,6 +241,8 @@
         firmwareVersion: '',
         simIccid: '',
         simCarrier: '',
+        simStatus: undefined,
+        simExpireTime: '',
         deviceRemark: ''
       })
       ownerOptions.value = []
@@ -218,7 +256,7 @@
       const payload = { ...formData } as any
       if (props.type === 'add') {
         await fetchAddDevice(payload)
-        ElMessage.success('新增成功，设备收到首个心跳后自动激活')
+        ElMessage.success('新增成功，设备联网后自动激活')
       } else {
         await fetchUpdateDevice(payload)
         ElMessage.success('修改成功')

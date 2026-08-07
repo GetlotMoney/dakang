@@ -3,9 +3,8 @@ import type { DeviceSummary, OwnerTransactionItem } from '@/api/device'
 import { onLoad } from '@dcloudio/uni-app'
 import { computed, ref, watch } from 'vue'
 import { ContractError } from '@/api/common'
-import { deviceApi } from '@/api/device'
+import { deviceApi, ownerTransactionPeriodQuery } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   formatBizTimeShort,
   formatFen,
@@ -23,8 +22,6 @@ definePage({
   },
 })
 
-/** 周期简化为两档；近7日基于原型固定当前时间 2026-07-16 推算（Store now=20260716180000）。 */
-const RECENT_7D_START = '20260709000000'
 const PERIOD_COLUMNS = [
   { label: '全部', value: '' },
   { label: '近7日', value: '7d' },
@@ -37,6 +34,7 @@ const items = ref<OwnerTransactionItem[]>([])
 const total = ref(0)
 const deviceFilter = ref('')
 const periodFilter = ref('')
+const authoritativePeriod = ref<{ periodStart: string, periodEnd: string }>()
 
 let initialized = false
 let requestToken = 0
@@ -49,14 +47,14 @@ const deviceColumns = computed(() => [
   })),
 ])
 
-// 汇总为本页就地累加，只读展示，不做提现或分账计算（蓝图 §3.2）。
+// 汇总为本页就地累加，只读展示，不做提现或分账计算。
 const summary = computed(() => ({
   count: items.value.length,
   volumeMl: items.value.reduce((sum, item) => sum + (item.actualVolumeMl ?? 0), 0),
   amountFen: items.value.reduce((sum, item) => sum + item.orderAmountFen, 0),
 }))
 
-// 筛选“改变即查询”（蓝图 §6.7）；初始化参数写入不重复触发。
+// 筛选“改变即查询”；初始化参数写入不重复触发。
 watch([deviceFilter, periodFilter], () => {
   if (initialized) {
     void loadTransactions()
@@ -67,7 +65,15 @@ onLoad(async (options) => {
   deviceFilter.value = String(options?.deviceNo ?? '')
   periodFilter.value = String(options?.period ?? '') === '7d' ? '7d' : ''
   try {
-    devices.value = await deviceApi.listOwnerDevices()
+    const [ownedDevices, overview] = await Promise.all([
+      deviceApi.listOwnerDevices(),
+      deviceApi.getOwnerOverview(),
+    ])
+    devices.value = ownedDevices
+    authoritativePeriod.value = {
+      periodStart: overview.periodStart,
+      periodEnd: overview.periodEnd,
+    }
   }
   catch (error) {
     loading.value = false
@@ -83,8 +89,9 @@ async function loadTransactions() {
   loading.value = true
   errorMessage.value = ''
   try {
+    const periodQuery = ownerTransactionPeriodQuery(periodFilter.value, authoritativePeriod.value)
     const result = await deviceApi.listOwnerTransactions({
-      periodStart: periodFilter.value === '7d' ? RECENT_7D_START : undefined,
+      ...periodQuery,
       deviceNo: deviceFilter.value || undefined,
       size: 50,
     })
@@ -113,7 +120,6 @@ async function loadTransactions() {
 <template>
   <view class="page-shell">
     <AppNavbar title="交易快照" back-to="O01" />
-    <AppPrototypeNotice />
 
     <view v-if="errorMessage" class="page-section">
       <wd-status-tip image="network" :tip="errorMessage">
@@ -141,8 +147,8 @@ async function loadTransactions() {
             :columns="PERIOD_COLUMNS"
           />
         </wd-cell-group>
-        <view class="muted-text filter-note">
-          近7日按原型固定当前时间 2026-07-16 推算；筛选仅在授权范围内过滤。
+        <view v-if="periodFilter === '7d' && authoritativePeriod" class="muted-text filter-note">
+          近7日窗口 {{ formatBizTimeShort(authoritativePeriod.periodStart) }} ~ {{ formatBizTimeShort(authoritativePeriod.periodEnd) }}
         </view>
       </view>
 
@@ -155,14 +161,8 @@ async function loadTransactions() {
           <view class="summary-line">
             本页订单 {{ summary.count }} 单 · 出水 {{ formatMl(summary.volumeMl) }} · 金额 {{ formatFen(summary.amountFen) }}
           </view>
-          <view class="muted-text">
-            汇总为本页就地累加的只读口径
-          </view>
           <view v-if="total > items.length" class="muted-text">
             共 {{ total }} 笔，当前展示前 {{ items.length }} 笔
-          </view>
-          <view class="muted-text summary-note">
-            仅站点经营快照，不含用户订单明细，不可跳转用户订单；不计算提现或分账。
           </view>
         </view>
 
@@ -211,8 +211,7 @@ async function loadTransactions() {
         </template>
 
         <view class="page-section readonly-footer">
-          <wd-icon name="lock-on" size="14px" color="#646a73" />
-          <text>机主交易视图只读：不计算提现或分账</text>
+          <text>金额为订单毛额（含已退款），分润净额见「收益钱包」</text>
         </view>
       </template>
     </template>
@@ -242,11 +241,6 @@ async function loadTransactions() {
 .summary-line {
   font-size: 15px;
   font-weight: 600;
-}
-
-.summary-note {
-  margin-top: 6px;
-  line-height: 1.6;
 }
 
 .txn-card {

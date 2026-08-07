@@ -91,7 +91,7 @@ async function refresh() {
             </view>
           </view>
           <view class="owner-revenue muted-text">
-            周期订单 {{ overview.orderCount }} 单 · 出水 {{ formatMl(overview.actualVolumeMl) }} · 金额 {{ formatFen(overview.orderAmountFen) }}（订单口径，非可提现收益）
+            周期订单 {{ overview.orderCount }} 单 · 出水 {{ formatMl(overview.actualVolumeMl) }} · 金额 {{ formatFen(overview.orderAmountFen) }}（订单金额，非可提现收益）
           </view>
         </template>
         <view v-else-if="blockedReason" class="face-blocked">
@@ -131,9 +131,6 @@ async function refresh() {
           @click="emit('switchFace', 'life')"
         />
       </wd-cell-group>
-      <view class="muted-text owner-footnote">
-        机主视角为只读监控：无提现、无远程控制。
-      </view>
     </view>
   </view>
 </template>
@@ -174,10 +171,5 @@ async function refresh() {
 
 .owner-revenue {
   line-height: 1.6;
-}
-
-.owner-footnote {
-  margin-top: 8px;
-  padding: 0 4px;
 }
 </style>

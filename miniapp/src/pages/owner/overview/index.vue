@@ -5,7 +5,6 @@ import { ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   ONLINE_STATUS_LABELS,
   ONLINE_STATUS_TONES,
@@ -22,9 +21,9 @@ definePage({
   },
 })
 
-/** 口径说明按蓝图要求原文级明确，不做缩写改写。 */
-const CALIBER_NOTE
-  = '订单按授权水站聚合、设备按授权设备聚合，二者范围可能不同；金额为订单口径，非可提现收益，不含分账与结算。'
+/** 金额口径单列：毛额、退款不冲减、非可提现——三件事都必须让机主看见，避免把订单额当收入。 */
+const AMOUNT_NOTE
+  = '金额为订单毛额（含已退款），分润净额见「收益钱包」'
 
 const loading = ref(true)
 const errorMessage = ref('')
@@ -33,7 +32,7 @@ const attentionDevices = ref<DeviceSummary[]>([])
 
 let fetching = false
 
-// onShow 刷新：从 O02/O04/O05 返回后重新聚合，避免展示过期快照（蓝图 §9.5 refreshing）。
+// onShow 刷新：从 O02/O04/O05 返回后重新聚合，避免展示过期快照。
 onShow(refresh)
 
 async function refresh() {
@@ -69,7 +68,6 @@ async function refresh() {
 <template>
   <view class="page-shell">
     <AppNavbar title="经营概览" back-to="U01" />
-    <AppPrototypeNotice />
 
     <view v-if="loading" class="page-section muted-text">
       加载中…
@@ -121,15 +119,18 @@ async function refresh() {
       </view>
 
       <view class="page-section">
-        <wd-card title="周期经营（只读快照）">
+        <wd-card title="周期经营">
           <view class="snapshot-line">
             订单 {{ overview.orderCount }} 单 · 出水 {{ formatMl(overview.actualVolumeMl) }} · 订单金额 {{ formatFen(overview.orderAmountFen) }}
           </view>
           <view class="muted-text">
-            统计周期 {{ formatBizTimeShort(overview.periodStart) }} ~ {{ formatBizTimeShort(overview.periodEnd) }}，只读口径
+            统计周期 {{ formatBizTimeShort(overview.periodStart) }} ~ {{ formatBizTimeShort(overview.periodEnd) }}
           </view>
           <view class="muted-text caliber-note">
-            {{ CALIBER_NOTE }}
+            {{ AMOUNT_NOTE }}
+          </view>
+          <view v-if="overview.prepaidVolumeMl > 0" class="muted-text caliber-note">
+            其中 {{ formatMl(overview.prepaidVolumeMl) }} 为水卡水量，不计入本期金额
           </view>
         </wd-card>
       </view>
@@ -175,13 +176,9 @@ async function refresh() {
         <wd-cell-group border>
           <wd-cell title="设备列表" icon="computer" is-link @click="goTo('O02')" />
           <wd-cell title="交易快照" icon="chart" is-link @click="goTo('O04')" />
+          <wd-cell title="收益钱包" icon="money-circle" is-link @click="goTo('O06')" />
           <wd-cell title="报修与配件" icon="tools" is-link @click="goTo('O05')" />
         </wd-cell-group>
-      </view>
-
-      <view class="page-section readonly-footer">
-        <wd-icon name="lock-on" size="14px" color="#646a73" />
-        <text>机主视图为只读监控：无提现、无远程控制</text>
       </view>
     </template>
   </view>
@@ -268,15 +265,5 @@ async function refresh() {
 
 .fault-code-text {
   color: #fa4350;
-}
-
-.readonly-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 12px 0;
-  color: var(--app-text-secondary);
-  font-size: 13px;
 }
 </style>

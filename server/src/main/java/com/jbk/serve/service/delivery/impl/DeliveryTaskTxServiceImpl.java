@@ -1,5 +1,6 @@
 package com.jbk.serve.service.delivery.impl;
 
+import com.jbk.serve.service.aftersale.IResendFulfillmentTxService;
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
@@ -8,7 +9,10 @@ import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.jbk.serve.mapper.delivery.WsDeliveryExceptionMapper;
 import com.jbk.serve.mapper.delivery.WsDeliveryTaskMapper;
+import com.jbk.serve.mapper.station.WsStationMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
+import com.jbk.serve.service.settlement.ISplitService;
+import com.jbk.tool.consts.settlement.SettlementEnum;
 import com.jbk.serve.service.delivery.DeliveryClock;
 import com.jbk.serve.service.delivery.DeliveryLinkGuard;
 import com.jbk.serve.service.delivery.DeliveryPricing;
@@ -53,6 +57,13 @@ public class DeliveryTaskTxServiceImpl implements IDeliveryTaskTxService {
     private WsDeliveryTaskMapper taskMapper;
     @Autowired
     private WsOrderMapper orderMapper;
+    @Autowired
+    private WsStationMapper deliveryStationMapper;
+    @Autowired
+    private ISplitService splitService;
+
+    @Autowired
+    private IResendFulfillmentTxService resendFulfillmentTxService;
     @Autowired
     private WsDeliveryExceptionMapper exceptionMapper;
     @Autowired
@@ -228,8 +239,23 @@ public class DeliveryTaskTxServiceImpl implements IDeliveryTaskTxService {
         messageService.sendInApp(task.getUserId(), MessageEnum.MsgDomain.DELIVERY, "订单已签收",
                 "订单 " + order.getOrderNo() + " 已完成三照签收；如有异议，可在签收后 24 小时内发起申诉。",
                 "order", order.getOrderNo(), signTime);
+        // E2E-08 分账挂点：签收即完成，同事务插「待分账」行。D-419（2026-08-07 甲方确认）：
+        // 配送费与水费完全分开——水费按 WATER 线比例、配送费按 DELIVERY 线比例分别计算，
+        // 基数取任务行冻结快照（waterAmount/deliveryFee，创单时即定死）。
+        // 机主=任务所属站归属；配送员=签收任务的配送员本人（收款方唯一性天然成立）。
+        splitService.enqueueForDeliveryOrder(order.getId(), order.getOrderNo(),
+                task.getWaterAmount() == null ? 0L : task.getWaterAmount(),
+                task.getDeliveryFee() == null ? 0L : task.getDeliveryFee(),
+                stationOwnerOf(task.getStationId()), courier.courier().getUserId(), order.getCreateTime());
         recordNode(task.getTaskNo(), order.getOrderNo(), "sign", signTime, actorUserId,
                 DeliveryEnum.TaskStatus.ARRIVED, DeliveryEnum.TaskStatus.SIGNED);
+        // E2E-04 包C：若本任务是补送任务，回签成功后才把售后动作推成已完成。
+        //
+        // 位置固定在**签收与订单完成都已成功之后、同事务内**：
+        //   放在前面 → 签收失败回滚时售后已显示完成，即任务书禁止的「提前显示补送完成」；
+        //   放到事务外 → 签收成功而推进失败时，用户收到了水而售后永远停在待执行。
+        // 普通配送任务在这里恒返回 false，不产生任何写入。
+        resendFulfillmentTxService.completeOnSigned(task.getId(), actorUserId, signTime);
         return reload(task.getId());
     }
 
@@ -377,6 +403,15 @@ public class DeliveryTaskTxServiceImpl implements IDeliveryTaskTxService {
      * 操作者是配送员：portal 由领域层按能力校验结论显式记 COURIER，不走会话推断（推断只会得到 USER）。
      * 时间与节点动作同源（规则13）。
      */
+    /** 分账机主解析（E2E-08）：配送单按任务所属站归属；无归属返回 null=该单无机主收款方。 */
+    private Long stationOwnerOf(Long stationId) {
+        if (stationId == null) {
+            return null;
+        }
+        var station = deliveryStationMapper.selectById(stationId);
+        return station == null ? null : station.getOwnerUserId();
+    }
+
     private void recordNode(String taskNo, String orderNo, String node, String actionTime,
                             Long courierUserId, DeliveryEnum.TaskStatus from, DeliveryEnum.TaskStatus to) {
         domainEventService.recordReliableOnceAs(OpsEnum.ActorPortal.COURIER, courierUserId,

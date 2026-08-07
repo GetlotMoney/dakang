@@ -10,9 +10,7 @@ import { cardApi, resolveCardSelection } from '@/api/card'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import { orderApi } from '@/api/order'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   AVAILABILITY_LABELS,
   CARD_BLOCK_LABELS,
@@ -24,6 +22,13 @@ import {
   PAY_WAY_LABELS,
 } from '@/utils/format'
 import { backOr, redirectTo } from '@/utils/navigation'
+import {
+  buildCreateWaterOrderPayload,
+  canSubmitWater,
+  estimatedAmountFen as computeAmountFen,
+  isQuoteInvalidCode,
+  resolveCardHint,
+} from './quote'
 
 definePage({
   style: {
@@ -33,14 +38,6 @@ definePage({
 })
 
 const toast = useToast()
-const waterAdapterModes = [currentMode('device'), currentMode('order'), currentMode('card')]
-const isRealWaterFlow = waterAdapterModes.every(mode => mode === 'real')
-const isMockWaterFlow = waterAdapterModes.every(mode => mode === 'mock')
-const waterBoundaryText = isRealWaterFlow
-  ? '确认后将按所选水量从水卡真实扣款并下发取水指令，请核对设备、水种与金额。'
-  : isMockWaterFlow
-    ? '当前为全域 Mock 取水原型：确认后只生成本地订单与轨迹，不扣真实水卡、不下发真实设备指令。'
-    : '当前取水链适配器未完整接真，不能作为真实扣款与设备下发验收；请先统一各域模式。'
 
 /** 设备在线/运行状态中文口径（utils/format 暂无该映射，页面内先行冻结）。 */
 const ONLINE_STATUS_LABELS: Record<DeviceOnlineStatus, string> = {
@@ -67,6 +64,8 @@ const RUN_STATUS_TONES: Record<DeviceRunStatus, TagTone> = {
 const PRESET_LITERS = [5, 10, 20]
 
 const pageState = ref<'loading' | 'ready' | 'error'>('loading')
+/** 报价失效/会话过期：主按钮永久禁用，必须重新扫码，不允许在失效页面反复点提交。 */
+const quoteInvalid = ref(false)
 const errorMessage = ref('')
 const errorImage = ref<'content' | 'network'>('network')
 
@@ -95,12 +94,10 @@ function onPayWayChange({ value }: { value: number | string | boolean }) {
 
 const planMl = computed(() => Math.max(0, Math.floor(Number(planLiters.value) || 0) * 1000))
 
-const estimatedAmountFen = computed(() => {
-  if (!context.value || planMl.value <= 0) {
-    return 0
-  }
-  return Math.ceil(planMl.value / 1000) * context.value.outlet.unitPriceFenPerLiter
-})
+// 公式唯一实现在 ./quote，与单测共用同一份——页面内联一份、测试再抄一份，改坏了两边都不会红。
+const estimatedAmountFen = computed(() =>
+  context.value ? computeAmountFen(planMl.value, context.value.outlet.unitPriceFenPerLiter) : 0,
+)
 
 /** 水量支付参考上限（=指定卡剩余水量）：只约束水量支付，余额支付不受它阻断（CARD-SCOPE）。 */
 const maxAllowedMl = computed(() => eligibility.value?.maxAllowedMl)
@@ -108,7 +105,7 @@ const maxAllowedMl = computed(() => eligibility.value?.maxAllowedMl)
 /** 成员日剩余额度：仅成员取水时返回（CARD-MEMBER），有值才参与阻断，与水量余量互不混用。 */
 const remainingDailyLimitMl = computed(() => eligibility.value?.remainingDailyLimitMl)
 
-/** 设备侧阻断（蓝图 §9.4）：availability ≠ AVAILABLE 一律原位阻断并禁用主按钮。 */
+/** 设备侧阻断：availability ≠ AVAILABLE 一律原位阻断并禁用主按钮。 */
 const availabilityNotice = computed(() => {
   const value = eligibility.value
   if (!value || value.availability === 'AVAILABLE') {
@@ -143,7 +140,7 @@ const formError = computed(() => {
     return `超出成员今日剩余额度 ${formatMl(remainingDailyLimitMl.value)}`
   }
   if (payWay.value === 1) {
-    return '微信支付待接入，请选择水卡支付方式'
+    return '微信支付暂不可用，请选择水卡支付方式'
   }
   if (card.value && payWay.value === 3 && card.value.balanceMl < planMl.value) {
     return `水卡剩余水量不足（剩余 ${formatMl(card.value.balanceMl)}）`
@@ -154,21 +151,29 @@ const formError = computed(() => {
   return ''
 })
 
-const canSubmit = computed(() =>
-  pageState.value === 'ready'
-  && !!context.value
-  && !!card.value
-  && !availabilityNotice.value
-  && !cardBlockNotice.value
-  && !formError.value,
-)
+// 判据唯一实现在 ./quote.canSubmitWater（与单测共用）。hasEligibility 不可省：
+// 多卡场景下卡与预检是分两步就位的，缺这一项就可能在零预检状态下放行提交。
+const canSubmit = computed(() => canSubmitWater({
+  quoteInvalid: quoteInvalid.value,
+  ready: pageState.value === 'ready',
+  hasContext: !!context.value,
+  hasCard: !!card.value,
+  hasEligibility: !!eligibility.value,
+  switchingCard: switching.value,
+  availabilityNotice: availabilityNotice.value,
+  cardBlockNotice: cardBlockNotice.value,
+  formError: formError.value,
+}))
+
+/** 水卡区三态：none=一张都没有，choose=有多张但还没选，selected=已选定。 */
+const cardHint = computed(() => resolveCardHint(usableCards.value.length, !!card.value))
 
 onLoad((query?: Record<string, string | undefined>) => {
   const sessionId = query?.scanSessionId
   if (!sessionId) {
     pageState.value = 'error'
     errorImage.value = 'content'
-    errorMessage.value = '缺少扫码会话参数，请从首页重新扫码进入'
+    errorMessage.value = '请从首页重新扫码进入'
     return
   }
   scanSessionId.value = sessionId
@@ -199,15 +204,44 @@ async function loadAll() {
     pageState.value = 'ready'
   }
   catch (error) {
+    if (isQuoteInvalid(error)) {
+      markQuoteInvalid(error)
+      return
+    }
     pageState.value = 'error'
-    errorImage.value = error instanceof ContractError && error.code === 'SCAN_SESSION_EXPIRED'
-      ? 'content'
-      : 'network'
-    errorMessage.value = error instanceof ContractError ? error.message : '设备与权益预检加载失败，请重试'
+    errorImage.value = 'network'
+    errorMessage.value = error instanceof ContractError ? error.message : '设备信息加载失败，请重试'
   }
 }
 
-/** 选卡（含切卡）：CARD-SCOPE 契约「预检卡=下单卡」，换卡必须重新预检，绝不复用旧卡的预检结果。 */
+/** 会话过期与报价变化都意味着本次扫码作废，处置动作相同：清上下文、禁提交、要求重扫。 */
+function isQuoteInvalid(error: unknown): boolean {
+  return error instanceof ContractError && isQuoteInvalidCode(error.code)
+}
+
+function markQuoteInvalid(error: unknown) {
+  quoteInvalid.value = true
+  submitting.value = false
+  context.value = null
+  eligibility.value = null
+  pageState.value = 'error'
+  errorImage.value = 'content'
+  errorMessage.value = error instanceof ContractError && error.code === 'SCAN_QUOTE_CHANGED'
+    ? '报价已变化，请重新扫码'
+    : '报价已变化或已超时，请重新扫码'
+}
+
+/**
+ * 选卡核心：CARD-SCOPE 契约「预检卡=下单卡」，换卡必须重新预检，绝不复用旧卡的预检结果。
+ *
+ * <p><b>失败一律抛出，绝不在这里吞。</b>两个调用方要的处置完全不同：加载期（单卡自动选中）
+ * 失败必须落到错误页，因为那时页面上没有任何可点的卡、也就没有重试入口；用户手动切卡失败
+ * 只需原位提示，旧卡与旧预检继续有效。曾经把 catch 写在这里，结果加载期失败被吞掉、
+ * loadAll 照常把 pageState 置 'ready'，单卡用户拿到一张「卡区空空、按钮永久灰掉、
+ * 还写着'请先选择'」的页面——比不兜底更糟。</p>
+ *
+ * <p>card 与 eligibility 只在预检成功后成对写入，绝不出现「卡换了、预检还是旧卡的」。</p>
+ */
 async function applyCard(cardId: string) {
   switching.value = true
   try {
@@ -220,9 +254,29 @@ async function applyCard(cardId: string) {
   }
 }
 
+/**
+ * 用户点选/切卡：这是点击直接触发的，不在 loadAll 的 try 里，必须自己兜住异常，
+ * 否则 5410/5411 会成为一个未处理的 Promise rejection——页面既不置报价失效、也不提示。
+ * 非报价类失败保留上一张卡与它的预检结论，用户可以再点一次重试。
+ */
+async function pickCard(cardId: string) {
+  try {
+    await applyCard(cardId)
+  }
+  catch (error) {
+    if (isQuoteInvalid(error)) {
+      markQuoteInvalid(error)
+      return
+    }
+    toast.show(error instanceof ContractError ? error.message : '水卡校验失败，请重试')
+  }
+}
+
 /** 主操作：创建原型取水订单后 redirect 进 U05，避免返回后复用已消费会话。 */
 async function handleSubmit() {
-  if (!canSubmit.value || submitting.value || !context.value || !card.value) {
+  // switching 双保险：canSubmit 已含它，这里再挡一次——切卡在途时 card 仍是上一张，
+  // 放行就等于用户点了 B 却扣了 A
+  if (!canSubmit.value || submitting.value || switching.value || !context.value || !card.value) {
     return
   }
   const way = payWay.value
@@ -231,16 +285,21 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
-    const detail = await orderApi.createWaterOrder({
+    // 入参白名单唯一实现在 ./quote.buildCreateWaterOrderPayload（价格/金额/设备共键一律不上报）
+    const detail = await orderApi.createWaterOrder(buildCreateWaterOrderPayload({
       scanSessionId: scanSessionId.value,
       cardId: card.value.cardId,
       waterTypeId: context.value.outlet.waterTypeId,
       planMl: planMl.value,
       payWay: way,
-    })
+    }))
     redirectTo('U05', { orderNo: detail.order.orderNo })
   }
   catch (error) {
+    if (isQuoteInvalid(error)) {
+      markQuoteInvalid(error)
+      return
+    }
     toast.show(error instanceof ContractError ? error.message : '取水下单失败，请重试')
   }
   finally {
@@ -253,12 +312,11 @@ async function handleSubmit() {
   <view class="page-shell">
     <AppNavbar title="取水确认" back-to="U01" />
     <wd-toast />
-    <AppPrototypeNotice :text="waterBoundaryText" />
 
     <view v-if="pageState === 'loading'" class="page-section loading-box">
       <wd-loading />
       <view class="muted-text">
-        正在加载设备与权益预检…
+        正在加载设备信息…
       </view>
     </view>
 
@@ -274,7 +332,12 @@ async function handleSubmit() {
       </wd-status-tip>
     </view>
 
-    <template v-else-if="context && eligibility">
+    <!--
+      门只看 context，绝不能再叠 eligibility：多卡用户（可用卡≥2）在选卡之前不做预检、
+      eligibility 恒 null，而触发预检的选卡列表本身就在这个门里面——叠上去页面就自锁，
+      正文整块不渲染，用户只能物理返回。预检结论缺失由 canSubmit 的 hasEligibility 兜住。
+    -->
+    <template v-else-if="context">
       <view class="page-section">
         <wd-card custom-class="block-card">
           <template #title>
@@ -296,8 +359,11 @@ async function handleSubmit() {
             <wd-cell title="设备名称" :value="context.deviceName" />
             <wd-cell title="出水口 / 水种" :value="`${context.outlet.outletNo} 号口 · ${context.outlet.waterTypeName}`" />
             <wd-cell title="单价" :value="`${formatFen(context.outlet.unitPriceFenPerLiter)}/升`" />
-            <wd-cell title="价格快照" :value="`会话有效期至 ${formatBizTime(context.expiresAt)}`" />
+            <wd-cell title="报价有效至" :value="formatBizTime(context.expiresAt)" />
           </wd-cell-group>
+          <view class="quote-hint">
+            超时或价格变化后需重新扫码。
+          </view>
         </wd-card>
       </view>
 
@@ -334,7 +400,7 @@ async function handleSubmit() {
             </view>
           </view>
           <view class="muted-text">
-            按 {{ formatFen(context.outlet.unitPriceFenPerLiter) }}/升 × {{ formatMl(planMl) }} 计算，实际以设备出水结果结算。
+            实际以设备出水结果结算。
           </view>
           <view v-if="formError" class="form-error">
             {{ formError }}
@@ -376,13 +442,16 @@ async function handleSubmit() {
               :title="item.cardNo"
               :label="item.accessRole === 'MEMBER' ? '成员授权卡（扣持卡人余额）' : '本人水卡'"
               clickable
-              @click="!switching && applyCard(item.cardId)"
+              @click="!switching && pickCard(item.cardId)"
             >
               <wd-icon v-if="card?.cardId === item.cardId" name="check-outline" size="18px" />
             </wd-cell>
           </wd-cell-group>
-          <view v-if="usableCards.length > 1 && !card" class="muted-text">
-            存在多张可用水卡，请先选择本次取水使用的卡。
+          <view v-if="cardHint === 'choose'" class="muted-text">
+            请先选择本次取水使用的水卡。
+          </view>
+          <view v-if="switching" class="muted-text">
+            正在切换水卡，请稍候…
           </view>
           <wd-cell-group v-if="card">
             <wd-cell title="卡号" :value="card.cardNo" />
@@ -390,7 +459,7 @@ async function handleSubmit() {
             <wd-cell title="剩余水量" :value="formatMl(card.balanceMl)" />
             <wd-cell
               title="水量支付可用"
-              :value="maxAllowedMl !== undefined ? formatMl(maxAllowedMl) : '未返回'"
+              :value="maxAllowedMl !== undefined ? formatMl(maxAllowedMl) : '—'"
             />
             <wd-cell
               v-if="remainingDailyLimitMl !== undefined"
@@ -398,16 +467,18 @@ async function handleSubmit() {
               :value="formatMl(remainingDailyLimitMl)"
             />
           </wd-cell-group>
-          <view v-else class="muted-text">
+          <!-- 只在真的一张卡都没有时才这么说：有卡未选是 choose 态，说成"暂无可用水卡"是误导 -->
+          <view v-else-if="cardHint === 'none'" class="muted-text">
             当前账号暂无可用水卡，无法完成取水下单。
+          </view>
+          <!-- 有卡却没能选中（预检未通过）：不能说"暂无可用水卡"，也不能叫用户去点不存在的列表 -->
+          <view v-else-if="cardHint === 'unresolved'" class="muted-text">
+            暂不能下单，请返回首页重新扫码。
           </view>
         </wd-card>
       </view>
 
       <view class="page-section confirm-footer">
-        <view class="muted-text footer-note">
-          {{ isRealWaterFlow ? '确认后将从水卡真实扣款并通知设备出水' : '确认后按当前原型适配器生成订单' }}
-        </view>
         <wd-button block size="large" :disabled="!canSubmit" :loading="submitting" @click="handleSubmit">
           确认并开始取水
         </wd-button>
@@ -417,6 +488,13 @@ async function handleSubmit() {
 </template>
 
 <style scoped lang="scss">
+.quote-hint {
+  padding: 8rpx 32rpx 16rpx;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #8c8c8c;
+}
+
 .loading-box {
   display: flex;
   flex-direction: column;
@@ -485,10 +563,5 @@ async function handleSubmit() {
 
 .confirm-footer {
   margin-top: 20px;
-}
-
-.footer-note {
-  margin-bottom: 8px;
-  text-align: center;
 }
 </style>
