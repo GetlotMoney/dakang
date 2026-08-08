@@ -90,7 +90,7 @@ function removePhoto() {
 }
 
 .photo-slot-missing {
-  border-color: #fa4350;
+  border-color: var(--app-color-danger);
 }
 
 .photo-slot-header {

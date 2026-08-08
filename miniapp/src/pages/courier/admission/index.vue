@@ -7,7 +7,6 @@ import { useMessage, useToast } from 'wot-design-uni'
 import { catalogApi } from '@/api/catalog'
 import { ContractError } from '@/api/common'
 import { deliveryApi } from '@/api/delivery'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
 import { useAccountStore } from '@/store/account'
 import {
@@ -45,11 +44,10 @@ const model = reactive({
 /**
  * 只有未提交(0)与驳回(4)允许（重新）提交，与契约 COURIER_ADMISSION_NOT_ALLOWED 口径一致。
  *
- * <p>delivery 接真时另加一道闸：服务端没有自助提交端点（仅 /detail，建档走 PC 人工链路），
- * 提交必定 fail-closed。让用户填完整张表再撞报错是最差的交互，故 real 下直接不渲染表单，
- * 改以下方提示说明正确路径。</p>
+ * <p>S3 起服务端提供自助提交端点（/mini/delivery/admission/submit，主体恒取会话、
+ * 驳回复用原记录），real 模式表单放开；状态闸与水站合法性由服务端最终裁决。</p>
  */
-const selfSubmitSupported = currentMode('delivery') !== 'real'
+const selfSubmitSupported = true
 const showForm = computed(
   () => selfSubmitSupported && admission.value !== null && [0, 4].includes(admission.value.status),
 )
@@ -317,7 +315,7 @@ async function handleSubmit() {
 .admission-reject {
   margin-bottom: 6px;
   font-size: 14px;
-  color: #fa4350;
+  color: var(--app-color-danger);
 }
 
 .declaration-row {

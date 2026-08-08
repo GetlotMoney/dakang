@@ -3,6 +3,8 @@ import type { CardSummary } from '@/api/card'
 import type { CourierAdmission } from '@/api/delivery'
 import type { OrderItem } from '@/api/order'
 import { computed, ref, watch } from 'vue'
+import { ENTRY_ICONS, listPublishedEntries, projectFeatureEntries, projectNotice } from '@/api/entry'
+import type { PublishedEntry } from '@/api/entry'
 import { useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { deliveryApi } from '@/api/delivery'
@@ -23,6 +25,17 @@ import { scanWaterCode } from '@/utils/scan'
 
 /** 生活用水态：U01 的消费者视角（主态自适应三张脸之一）。 */
 const props = defineProps<{ refreshTick: number }>()
+
+// S6 入口配置投影（R1-7 fail-closed）：宫格只渲染已发布配置；读取异常回放最后一次
+// 成功配置（含空），从未成功=宫格为空——固定 Tabbar 保证首页/订单/我的核心可用
+const featureEntries = ref<PublishedEntry[]>([])
+const maintenanceNotice = ref<string | null>(null)
+
+async function refreshEntries() {
+  const published = await listPublishedEntries()
+  featureEntries.value = projectFeatureEntries(published)
+  maintenanceNotice.value = projectNotice(published)
+}
 
 const accountStore = useAccountStore()
 const toast = useToast()
@@ -57,6 +70,7 @@ const courierGuidance = computed(() => {
 })
 
 watch(() => props.refreshTick, refresh, { immediate: true })
+watch(() => props.refreshTick, refreshEntries, { immediate: true })
 
 async function refresh() {
   loading.value = true
@@ -160,13 +174,20 @@ function handleFutureEntry(name: string) {
       </wd-button>
     </view>
 
+    <view v-if="maintenanceNotice" class="page-section">
+      <wd-notice-bar :text="maintenanceNotice" prefix="warn-bold" />
+    </view>
+
     <view class="page-section">
       <wd-card title="用水服务" custom-class="home-card">
         <wd-grid :column="4" clickable bg-color="transparent">
-          <wd-grid-item icon="location" text="附近水站" @itemclick="goTo('U07')" />
-          <wd-grid-item icon="goods" text="配送订水" @itemclick="goTo('U08')" />
-          <wd-grid-item icon="wallet" text="充值" @itemclick="goTo('U10')" />
-          <wd-grid-item icon="usergroup" text="家庭资料" @itemclick="goTo('U13')" />
+          <wd-grid-item
+            v-for="entry in featureEntries"
+            :key="entry.entryKey"
+            :icon="ENTRY_ICONS[entry.entryKey]"
+            :text="entry.entryName"
+            @itemclick="goTo(entry.routeId!)"
+          />
           <wd-grid-item icon="shop" @itemclick="handleFutureEntry('商城')">
             <template #text>
               <view class="future-entry-text">

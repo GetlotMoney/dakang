@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { ConfigProviderThemeVars } from 'wot-design-uni'
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { evaluateRouteAccess } from '@/router/guard'
@@ -11,13 +10,10 @@ const showTabbar = ref(false)
 const accountStore = useAccountStore()
 let handlingDirectAccess = false
 
-// 六维达康品牌（B 活力水滴 为主 + A 净蓝科技 点缀），与 PC / uni.scss / style/index.scss 同色值。
-const themeVars: ConfigProviderThemeVars = {
-  colorTheme: '#2E7CF6', // B 活力蓝 主色
-  colorSuccess: '#16C784', // B 健康绿
-  buttonPrimaryBgColor: '#2E7CF6',
-  buttonPrimaryColor: '#FFFFFF',
-}
+// 主题变量全部收在 style/index.scss 的 :root, page 里，本组件不再传 theme-vars。
+// 曾经两处各写一份（这里 4 条 + index.scss 1 条），只覆盖了 theme/success，
+// warning 与 danger 漏在 Wot 默认值上，页面为对齐 wd-tag 手抄出 22 处硬编码色。
+// ConfigProvider 保留是因为它是 KuRootView 的宿主，不再承担配色职责。
 
 function currentPageUrl() {
   const pages = getCurrentPages()
@@ -83,7 +79,7 @@ onShow(async () => {
 </script>
 
 <template>
-  <wd-config-provider :theme-vars="themeVars">
+  <wd-config-provider>
     <KuRootView />
     <AppTabbar v-if="showTabbar" />
   </wd-config-provider>

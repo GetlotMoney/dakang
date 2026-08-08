@@ -220,6 +220,8 @@ export interface OwnerWalletFlow {
 export interface OwnerWallet {
   balanceFen: number
   frozenFen: number
+  /** 冲减待补差额(分)（D-420）：>0 时提现暂不可用，后续分润入账优先补足；0=无差额 */
+  clawbackDeficitFen: number
   /** D-421 在途分润(分)：已产生、尚在冻结期未入账的分账合计；0=无在途。 */
   pendingSplitFen: number
   /** 最早一笔在途分润的预计解冻时间；无在途时缺省。 */
@@ -432,6 +434,7 @@ const realDeviceApi: DeviceApi = {
       const raw = await post<{
         balanceFen: unknown
         frozenFen: unknown
+        clawbackDeficitFen?: unknown
         pendingSplitFen?: unknown
         earliestUnfreezeTime?: unknown
         flows?: Array<Record<string, unknown>>
@@ -460,6 +463,7 @@ const realDeviceApi: DeviceApi = {
       return {
         balanceFen: toNonNegativeFen(raw.balanceFen),
         frozenFen: toNonNegativeFen(raw.frozenFen),
+        clawbackDeficitFen: toNonNegativeFen(raw.clawbackDeficitFen),
         pendingSplitFen: toNonNegativeFen(raw.pendingSplitFen),
         earliestUnfreezeTime: typeof raw.earliestUnfreezeTime === 'string'
           ? raw.earliestUnfreezeTime as BusinessTime

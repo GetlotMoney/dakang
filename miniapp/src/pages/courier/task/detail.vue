@@ -350,7 +350,7 @@ async function handleAppendEvidence() {
           <wd-cell title="联系电话" center clickable @click="handleCall">
             <view class="phone-value">
               <view>{{ task.maskedPhone }}</view>
-              <wd-icon name="phone" size="16px" color="#5d87ff" />
+              <wd-icon name="phone" size="16px" color="var(--app-color-primary)" />
             </view>
           </wd-cell>
           <wd-cell title="水种" :value="task.waterTypeName" />

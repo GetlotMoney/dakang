@@ -285,7 +285,7 @@ onShow(loadInviteCode)
     <view v-if="context" class="profile-header" @click="openProfileEdit">
       <view class="profile-avatar">
         <image v-if="avatarSrc" class="profile-avatar-img" :src="avatarSrc" mode="aspectFill" />
-        <wd-icon v-else name="user" size="28px" color="#5d87ff" />
+        <wd-icon v-else name="user" size="28px" color="var(--app-color-primary)" />
       </view>
       <view class="profile-header-main">
         <view class="profile-name">
@@ -389,6 +389,7 @@ onShow(loadInviteCode)
         />
         <wd-cell title="家庭资料" icon="usergroup" is-link @click="goTo('U13')" />
         <wd-cell title="水配送地址" icon="location" is-link @click="goTo('U14')" />
+        <wd-cell title="自动补货规则" icon="refresh" is-link @click="goTo('U16')" />
       </wd-cell-group>
     </view>
 
@@ -550,7 +551,7 @@ onShow(loadInviteCode)
 
 .profile-edit-avatar-tip {
   font-size: 12px;
-  color: #5d87ff;
+  color: var(--app-color-primary);
 }
 
 .profile-edit-input {

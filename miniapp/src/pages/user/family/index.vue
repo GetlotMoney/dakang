@@ -208,7 +208,7 @@ async function handleDelete() {
           <view class="tab-panel">
             <view v-if="!privacyAccepted" class="consent-banner">
               <view class="consent-text">
-                <wd-icon name="warning" size="16px" color="#f0883a" />
+                <wd-icon name="warning" size="16px" color="var(--app-color-warning)" />
                 <view>须先同意隐私说明，再填写家庭资料。</view>
               </view>
               <wd-button size="small" plain @click="showConsent">

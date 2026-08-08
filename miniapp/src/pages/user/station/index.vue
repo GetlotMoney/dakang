@@ -155,7 +155,7 @@ function handleStationTap(station: StationSummary) {
           </template>
           <view class="station-body" @click="handleStationTap(station)">
             <view class="station-address">
-              <wd-icon name="location" size="14px" color="#646a73" />
+              <wd-icon name="location" size="14px" color="var(--app-text-secondary)" />
               <view>{{ station.address }}</view>
             </view>
             <view class="station-metrics">

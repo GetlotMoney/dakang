@@ -87,7 +87,7 @@ async function refresh() {
 
     <template v-else-if="overview">
       <view class="page-section scope-line">
-        <wd-icon name="dashboard" size="16px" color="#5d87ff" />
+        <wd-icon name="dashboard" size="16px" color="var(--app-color-primary)" />
         <text>授权 {{ overview.stationCount }} 个水站 · {{ overview.deviceCount }} 台设备</text>
       </view>
 
@@ -162,7 +162,7 @@ async function refresh() {
                 <wd-tag v-if="item.runStatus === 'FAULT'" :type="RUN_STATUS_TONES[item.runStatus]" plain>
                   {{ RUN_STATUS_LABELS[item.runStatus] }}
                 </wd-tag>
-                <wd-icon name="arrow-right" size="14px" color="#646a73" />
+                <wd-icon name="arrow-right" size="14px" color="var(--app-text-secondary)" />
               </view>
             </view>
           </template>
@@ -219,15 +219,15 @@ async function refresh() {
 }
 
 .metric-value--online {
-  color: #34d19d;
+  color: var(--app-color-success);
 }
 
 .metric-value--warning {
-  color: #f0883a;
+  color: var(--app-color-warning);
 }
 
 .metric-value--danger {
-  color: #fa4350;
+  color: var(--app-color-danger);
 }
 
 .snapshot-line {
@@ -264,6 +264,6 @@ async function refresh() {
 }
 
 .fault-code-text {
-  color: #fa4350;
+  color: var(--app-color-danger);
 }
 </style>

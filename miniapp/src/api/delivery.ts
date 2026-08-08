@@ -26,7 +26,7 @@ import type {
 import { normalizeOrderDetail } from './order'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { currentMode, realAdapterPending } from './runtime'
+import { currentMode } from './runtime'
 import { formatFen, formatMl } from '@/utils/format'
 
 export type DeliveryTaskStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7
@@ -190,11 +190,32 @@ export interface AppendAppealEvidenceInput {
   evidenceRefs: string[]
 }
 
+/** 自动补货规则（S2，本人视角）。 */
+export interface AutoRefillRule {
+  ruleId: EntityId
+  waterTypeName: string
+  containerSpec: string
+  deliveryCount: number
+  receiveAddress: string
+  intervalDays: number
+  /** 下次到期时间；停用/已取消时缺省 */
+  nextDueTime?: BusinessTime
+  /** 1启用 2停用 3已取消 */
+  ruleStatus: 1 | 2 | 3
+  /** 最近一次执行结果；从未执行过缺省 */
+  lastResult?: string
+  lastResultTime?: BusinessTime
+}
+
 export interface DeliveryApi {
   createDeliveryOrder: (input: CreateDeliveryOrderInput) => Promise<{
     order: OrderDetail
     task: DeliveryTask
   }>
+  listAutoRules: () => Promise<AutoRefillRule[]>
+  pauseAutoRule: (ruleId: EntityId) => Promise<void>
+  resumeAutoRule: (ruleId: EntityId) => Promise<void>
+  cancelAutoRule: (ruleId: EntityId) => Promise<void>
   listTasks: (view: DeliveryTaskView) => Promise<DeliveryTask[]>
   getTaskDetail: (taskNo: string) => Promise<DeliveryTask>
   acceptTask: (taskNo: string, expectedVersion: number) => Promise<DeliveryTask>
@@ -225,6 +246,10 @@ export const deliveryEndpoints = {
   accept: '/mini/delivery/task/accept',
   advance: '/mini/delivery/task/advance',
   sign: '/mini/delivery/task/sign',
+  autoRuleList: '/mini/delivery/autoRule/list',
+  autoRulePause: '/mini/delivery/autoRule/pause',
+  autoRuleResume: '/mini/delivery/autoRule/resume',
+  autoRuleCancel: '/mini/delivery/autoRule/cancel',
   admissionDetail: '/mini/delivery/admission/detail',
   admissionSubmit: '/mini/delivery/admission/submit',
   exceptionReport: '/mini/delivery/task/exception/report',
@@ -392,6 +417,44 @@ function requireMediaKeys(refs: string[], scene: string): string[] {
  * 幂等/窗口）全在服务端，这里只做入参形态收口与响应归一化。
  */
 const realDeliveryApi: DeliveryApi = {
+  async listAutoRules() {
+    return withRealSession(async () => {
+      const raw = await post<Array<Record<string, unknown>>>(deliveryEndpoints.autoRuleList, {})
+      // Long→字符串序列化：数值双形态收敛；状态白名单外行整条丢弃（结构性脏数据不进渲染层）
+      const toInt = (v: unknown): number => typeof v === 'number' ? v : Number(v ?? 0)
+      return (raw ?? []).flatMap((row) => {
+        const status = toInt(row.ruleStatus)
+        if (status !== 1 && status !== 2 && status !== 3) {
+          return []
+        }
+        return [{
+          ruleId: String(row.id ?? ''),
+          waterTypeName: typeof row.waterTypeName === 'string' ? row.waterTypeName : '—',
+          containerSpec: typeof row.containerSpec === 'string' ? row.containerSpec : '—',
+          deliveryCount: toInt(row.deliveryCount),
+          receiveAddress: typeof row.receiveAddress === 'string' ? row.receiveAddress : '',
+          intervalDays: toInt(row.intervalDays),
+          nextDueTime: typeof row.nextDueTime === 'string' ? row.nextDueTime as BusinessTime : undefined,
+          ruleStatus: status as 1 | 2 | 3,
+          lastResult: typeof row.lastResult === 'string' ? row.lastResult : undefined,
+          lastResultTime: typeof row.lastResultTime === 'string' ? row.lastResultTime as BusinessTime : undefined,
+        }]
+      })
+    })
+  },
+
+  async pauseAutoRule(ruleId) {
+    await withRealSession(() => post(deliveryEndpoints.autoRulePause, { ruleId }))
+  },
+
+  async resumeAutoRule(ruleId) {
+    await withRealSession(() => post(deliveryEndpoints.autoRuleResume, { ruleId }))
+  },
+
+  async cancelAutoRule(ruleId) {
+    await withRealSession(() => post(deliveryEndpoints.autoRuleCancel, { ruleId }))
+  },
+
   async createDeliveryOrder(input) {
     // 幂等键由页面持有并在同一次提交的重试间复用；缺失/形态不符直接拒绝，防重试双扣款
     if (!input.requestId || !DELIVERY_REQUEST_ID_PATTERN.test(input.requestId)) {
@@ -488,9 +551,20 @@ const realDeliveryApi: DeliveryApi = {
       return normalizeCourierAdmission(raw)
     })
   },
-  // 准入建档/审核是 PC 人工链路（B09 已接真）；小程序端提交是未实现写路径，
-  // 显式 pending 而非委托 Mock——宁可明确阻断也不给假申请成功（order 域同款口径）。
-  submitCourierAdmission: () => realAdapterPending('提交配送准入申请', deliveryEndpoints.admissionSubmit),
+  // S3 接真：自助提交（0 未提交/4 已驳回可提交；驳回复用原记录留审核证据）。
+  // 服务端以会话为主体并做水站合法性与并发闸校验，前端只做表单前置校验
+  async submitCourierAdmission(input) {
+    return withRealSession(async () => {
+      const raw = await post<CourierAdmissionRaw>(deliveryEndpoints.admissionSubmit, {
+        applicantName: input.applicantName,
+        phone: input.phone,
+        requestedStationIds: input.requestedStationIds,
+        requestedRegion: input.requestedRegion,
+        declarationAccepted: input.declarationAccepted,
+      })
+      return normalizeCourierAdmission(raw)
+    })
+  },
   async reportException(input) {
     requireMediaKeys(input.evidenceRefs, '异常举证')
     return withRealSession(async () => {

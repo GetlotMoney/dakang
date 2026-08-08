@@ -21,6 +21,7 @@ export type RouteId
     | 'U13'
     | 'U14'
     | 'U15'
+    | 'U16'
     | 'D01'
     | 'D02'
     | 'D03'
@@ -79,6 +80,7 @@ export const appRoutes = [
   { id: 'U13', path: '/pages/user/family/index', title: '家庭资料', group: 'user', requiredCapability: 'USER_BASE', params: [optional('tab', ['profile', 'reward'])], defaultBackTo: 'U03' },
   { id: 'U14', path: '/pages/user/address/index', title: '水配送地址', group: 'user', requiredCapability: 'USER_BASE', params: [optional('returnTo', ['delivery'])], defaultBackTo: 'U03' },
   { id: 'U15', path: '/pages/user/address/edit', title: '编辑水配送地址', group: 'user', requiredCapability: 'USER_BASE', params: [optional('addressId'), optional('returnTo', ['delivery'])], defaultBackTo: 'U14' },
+  { id: 'U16', path: '/pages/user/delivery/auto-rules', title: '自动补货规则', group: 'user', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U03' },
   { id: 'D01', path: '/pages/courier/task/index', title: '配送任务中心', group: 'courier', requiredCapability: 'COURIER_WORK', params: [optional('view', ['available', 'active', 'history'])], defaultBackTo: 'U01' },
   { id: 'D02', path: '/pages/courier/admission/index', title: '配送准入', group: 'courier', requiredCapability: 'COURIER_APPLY', params: [], defaultBackTo: 'U03' },
   { id: 'D03', path: '/pages/courier/task/detail', title: '配送任务详情', group: 'courier', requiredCapability: 'COURIER_WORK', params: [required('taskNo'), optional('focus', ['appeal'])], defaultBackTo: 'D01' },
