@@ -512,7 +512,7 @@
   }
 
   async function loadOutlets() {
-    outlets.value = await fetchOutletListByDevice(deviceId.value)
+    outlets.value = await fetchOutletListByDevice(String(deviceId.value))
   }
 
   // ==================== 遥测滤芯解析 ====================

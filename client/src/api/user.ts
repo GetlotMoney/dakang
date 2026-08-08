@@ -56,11 +56,14 @@ export function fetchWsUserDetail(id: number) {
 
 // ==================== 水卡 ====================
 
-/** 水卡授权成员 */
+/**
+ * 水卡授权成员。身份类 Long ID（id/cardId/memberUserId）恒为 string（S4 R2）：
+ * 超过 2^53 的 Long 经 Number 会静默舍入到相邻可表示值——选 A 实际动 B。
+ */
 export interface CardMemberItem {
-  id: number
-  cardId: number
-  memberUserId: number
+  id: string
+  cardId: string
+  memberUserId: string
   memberUserName?: string
   memberUserPhone?: string
   memberName?: string
@@ -71,9 +74,9 @@ export interface CardMemberItem {
   createTime?: string
 }
 
-/** 水卡列表项 / 详情 */
+/** 水卡列表项 / 详情。卡主键为身份类 Long ID，边界恒 string（S4 R2，禁数值转换）。 */
 export interface CardItem {
-  id: number
+  id: string
   cardNo: string
   /** 卡类型(1331)：1虚拟卡 2实体卡 */
   cardType: number
@@ -118,8 +121,8 @@ export function fetchCardPage(params: CardSearchParams) {
   })
 }
 
-/** 水卡详情（含授权成员列表） */
-export async function fetchCardDetail(id: number): Promise<CardItem> {
+/** 水卡详情（含授权成员列表）。id 为 string 身份 ID，JSON 原文直传由 Spring 转 Long。 */
+export async function fetchCardDetail(id: string): Promise<CardItem> {
   const card = await request.post<CardItem>({
     url: '/user/card/detail',
     data: { id }
@@ -141,7 +144,24 @@ export function fetchCardListByUser(userId: number) {
 }
 
 /** 冻结/解冻（targetStatus：1解冻为正常 2冻结） */
-export function fetchChangeCardStatus(id: number, targetStatus: number, changeReason?: string) {
+/**
+ * 修改水卡授权范围（S4 R1）：服务端构造并校验 JSON；expectedScopeJson 为并发防覆盖锚。
+ * 身份类 Long ID 恒为 string（>2^53 时 Number 会静默舍入到相邻值，选 A 改 B），
+ * JSON 字符串 ID 由 Spring 转 Long。
+ */
+export function fetchUpdateCardScope(data: {
+  cardId: string
+  scopeType: 'all' | 'specified'
+  stationIds?: string[]
+  deviceIds?: string[]
+  outletIds?: string[]
+  reason: string
+  expectedScopeJson?: string
+}) {
+  return request.post<boolean>({ url: '/user/card/updateScope', data })
+}
+
+export function fetchChangeCardStatus(id: string, targetStatus: number, changeReason?: string) {
   return request.post<boolean>({
     url: '/user/card/changeStatus',
     data: { id, targetStatus, changeReason }
@@ -231,7 +251,8 @@ export function fetchAuditCourier(id: number, targetStatus: number, auditRemark?
 export interface GiftIssueParams {
   /** 规范 UUID：幂等锚，卡号由它确定性派生 */
   requestId: string
-  userId: number
+  /** 收卡用户 ID：身份类 Long 恒 string 直传（>2^53 经 Number 舍入会发错人），Spring 转 Long */
+  userId: string
   /** 赠送余额(分)，与水量至少其一为正 */
   grantFen?: number
   /** 赠送水量(毫升) */

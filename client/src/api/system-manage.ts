@@ -173,3 +173,36 @@ export function fetchGetEmployeeRoleList(employeeId: string) {
     data: { employeeId }
   })
 }
+
+/** 小程序入口配置（S6）：草稿/发布/撤回，小程序只读已发布 */
+export interface MiniEntryItem {
+  id: string
+  entryKey: string
+  entryType: number
+  entryName: string
+  sortNo: number
+  enabledFlag: number
+  jumpType?: number
+  routeId?: string
+  externalUrl?: string
+  contentText?: string
+  configStatus: number
+  publishTime?: string
+  version: number
+}
+
+export function fetchMiniEntryList() {
+  return request.post<MiniEntryItem[]>({ url: '/api/miniEntry/list', data: {} })
+}
+
+export function fetchMiniEntrySave(data: Partial<MiniEntryItem>) {
+  return request.post<string>({ url: '/api/miniEntry/save', data })
+}
+
+export function fetchMiniEntryPublish(id: string, version: number) {
+  return request.post<boolean>({ url: '/api/miniEntry/publish', data: { id, version } })
+}
+
+export function fetchMiniEntryRetract(id: string, version: number) {
+  return request.post<boolean>({ url: '/api/miniEntry/retract', data: { id, version } })
+}

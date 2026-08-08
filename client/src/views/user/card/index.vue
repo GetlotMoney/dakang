@@ -89,6 +89,7 @@
   import { useUserStore } from '@/store/modules/user'
   import CardSearch from './modules/card-search.vue'
   import CardDetailDrawer from './modules/card-detail-drawer.vue'
+  import { normalizeGiftUserId } from './modules/gift-issue-form'
   import BusinessModuleNav from '@/components/business/business-module-nav/index.vue'
 
   defineOptions({ name: 'WsUserCard' })
@@ -300,9 +301,11 @@
 
   const submitGift = async () => {
     const form = giftForm.value
-    const userId = String(form.userId ?? '').trim()
-    if (!/^\d+$/.test(userId)) {
-      ElMessage.warning('收卡用户ID必须是数字')
+    // 收卡用户 ID 是身份类 Long：string 逐字直传，归一入口与授权范围链同源
+    // （>2^53 经 Number 会舍入到相邻值，礼包会发给错误用户）
+    const userId = normalizeGiftUserId(form.userId)
+    if (userId === null) {
+      ElMessage.warning('收卡用户ID必须是有效的数字编号')
       return
     }
     const grantMl = Math.round((form.liters ?? 0) * 1000)
@@ -319,7 +322,7 @@
     try {
       await fetchGiftIssue({
         requestId: giftRequestId,
-        userId: Number(userId),
+        userId,
         grantMl,
         grantFen,
         expireDays: form.expireDays,

@@ -133,6 +133,22 @@
             )
         },
         {
+          prop: 'reversedAmount',
+          label: '退款冲减',
+          width: 130,
+          // 冲减证据（D-420）：已回退行为全额，分线行只冲水费份额（配送费份额保留）
+          formatter: (row: SplitRecordItem) =>
+            row.reversedAmount && row.reversedAmount > 0
+              ? h(ElTag, { type: 'danger' }, () => `-¥${fenToYuan(row.reversedAmount!)}`)
+              : '—'
+        },
+        {
+          prop: 'refundId',
+          label: '关联退款单',
+          width: 110,
+          formatter: (row: SplitRecordItem) => (row.refundId ? String(row.refundId) : '—')
+        },
+        {
           prop: 'splitTime',
           label: '分账时间',
           width: 170,

@@ -15,7 +15,36 @@ export interface SplitRecordItem {
   splitStatus: number
   splitTime?: string
   splitRemark?: string
+  /** 已冲减金额(分)（D-420）：被水费退款冲减的份额；0=未冲减 */
+  reversedAmount?: number
+  /** 触发冲减的退款单ID；未被冲减时缺省 */
+  refundId?: string
   createTime: string
+}
+
+/** 自动补货规则（S2 只读：客服追踪；启停与取消是用户自助动作） */
+export interface AutoRuleItem {
+  id: string
+  userId: string
+  cardId: string
+  stationId: string
+  waterTypeId: string
+  containerSpec: string
+  deliveryCount: number
+  planReturnCount: number
+  receiveAddress: string
+  receivePhone: string
+  intervalDays: number
+  anchorTime: string
+  ruleStatus: number
+  createTime: string
+}
+
+export interface AutoRulePageParams {
+  current: number
+  size: number
+  userId?: string
+  ruleStatus?: number
 }
 
 export interface ReconcileTaskItem {
@@ -82,6 +111,33 @@ type PageResult<T> = { total: number; list: T[] }
 
 export function fetchSplitPage(data: SplitPageParams) {
   return request.post<PageResult<SplitRecordItem>>({ url: '/finance/split/page', data })
+}
+
+/** 自动补货规则分页（只读） */
+export function fetchAutoRulePage(data: AutoRulePageParams) {
+  return request.post<PageResult<AutoRuleItem>>({ url: '/order/autoRule/page', data })
+}
+
+/** 按水种用量统计（S5 只读；生产量无权威数据源，页面显式标注未提供） */
+export interface WaterStatsRow {
+  waterTypeName: string
+  planMl: number
+  actualMl: number
+  shortfallMl: number
+  abnormalCount: number
+  deliveryBuckets: number
+  deliveryMl: number
+  resendBuckets: number
+  resendMl: number
+}
+
+export function fetchWaterStatsSummary(data: {
+  startTime: string
+  endTime: string
+  stationId?: string
+  waterTypeName?: string
+}) {
+  return request.post<WaterStatsRow[]>({ url: '/order/waterStats/summary', data })
 }
 
 export function fetchReconcileTaskPage(data: ReconcilePageParams) {

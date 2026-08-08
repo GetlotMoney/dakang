@@ -84,6 +84,16 @@ export const systemRoutes: AppRouteRecord = {
         keepAlive: true,
         roles: ['R_SUPER']
       }
+    },
+    {
+      path: 'minientry',
+      name: 'SystemMiniEntry',
+      component: '/system/minientry',
+      meta: {
+        title: 'menus.system.minientry',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
     }
   ]
 }

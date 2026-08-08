@@ -195,7 +195,9 @@
       "appeal": "Appeal Handle",
       "split": "Split Records",
       "reconcile": "Daily Reconcile",
-      "splitconfig": "Split Config"
+      "splitconfig": "Split Config",
+      "autorule": "Auto Refill Rules",
+      "waterstats": "Water Usage Stats"
     },
     "system": {
       "title": "System Settings",
@@ -206,6 +208,7 @@
       "position": "Position Manage",
       "tag": "Tag Manage",
       "compliance": "Security & Compliance",
+      "minientry": "Mini Entry Config",
       "log": {
         "title": "Log Management",
         "login": "Login Log",

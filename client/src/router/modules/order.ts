@@ -74,6 +74,26 @@ export const orderRoutes: AppRouteRecord = {
         keepAlive: true,
         roles: ['R_SUPER', 'R_ADMIN']
       }
+    },
+    {
+      path: 'autorule',
+      name: 'OrderAutoRule',
+      component: '/order/autorule',
+      meta: {
+        title: 'menus.order.autorule',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
+    },
+    {
+      path: 'waterstats',
+      name: 'OrderWaterStats',
+      component: '/order/waterstats',
+      meta: {
+        title: 'menus.order.waterstats',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
     }
   ]
 }
