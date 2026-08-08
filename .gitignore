@@ -69,3 +69,6 @@ deploy/backup/
 *.pfx
 __pycache__/
 .claude/
+
+# 后端运行时数据（bind mount：配送照片等，容器持续写入）
+deploy/data/

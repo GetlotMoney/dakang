@@ -195,7 +195,7 @@ CREATE TABLE `ws_delivery_auto_rule` (
   `RECEIVE_PHONE`    varchar(20)  NOT NULL COMMENT '收货电话(max20)',
   `INTERVAL_DAYS`    int          NOT NULL COMMENT '固定周期天数(3~90，用户显式配置)',
   `ANCHOR_TIME`      varchar(14)  NOT NULL COMMENT '周期锚点=规则创建时间；第n期到期时间=锚点+n*INTERVAL_DAYS天，期序是幂等键组成部分',
-  `RULE_STATUS`      tinyint      NOT NULL COMMENT '规则状态(1355)：1启用 2停用',
+  `RULE_STATUS`      tinyint      NOT NULL COMMENT '规则状态(1355)：1启用 2停用 3已取消（终态不可恢复）',
   PRIMARY KEY (`ID`),
   -- 规则创建幂等的数据库层保证：同 userId+requestId 重复提交不并存第二条规则
   UNIQUE INDEX `uk_dauto_rule_key` (`RULE_KEY`),
@@ -243,6 +243,7 @@ INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE
 INSERT IGNORE INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`) VALUES ('自动补货规则状态', '1355', '配送自动补货规则启停');
 INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE`, `DICT_SORT`, `DICT_VALUE`, `DICT_LABEL`) VALUES (NULL, 1, '1355', 1, 1, '启用');
 INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE`, `DICT_SORT`, `DICT_VALUE`, `DICT_LABEL`) VALUES (NULL, 1, '1355', 2, 2, '停用');
+INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE`, `DICT_SORT`, `DICT_VALUE`, `DICT_LABEL`) VALUES (NULL, 1, '1355', 3, 3, '已取消');
 
 -- ----------------------------
 -- 测试数据（一名启用配送员+一条配送中任务，覆盖列表开发）
