@@ -22,14 +22,23 @@ public interface WsSplitRecordMapper extends BaseMapper<WsSplitRecord> {
     WsSplitRecord selectByIdForUpdate(Long splitId);
 
     /**
-     * 钱包在途分润聚合（D-421 R1-P2）：SUM/MIN 下沉库层，不把全部行拉进 JVM。
-     * SPLIT_STATUS=1 即待分账（SettlementEnum.SplitStatus.PENDING）；只聚合
-     * SPLIT_AMOUNT&gt;0——零元行（比例 0/整除归零）不计在途金额、不许提前最早解冻时间。
-     * 无 GROUP BY 的聚合恒返回一行（无在途时 pendingFen=0、earliestCreateTime=null）。
+     * 冲减入口锁定读（D-420 S1）：按订单锁全部分账行（ORDER BY ID 固定锁序，防对向死锁），
+     * 冲减判定与份额计算全取锁内 DB 行——与结算 Worker 的 settleOne 行锁互斥串行，
+     * 保证「冲减与结算并发」时同一行的状态推进恒有先后。
      */
-    @Select("SELECT COALESCE(SUM(SPLIT_AMOUNT), 0) AS pendingFen, MIN(CREATE_TIME) AS earliestCreateTime"
+    @Select("SELECT * FROM ws_split_record WHERE ORDER_ID = #{orderId} AND DATA_STATUS = 0 ORDER BY ID FOR UPDATE")
+    java.util.List<WsSplitRecord> lockByOrderIdForUpdate(Long orderId);
+
+    /**
+     * 钱包在途分润聚合（D-421/D-420 R1）：SUM/MIN 下沉库层，不把全部行拉进 JVM。
+     * SPLIT_STATUS=1 即待分账；口径为<b>净额</b>=GREATEST(SPLIT_AMOUNT-REVERSED_AMOUNT,0)——
+     * 全额冲减的待分账行不再显示在途、部分冲减后展示净额而非毛额；零净额行同样
+     * 不参与 MIN(CREATE_TIME)。无 GROUP BY 的聚合恒返回一行。
+     */
+    @Select("SELECT COALESCE(SUM(GREATEST(SPLIT_AMOUNT - REVERSED_AMOUNT, 0)), 0) AS pendingFen,"
+            + " MIN(CREATE_TIME) AS earliestCreateTime"
             + " FROM ws_split_record WHERE RECEIVER_USER_ID = #{userId} AND SPLIT_STATUS = 1"
-            + " AND SPLIT_AMOUNT > 0 AND DATA_STATUS = 0")
+            + " AND SPLIT_AMOUNT - REVERSED_AMOUNT > 0 AND DATA_STATUS = 0")
     PendingSplitAgg aggregatePendingByReceiver(Long userId);
 
     /** 在途分润聚合结果（仅本 Mapper 出参）。 */

@@ -84,6 +84,24 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public WsOrder createAutoRefillPeriodOrder(Long ruleId, WsOrder order, WsDeliveryTask task, String now) {
+        if (ruleId == null || ruleId <= 0) {
+            throw new JbkException("自动补货规则ID非法");
+        }
+        // 取消/暂停与扫描并发的裁决点（S2）：扫描的 ENABLED 快照可能已过期，
+        // 资金事务内锁行复核当前状态——用户先取消则此处 fail-closed，本期零订单零扣款；
+        // 用户取消动作后到达则等待本事务提交（该期属取消前已到期，生成合法）
+        WsDeliveryAutoRule rule = autoRuleMapper.selectByIdForUpdate(ruleId);
+        if (ObjectUtil.isNull(rule) || ObjectUtil.notEqual(rule.getRuleStatus(),
+                DeliveryEnum.AutoRuleStatus.ENABLED.getValue())) {
+            throw new JbkException("规则已停用或取消，本期不生成");
+        }
+        // 同类内直调不过事务代理：本方法已持事务，内层 REQUIRED 语义等价，逻辑同事务执行
+        return createPaidDeliveryOrder(order, task, null, now);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public WsOrder createPaidDeliveryOrder(WsOrder order, WsDeliveryTask task, WsDeliveryAutoRule autoRule, String now) {
         requireConsistentDraft(order, task);
         boolean payByMl = ObjectUtil.equal(order.getPayWay(), TradeEnum.PayWay.CARD_ML.getValue());

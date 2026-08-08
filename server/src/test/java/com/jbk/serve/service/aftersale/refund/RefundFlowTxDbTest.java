@@ -172,11 +172,19 @@ class RefundFlowTxDbTest {
         }
 
         @Bean
+        com.jbk.serve.service.settlement.ISplitClawbackTxService splitClawbackTxService() {
+            // 同上：分润冲减（D-420）在管道层只验「成功事实必触发冲减」的挂点，
+            // 真实回退/扣回/补差由 SplitClawbackDbTest 用真库钉
+            return Mockito.mock(com.jbk.serve.service.settlement.ISplitClawbackTxService.class);
+        }
+
+        @Bean
         IAfterSaleActionTxService afterSaleActionTxService(WsAfterSaleActionMapper action) {
             return new AfterSaleActionTxServiceImpl(action,
                     Mockito.mock(WsOrderMapper.class), Mockito.mock(TradeCardMapper.class),
                     Mockito.mock(WsWalletFlowMapper.class), Mockito.mock(IWsDomainEventService.class),
-                    Mockito.mock(EntitlementLedger.class));
+                    Mockito.mock(EntitlementLedger.class),
+                    org.mockito.Mockito.mock(com.jbk.serve.service.settlement.ISplitClawbackTxService.class));
         }
 
         @Bean
@@ -195,8 +203,9 @@ class RefundFlowTxDbTest {
         @Bean
         RefundFactServiceImpl refundFactService(WsRefundEventMapper e, WsRefundMapper r,
                                                 RefundAnomalyRecorder rec,
-                                                IEntitlementRefundTxService settle) {
-            return new RefundFactServiceImpl(e, r, rec, settle);
+                                                IEntitlementRefundTxService settle,
+                                                com.jbk.serve.service.settlement.ISplitClawbackTxService clawback) {
+            return new RefundFactServiceImpl(e, r, rec, settle, clawback);
         }
 
         private static <T> MapperFactoryBean<T> mapper(Class<T> type, SqlSessionTemplate t) {

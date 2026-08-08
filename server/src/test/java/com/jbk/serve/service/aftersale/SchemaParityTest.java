@@ -160,6 +160,42 @@ class SchemaParityTest {
         }
     }
 
+    /** D-420 R1：冲减事实表三轨落档（migrations/init/领域 SQL 均含表与唯一键）。 */
+    @Test
+    void splitClawbackTableMatchesAcrossAllThreeTracks() throws IOException {
+        Path domain = REPO.resolve("server/sql/ws_trade.sql");
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-07-split-clawback-s1.sql");
+        for (Path sql : new Path[] { INIT_SQL, domain, mig }) {
+            assertTrue(read(sql).contains("ws_split_clawback"),
+                    display(sql) + " 缺冲减事实表 ws_split_clawback");
+            assertTrue(read(sql).contains("uk_split_clawback_action_split"),
+                    display(sql) + " 缺冲减幂等唯一键 uk_split_clawback_action_split");
+        }
+        assertColumnsEqual("ws_split_clawback", INIT_SQL, domain);
+    }
+
+    /**
+     * D-420 R2：动作级 outbox 三轨落档。登记是客户退款事务内唯一的冲减写入，
+     * 这张表缺席=登记路径 1146、退款整体回滚——正是 R2-P0-1 要消灭的事故形状。
+     * ACTION_ID 唯一键是重放等价核验的库层地基，三轨都必须在。
+     */
+    @Test
+    void splitClawbackActionOutboxMatchesAcrossAllThreeTracks() throws IOException {
+        Path domain = REPO.resolve("server/sql/ws_trade.sql");
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-07-split-clawback-s1.sql");
+        for (Path sql : new Path[] { INIT_SQL, domain, mig }) {
+            assertTrue(read(sql).contains("ws_split_clawback_action"),
+                    display(sql) + " 缺冲减动作级 outbox 表 ws_split_clawback_action");
+            assertTrue(read(sql).contains("`uk_split_clawback_action` (`ACTION_ID`)"),
+                    display(sql) + " 缺动作唯一键 uk_split_clawback_action(ACTION_ID)");
+        }
+        assertColumnsEqual("ws_split_clawback_action", INIT_SQL, domain);
+        assertColumnsEqual("ws_split_clawback_action", INIT_SQL, mig);
+        // 真库单测 schema 同步落表：执行段/Worker 的真库测试全依赖它
+        assertTrue(read(TEST_SCHEMA).contains("ws_split_clawback_action"),
+                "DeliveryDbSchema 缺 ws_split_clawback_action");
+    }
+
     /**
      * D-421 R1-P2：钱包在途分润聚合索引三轨逐字一致。列序=查询序
      * (RECEIVER_USER_ID, SPLIT_STATUS, CREATE_TIME)——过滤两列走索引、

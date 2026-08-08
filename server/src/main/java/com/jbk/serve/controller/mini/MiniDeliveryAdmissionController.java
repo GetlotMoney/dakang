@@ -38,4 +38,16 @@ public class MiniDeliveryAdmissionController {
         Long userId = StpKit.KH_USER.getLoginIdAsLong();
         return R.ok(miniDeliveryService.getAdmission(userId));
     }
+
+    @PostMapping("/submit")
+    @Operation(summary = "自助提交准入申请（0 未提交/4 已驳回可提交；驳回复用原记录）")
+    @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_KH_USER) })
+    public R<MiniCourierAdmissionVo> submit(
+            @org.springframework.web.bind.annotation.RequestBody
+            @org.springframework.validation.annotation.Validated
+            com.jbk.tool.data.mini.bo.MiniAdmissionSubmitBo bo) {
+        // 主体恒取会话：手机号只是联系信息，不构成替他人申请的依据（S3 边界）
+        Long userId = StpKit.KH_USER.getLoginIdAsLong();
+        return R.ok(miniDeliveryService.submitAdmission(bo, userId));
+    }
 }

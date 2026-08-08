@@ -90,6 +90,11 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
      * 故必须与 {@link #executeInTx} 的资金写入落在同一个事务里——卡与批次同生共死。
      */
     private final EntitlementLedger entitlementLedger;
+    /**
+     * 分润冲减登记（D-420 R1 段1）：与本类的卡内返还同事务（outbox 语义——退款成功即
+     * 冲减事实存在）；执行段独立事务由 Worker/编排层驱动，失败不回滚本事务的返还。
+     */
+    private final com.jbk.serve.service.settlement.ISplitClawbackTxService splitClawbackTxService;
 
     // ------------------------------------------------------------------
     // ① 登记待执行（并入调用方事务）
@@ -395,7 +400,18 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
                         .set("refundAmount", totalFen)
                         .set("amountAfter", amountAfter)
                         .set("mlAfter", mlAfter));
-        log.info("售后返还完成：afterSaleNo={} orderNo={} cardId={} 金额+{} 水量+{}",
+        // ── ⑪ 分润冲减登记（D-420 R2 段1，同事务动作级 outbox）：只登记一条不可变
+        // 动作事实（单行 INSERT，零分账读，不可失败路径）；分摊/校验/明细全在独立
+        // 执行事务，冲减侧异常置需人工，绝不回滚本次退款。补偿/纯水量/配送费返还
+        // 在 registerForAction 内明确 no-op；基数取 markSuccess 刚钉死的实际退款额
+        WsAfterSaleAction registered = new WsAfterSaleAction();
+        registered.setId(action.getId());
+        registered.setOrderId(action.getOrderId());
+        registered.setActionType(action.getActionType());
+        registered.setRefundProductFen(refund.productFen());
+        splitClawbackTxService.registerForAction(registered, now);
+
+                log.info("售后返还完成：afterSaleNo={} orderNo={} cardId={} 金额+{} 水量+{}",
                 action.getAfterSaleNo(), order.getOrderNo(), card.getId(), totalFen, refund.productMl());
     }
 

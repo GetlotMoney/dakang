@@ -68,6 +68,12 @@ public class RefundFactServiceImpl implements IRefundFactService {
      * 结算自带 REQUIRES_NEW 事务与全套前态断言，失败会抛出，由下面的 catch 分流重试/人工。
      */
     private final IEntitlementRefundTxService entitlementRefundTxService;
+    /**
+     * 分润冲减（D-420 R2）：与权益结算同位并列委托——退款成功后驱动动作级 outbox
+     * 执行（REQUIRES_NEW 对账后动账）。结构性失败抛出走 park 分流重试；证据不合格
+     * 在执行段内部整动作转人工；两种情况退款成功事实都不回退。
+     */
+    private final com.jbk.serve.service.settlement.ISplitClawbackTxService splitClawbackTxService;
 
     // ==================== 落库 ====================
 
@@ -202,6 +208,11 @@ public class RefundFactServiceImpl implements IRefundFactService {
             // 基础设施原因失败过，退款单却已经是成功。不在这里补，那笔退款的权益冲正
             // 会永远停在「钱退了、卡上权益还在」，而重推的事实是唯一还会经过这里的机会。
             entitlementRefundTxService.settleOnRefundSuccess(refund.getId(), now);
+            // 冲减执行段（D-420 R1）：登记已随结算成功事务完成（outbox），此处驱动执行；
+            // uk(ACTION_ID,SPLIT_ID)+事实状态机保证重放零副作用
+            if (refund.getAfterSaleId() != null) {
+                splitClawbackTxService.processAction(refund.getAfterSaleId(), now);
+            }
             eventMapper.markProcessed(event.getId(), 0L, now);
             return Outcome.PROCESSED;
         }
@@ -220,6 +231,12 @@ public class RefundFactServiceImpl implements IRefundFactService {
         // 它抛出时本方法的调用方会把事实 park 成可重试/人工，而退款单保持成功——
         // 「钱已退」是既成事实，绝不因为结算失败被改回去（R0-7）。
         entitlementRefundTxService.settleOnRefundSuccess(refund.getId(), now);
+        // 冲减执行段（D-420 R1）：登记随结算成功事务落 ws_split_clawback（outbox），
+        // 此处独立事务执行扣回。抛出走 park 待重试/人工——退款成功事实不回退，
+        // 冲减失败停留在事实行状态机（可重试可转人工），绝不伪装退款未发生
+        if (refund.getAfterSaleId() != null) {
+            splitClawbackTxService.processAction(refund.getAfterSaleId(), now);
+        }
         eventMapper.markProcessed(event.getId(), 0L, now);
         return Outcome.PROCESSED;
     }

@@ -44,6 +44,10 @@ public class WsIncomeAccount extends BaseEntity implements Serializable {
     @TableField("FROZEN_FEN")
     private Long frozenFen;
 
+    @Schema(description = "冲减待补差额(分)（D-420）：>0 时禁止提现；后续分润入账先补此差额，补足即解除限制；恒>=0")
+    @TableField("CLAWBACK_DEFICIT_FEN")
+    private Long clawbackDeficitFen;
+
     @Schema(description = "乐观锁版本")
     @TableField("VERSION")
     private Integer version;

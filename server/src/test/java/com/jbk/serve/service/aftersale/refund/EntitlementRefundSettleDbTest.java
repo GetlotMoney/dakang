@@ -186,6 +186,55 @@ class EntitlementRefundSettleDbTest {
         }
 
         @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.settlement.WsSplitRecordMapper> wsSplitRecordMapper(
+                SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.settlement.WsSplitRecordMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.settlement.WsSplitClawbackMapper> wsSplitClawbackMapper(
+                SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.settlement.WsSplitClawbackMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.settlement.WsSplitClawbackActionMapper> wsSplitClawbackActionMapper(
+                SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.settlement.WsSplitClawbackActionMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.settlement.WsIncomeAccountMapper> wsIncomeAccountMapper(
+                SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.settlement.WsIncomeAccountMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.settlement.WsIncomeFlowMapper> wsIncomeFlowMapper(
+                SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.settlement.WsIncomeFlowMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.delivery.WsDeliveryTaskMapper> wsDeliveryTaskMapper(
+                SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.delivery.WsDeliveryTaskMapper.class, t);
+        }
+
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.delivery.WsDeliveryAppealMapper> wsDeliveryAppealMapper(
+                SqlSessionTemplate t) {
+            // R4-P1-1：冲减执行段来源共键校验器需要申诉实体当前读
+            return mapper(com.jbk.serve.mapper.delivery.WsDeliveryAppealMapper.class, t);
+        }
+
+        @Bean
+        com.jbk.serve.service.settlement.ISplitClawbackTxService splitClawbackTxService() {
+            // R2-P1-2：真冲减服务替换 Mock——机构退款真实入口的同事务登记是被测性质
+            return new com.jbk.serve.service.settlement.impl.SplitClawbackTxServiceImpl();
+        }
+
+        @Bean
         EntitlementLedger entitlementLedger(WsCardEntitlementBatchMapper b, WsEntitlementAllocationMapper a,
                                             TradeCardMapper card, WsWalletFlowMapper flow) {
             return new EntitlementLedger(b, a, card, flow);
@@ -194,9 +243,10 @@ class EntitlementRefundSettleDbTest {
         @Bean
         IAfterSaleActionTxService afterSaleActionTxService(WsAfterSaleActionMapper action, WsOrderMapper order,
                                                           TradeCardMapper card, WsWalletFlowMapper flow,
-                                                          IWsDomainEventService event, EntitlementLedger ledger) {
+                                                          IWsDomainEventService event, EntitlementLedger ledger,
+                                                          com.jbk.serve.service.settlement.ISplitClawbackTxService clawback) {
             // 真实现：售后号派生、uk_after_sale_source 幂等与状态机起点都要真的落库
-            return new AfterSaleActionTxServiceImpl(action, order, card, flow, event, ledger);
+            return new AfterSaleActionTxServiceImpl(action, order, card, flow, event, ledger, clawback);
         }
 
         @Bean
@@ -204,9 +254,11 @@ class EntitlementRefundSettleDbTest {
                 WsRefundMapper refund, WsAfterSaleActionMapper action, WsCardEntitlementBatchMapper batch,
                 WsEntitlementAllocationMapper alloc, TradeCardMapper card, WsOrderMapper order,
                 WsWalletFlowMapper flow, WsCardMemberMapper member, IWsDomainEventService event,
+                com.jbk.serve.service.settlement.ISplitClawbackTxService clawback,
                 IAfterSaleActionTxService actionTx, IRefundSourceAdapter refundSourceAdapter) {
+            // R2-P1-2：真冲减登记随退款成功同事务（不再 Mock）
             return new EntitlementRefundTxServiceImpl(refund, action, batch, alloc, card, order,
-                    flow, member, event, actionTx, refundSourceAdapter);
+                    flow, member, event, clawback, actionTx, refundSourceAdapter);
         }
 
         @Bean
@@ -238,6 +290,8 @@ class EntitlementRefundSettleDbTest {
     private JdbcTemplate jdbc;
     @Autowired
     private IWsDomainEventService domainEventService;
+    @Autowired
+    private com.jbk.serve.service.settlement.ISplitClawbackTxService clawbackTxService;
 
     @BeforeEach
     void reset() {
@@ -286,6 +340,31 @@ class EntitlementRefundSettleDbTest {
         assertEquals(0L, cardMl());
         assertEquals(1, count("ws_wallet_flow"), "第二次结算不得再写一条冲减流水");
         assertEquals(ActionStatus.SUCCESS.getValue(), actionStatus(actionId));
+    }
+
+    /**
+     * D-420 R2-P1-2：GATEWAY_REFUND <b>真实生产入口</b>——退款结算成功的同一事务内
+     * 登记恰一条动作级冲减 outbox（冻结 orderId/actionType/refundProductFen，零明细、
+     * 零分账读）；执行段对无分账的充值订单以「合法零冲减」完成留痕。
+     */
+    @Test
+    void gatewayRefundRealEntryRegistersActionOutboxInSameTx() {
+        Long actionId = refundTx.prepare(ORDER_ID, REMARK, OP_USER, NOW);
+        Long refundId = seedSucceededRefund(actionId, PAY_FEN);
+        refundTx.settleOnRefundSuccess(refundId, NOW);
+
+        Map<String, Object> outbox = jdbc.queryForMap(
+                "SELECT * FROM ws_split_clawback_action WHERE ACTION_ID=?", actionId);
+        assertEquals(ORDER_ID, ((Number) outbox.get("ORDER_ID")).longValue(), "orderId 登记时冻结");
+        assertEquals(3, ((Number) outbox.get("ACTION_TYPE")).intValue(), "类型冻结=机构退款");
+        assertEquals(PAY_FEN, ((Number) outbox.get("REFUND_PRODUCT_FEN")).longValue(), "基数=本次实退额");
+        assertEquals(1, ((Number) outbox.get("OUTBOX_STATUS")).intValue(), "登记态待处理");
+        assertEquals(0, count("ws_split_clawback"), "登记段零明细——分摊全在执行段（R2-P0-1）");
+
+        clawbackTxService.processAction(actionId, NOW);
+        assertEquals(2, jdbc.queryForObject(
+                "SELECT OUTBOX_STATUS FROM ws_split_clawback_action WHERE ACTION_ID=?",
+                Integer.class, actionId), "充值订单无分账行：合法零冲减完成留痕");
     }
 
     // ==================== 场景16：部分使用按快照折算 ====================

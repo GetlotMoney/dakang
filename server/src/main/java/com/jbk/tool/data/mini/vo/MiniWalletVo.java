@@ -29,6 +29,9 @@ public class MiniWalletVo implements Serializable {
     @Schema(description = "提现审核冻结中(分)")
     private Long frozenFen;
 
+    @Schema(description = "冲减待补差额(分)（D-420）：>0 时提现暂不可用，后续分润入账优先补足；0=无差额")
+    private Long clawbackDeficitFen;
+
     @Schema(description = "在途分润(分)：已产生、尚在冻结期未入账的分账合计（D-421）；防止延迟到账被当漏发")
     private Long pendingSplitFen;
 

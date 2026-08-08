@@ -48,6 +48,17 @@ public class WsDomainEventServiceImpl extends ServiceImpl<WsDomainEventMapper, W
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void recordReliableInTx(OpsEnum.EventType eventType, String eventKey, Object oldValue, Object newValue) {
+        // REQUIRED：与业务写入同生共死——业务回滚审计随之消失（无幽灵），写入失败抛出共同回滚
+        WsDomainEvent event = buildEvent(eventType, eventKey, oldValue, newValue);
+        fillActorFromSession(event);
+        if (!save(event)) {
+            throw new com.jbk.tool.exception.JbkException("成功状态审计写入失败，业务一并回滚");
+        }
+    }
+
+    @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void recordReliable(OpsEnum.EventType eventType, String eventKey, Object oldValue, Object newValue) {
         WsDomainEvent event = buildEvent(eventType, eventKey, oldValue, newValue);

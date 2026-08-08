@@ -238,7 +238,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         WsDeliveryTask task = buildTask(orderNo, rule.getUserId(), rule.getStationId(), waterType,
                 rule.getContainerSpec(), rule.getDeliveryCount(), rule.getPlanReturnCount(), quote, payWay,
                 rule.getReceiveAddress(), rule.getReceivePhone(), null, now);
-        orderTxService.createPaidDeliveryOrder(order, task, null, now);
+        // S2：期次单走带规则锁定复核的事务入口——扫描快照后被取消/停用的规则在事务内 fail-closed
+        orderTxService.createAutoRefillPeriodOrder(rule.getId(), order, task, now);
     }
 
     // ==================== 装配与校验 ====================

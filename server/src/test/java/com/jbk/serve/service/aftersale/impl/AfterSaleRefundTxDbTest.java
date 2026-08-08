@@ -239,7 +239,8 @@ class AfterSaleRefundTxDbTest {
             // 只把「锁卡读前态」这一次读包了一层（见 CARD_READ_DRIFT），其余一律真实
             return new AfterSaleActionTxServiceImpl(actionMapper, orderMapper,
                     driftingCardReads(tradeCardMapper), walletFlowMapper, domainEventService,
-                    entitlementLedger);
+                    entitlementLedger,
+                    org.mockito.Mockito.mock(com.jbk.serve.service.settlement.ISplitClawbackTxService.class));
         }
 
         @Bean

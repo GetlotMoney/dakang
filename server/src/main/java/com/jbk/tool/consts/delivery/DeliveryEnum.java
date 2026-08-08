@@ -130,7 +130,9 @@ public interface DeliveryEnum {
     /** 自动补货规则状态 (dictType=1355) */
     enum AutoRuleStatus {
         ENABLED(1, "启用"),
-        DISABLED(2, "停用");
+        DISABLED(2, "停用"),
+        /** 已取消（S2）：终态，不可恢复；Worker 与恢复操作均以 1/2 为前态，3 永不匹配 */
+        CANCELLED(3, "已取消");
 
         private final int value;
         private final String desc;

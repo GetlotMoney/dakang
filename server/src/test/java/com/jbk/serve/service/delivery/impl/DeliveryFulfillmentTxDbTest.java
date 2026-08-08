@@ -326,7 +326,8 @@ class DeliveryFulfillmentTxDbTest {
             // 真实现而非 mock：裁决登记的待执行动作要真的撞到 uk_after_sale_source，
             // 幂等与「同事务回滚一并消失」这两条性质 mock 证不了
             return new AfterSaleActionTxServiceImpl(actionMapper, orderMapper, tradeCardMapper,
-                    walletFlowMapper, domainEventService, entitlementLedger);
+                    walletFlowMapper, domainEventService, entitlementLedger,
+                    org.mockito.Mockito.mock(com.jbk.serve.service.settlement.ISplitClawbackTxService.class));
         }
 
         @Bean
