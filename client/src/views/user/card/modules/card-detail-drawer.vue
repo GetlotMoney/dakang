@@ -48,6 +48,9 @@
             未配置，不可用卡
           </ElTag>
           <template v-else>{{ scopeContract.scopeText }}</template>
+          <ElButton size="small" type="primary" link class="ml-2" @click="openScopeDialog">
+            修改
+          </ElButton>
         </ElDescriptionsItem>
         <ElDescriptionsItem label="备注">{{ detail.cardRemark || '-' }}</ElDescriptionsItem>
         <ElDescriptionsItem label="创建时间">{{
@@ -85,17 +88,115 @@
         :image-size="60"
       />
     </div>
+    <ElDialog v-model="scopeDialogVisible" title="修改授权范围" width="520px" append-to-body>
+      <ElAlert
+        v-if="!scopeParseOk"
+        type="error"
+        :closable="false"
+        show-icon
+        class="mb-3"
+        title="原授权范围数据异常，请重新明确选择范围后保存"
+        :description="scopeParseReason"
+      />
+      <ElForm label-width="90px">
+        <ElFormItem label="范围类型">
+          <ElRadioGroup v-model="scopeForm.scopeType">
+            <ElRadio value="all">全场通用</ElRadio>
+            <ElRadio value="specified">指定范围</ElRadio>
+          </ElRadioGroup>
+        </ElFormItem>
+        <template v-if="scopeForm.scopeType === 'specified'">
+          <ElFormItem label="水站">
+            <ElSelect v-model="scopeForm.stationIds" multiple filterable clearable class="w-full">
+              <ElOption
+                v-for="s in stationOptions"
+                :key="s.id"
+                :label="s.stationName"
+                :value="s.id"
+              />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="设备">
+            <ElSelect
+              v-model="scopeForm.deviceIds"
+              multiple
+              filterable
+              clearable
+              class="w-full"
+              @change="loadOutletOptions"
+            >
+              <ElOption
+                v-for="d in deviceOptions"
+                :key="d.id"
+                :label="`${d.deviceNo}（${d.deviceName || '未命名'}）`"
+                :value="d.id"
+              />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="出水口">
+            <ElSelect v-model="scopeForm.outletIds" multiple filterable clearable class="w-full">
+              <ElOption
+                v-for="o in outletOptions"
+                :key="o.id"
+                :label="`${o.deviceNo} ${o.outletNo} 号口`"
+                :value="o.id"
+              />
+            </ElSelect>
+            <div class="text-xs text-gray-400">先选设备后加载其出水口；三维至少填一项</div>
+          </ElFormItem>
+        </template>
+        <ElFormItem label="修改原因" required>
+          <ElInput
+            v-model="scopeForm.reason"
+            type="textarea"
+            :rows="2"
+            maxlength="200"
+            show-word-limit
+            placeholder="审计必填"
+          />
+        </ElFormItem>
+      </ElForm>
+      <template #footer>
+        <ElButton @click="scopeDialogVisible = false">取消</ElButton>
+        <ElButton
+          type="primary"
+          :loading="scopeSaving"
+          :disabled="!scopeCanSubmit"
+          @click="saveScope"
+        >
+          保存
+        </ElButton>
+      </template>
+    </ElDialog>
   </ElDrawer>
 </template>
 
 <script setup lang="ts">
-  import { fetchCardDetail, type CardItem } from '@/api/user'
+  import { fetchCardDetail, fetchUpdateCardScope, type CardItem } from '@/api/user'
+  import { fetchStationPage } from '@/api/station'
+  import {
+    buildScopePayload,
+    canSubmitScope,
+    emptyScopeForm,
+    normalizeDeviceOptions,
+    normalizeOutletOptions,
+    normalizeStationOptions,
+    parseScopeJson,
+    retainLegalOutlets,
+    type ScopeDeviceOption,
+    type ScopeFormState,
+    type ScopeOutletOption,
+    type ScopeStationOption
+  } from './card-scope-form'
+  import { fetchDevicePage, fetchOutletListByDevice } from '@/api/device'
+  import { ElMessage } from 'element-plus'
   import { fetchDictOptions, toDictOptions } from '@/utils/dict'
   import { DictTypeEnum } from '@/constants/dict'
 
   interface Props {
     visible: boolean
-    cardId?: number
+    /** 身份类 Long ID 恒 string（S4 R2）：>2^53 经 Number 会舍入到相邻值，选 A 动 B。 */
+    cardId?: string
   }
 
   interface Emits {
@@ -182,6 +283,76 @@
       return { scopeType: 'invalid', scopeText: '范围配置异常，不可用卡' }
     }
   })
+
+  // ==== 修改授权范围（S4 R3）：结构化维度提交；身份 ID 全链 string（>2^53 防舍入）；
+  // 站点/设备/出水口响应经专用归一化适配器（unknown 入参→string ID 选项，零数值转换）；
+  // 原范围解析失败=未选态+异常横幅+禁存，运营必须重新明确选择（fail-closed）====
+  const scopeDialogVisible = ref(false)
+  const scopeSaving = ref(false)
+  const scopeForm = ref<ScopeFormState>(emptyScopeForm())
+  const scopeParseOk = ref(true)
+  const scopeParseReason = ref('')
+  const scopeCanSubmit = computed(() => canSubmitScope(scopeForm.value))
+  const stationOptions = ref<ScopeStationOption[]>([])
+  const deviceOptions = ref<ScopeDeviceOption[]>([])
+  const outletOptions = ref<ScopeOutletOption[]>([])
+
+  const openScopeDialog = async () => {
+    const parsed = parseScopeJson(detail.value.scopeJson)
+    scopeParseOk.value = parsed.ok
+    scopeParseReason.value = parsed.reason ?? ''
+    scopeForm.value = parsed.form
+    scopeDialogVisible.value = true
+    if (!stationOptions.value.length) {
+      const [stations, devices] = await Promise.all([
+        fetchStationPage({ current: 1, size: 999 }),
+        fetchDevicePage({ current: 1, size: 999 })
+      ])
+      stationOptions.value = normalizeStationOptions(stations.list)
+      deviceOptions.value = normalizeDeviceOptions(devices.list)
+    }
+    if (scopeForm.value.deviceIds.length) {
+      await loadOutletOptions()
+    }
+  }
+
+  const loadOutletOptions = async () => {
+    const lists = await Promise.all(
+      scopeForm.value.deviceIds.map((id) => fetchOutletListByDevice(id))
+    )
+    const deviceNoById = Object.fromEntries(deviceOptions.value.map((d) => [d.id, d.deviceNo]))
+    outletOptions.value = lists.flatMap((list, i) =>
+      normalizeOutletOptions(list, deviceNoById[scopeForm.value.deviceIds[i]] ?? '')
+    )
+    scopeForm.value.outletIds = retainLegalOutlets(
+      scopeForm.value.outletIds,
+      outletOptions.value.map((o) => o.id)
+    )
+  }
+
+  const saveScope = async () => {
+    if (!props.cardId) return
+    if (!canSubmitScope(scopeForm.value)) {
+      // 未选态（含原范围解析失败后）：必须显式重选合法范围，按钮禁用外再设一道闸
+      ElMessage.warning('请先明确选择授权范围')
+      return
+    }
+    if (!scopeForm.value.reason.trim()) {
+      ElMessage.warning('请填写修改原因')
+      return
+    }
+    scopeSaving.value = true
+    try {
+      await fetchUpdateCardScope(
+        buildScopePayload(props.cardId, scopeForm.value, detail.value.scopeJson || undefined)
+      )
+      ElMessage.success('授权范围已更新')
+      scopeDialogVisible.value = false
+      detail.value = await fetchCardDetail(props.cardId)
+    } finally {
+      scopeSaving.value = false
+    }
+  }
 
   watch(
     () => props.visible,

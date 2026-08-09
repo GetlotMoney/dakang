@@ -557,7 +557,7 @@ async function handleSubmit() {
 
 .form-error {
   margin-top: 8px;
-  color: #fa4350;
+  color: var(--app-color-danger);
   font-size: 13px;
 }
 

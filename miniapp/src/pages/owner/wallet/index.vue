@@ -77,6 +77,9 @@ async function refresh() {
           <view v-if="pendingSplitLineText(wallet.pendingSplitFen, wallet.earliestUnfreezeTime)" class="muted-text">
             {{ pendingSplitLineText(wallet.pendingSplitFen, wallet.earliestUnfreezeTime) }}
           </view>
+          <view v-if="wallet.clawbackDeficitFen > 0" class="muted-text">
+            退款扣回待补 {{ formatFen(wallet.clawbackDeficitFen) }}，提现暂不可用
+          </view>
           <view v-if="wallet.frozenFen > 0" class="muted-text">
             另有 {{ formatFen(wallet.frozenFen) }} 提现审核冻结中
           </view>
@@ -113,7 +116,7 @@ async function refresh() {
       </view>
 
       <view class="page-section readonly-footer">
-        <wd-icon name="lock-on" size="14px" color="#646a73" />
+        <wd-icon name="lock-on" size="14px" color="var(--app-text-secondary)" />
         <text>暂不支持提现</text>
       </view>
     </template>
@@ -155,12 +158,12 @@ async function refresh() {
 }
 
 .amount-in {
-  color: #34d19d;
+  color: var(--app-color-success);
   font-weight: 600;
 }
 
 .amount-out {
-  color: #fa4350;
+  color: var(--app-color-danger);
   font-weight: 600;
 }
 

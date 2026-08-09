@@ -345,7 +345,7 @@ async function handleSubmit() {
                     class="evidence-add"
                     @click="chooseEvidence"
                   >
-                    <wd-icon name="camera" size="20px" color="#646a73" />
+                    <wd-icon name="camera" size="20px" color="var(--app-text-secondary)" />
                   </view>
                 </view>
               </wd-cell>

@@ -231,7 +231,8 @@ export function fetchDeviceAlarmPage(params: {
 
 // ==================== 出水口 ====================
 
-export function fetchOutletListByDevice(deviceId: number) {
+// S4 R1：身份 ID 边界收敛为 string（>2^53 数值舍入防线）；调用方显式 String() 适配
+export function fetchOutletListByDevice(deviceId: string) {
   return request.post<OutletItem[]>({
     url: '/device/outlet/listByDevice',
     data: { deviceId }

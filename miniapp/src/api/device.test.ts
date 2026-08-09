@@ -38,6 +38,20 @@ describe('deviceApi.getOwnerWallet 在途分润归一化', () => {
     const wallet = await deviceApi.getOwnerWallet()
     expect(wallet.pendingSplitFen).toBe(0)
     expect(wallet.earliestUnfreezeTime).toBeUndefined()
+    expect(wallet.clawbackDeficitFen).toBe(0)
+  })
+
+  // D-420：冲减待补差额归一化（提现受限的判定与展示依据）
+  it('待补差额字符串数值转数值；缺省收敛 0', async () => {
+    post.mockResolvedValueOnce({
+      balanceFen: '0',
+      frozenFen: '0',
+      clawbackDeficitFen: '500',
+      pendingSplitFen: '0',
+      flows: [],
+    })
+    const wallet = await deviceApi.getOwnerWallet()
+    expect(wallet.clawbackDeficitFen).toBe(500)
   })
 
   it('解冻时间为非字符串脏值：收敛 undefined，金额不受牵连', async () => {

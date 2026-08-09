@@ -60,6 +60,13 @@ public interface IMiniDeliveryService {
     /** 配送准入状态（无记录返回 status=0 未提交；准入建档/审核属 PC B09，小程序只读）。 */
     MiniCourierAdmissionVo getAdmission(Long userId);
 
+    /**
+     * 配送员自助准入申请（S3）：主体恒取会话 userId。状态 0 未提交与 4 已驳回允许提交
+     * （驳回复用原记录、历史审核备注保留为证据）；1 待审核/2 已启用/3 已停用拒绝。
+     * 并发重复提交由本人 ws_user 行锁串行化，恒至多一条有效申请。
+     */
+    MiniCourierAdmissionVo submitAdmission(com.jbk.tool.data.mini.bo.MiniAdmissionSubmitBo bo, Long userId);
+
     /** 受控媒体登记：校验 base64/类型白名单后委托包A register，返回媒体键。 */
     MiniDeliveryMediaVo uploadMedia(MiniDeliveryMediaUploadBo bo, Long userId);
 

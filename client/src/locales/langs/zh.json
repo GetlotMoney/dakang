@@ -195,7 +195,9 @@
       "appeal": "申诉处理",
       "split": "分账明细",
       "reconcile": "日对账",
-      "splitconfig": "分账比例配置"
+      "splitconfig": "分账比例配置",
+      "autorule": "自动补货规则",
+      "waterstats": "水种用量统计"
     },
     "system": {
       "title": "系统管理",
@@ -206,6 +208,7 @@
       "position": "职务管理",
       "tag": "标签管理",
       "compliance": "安全与合规",
+      "minientry": "小程序入口配置",
       "log": {
         "title": "日志管理",
         "login": "登录日志",

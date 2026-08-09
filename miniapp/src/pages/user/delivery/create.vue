@@ -503,6 +503,6 @@ async function handleSubmit() {
 }
 
 .pay-option-blocked {
-  color: var(--wot-color-danger, #fa4350);
+  color: var(--app-color-danger);
 }
 </style>

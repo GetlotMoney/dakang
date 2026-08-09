@@ -64,6 +64,10 @@ public interface ApiEnum {
         // 但历史上漏登记到本枚举；此处按实际占用补注，避免后续选号时误判为空号。
         WS_AUDIT_EXPORT_STATUS("1382"),// 审计导出任务状态（ws_audit_export.sql，B23）
         WS_FILTER_STATUS("1383"),// 滤芯状态（ws_device.sql 遥测滤芯JSON）
+        WS_MINI_ENTRY_TYPE("1384"),// 小程序入口类型（ws_mini_entry.sql，S6）
+        WS_MINI_ENTRY_JUMP("1385"),// 小程序入口跳转类型（ws_mini_entry.sql，S6）
+        WS_MINI_ENTRY_STATUS("1386"),// 小程序入口配置状态（ws_mini_entry.sql，S6）
+        WS_SPLIT_CLAWBACK_STATUS("1387"),// 分润冲减事实状态（ws_trade.sql，D-420 R1）
         ;
         private final String value;
 

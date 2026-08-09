@@ -116,6 +116,82 @@ public class WsCardServiceImpl extends ServiceImpl<WsCardMapper, WsCard> impleme
         return Boolean.TRUE;
     }
 
+    /**
+     * 修改授权范围（S4）。JSON 恒由服务端按结构化维度构造，
+     * {@code WaterCardScope.normalize} 是唯一规范化与校验入口（空范围/非法形态/未知
+     * 字段一律 fail-closed）；三维 ID 逐维校验真实存在。旧值 CAS（SCOPE_JSON 全等，
+     * NULL 安全）防并发覆盖；不追溯历史订单快照——取水事务仍做独立当前读校验。
+     */
+    @Override
+    public Boolean updateScope(com.jbk.tool.data.user.bo.WsCardScopeBo bo) {
+        WsCard card = getById(bo.getCardId());
+        OptionalUtils.nullToElseThrow(card, "水卡不存在");
+        String built = buildScopeJson(bo);
+        // 唯一校验口：形态、维度、ID 语法全部在此裁决
+        com.jbk.serve.service.mini.card.WaterCardScope.normalize(built, "水卡");
+        requireEntitiesExist(bo);
+        boolean hasExpected = cn.hutool.core.util.StrUtil.isNotBlank(bo.getExpectedScopeJson());
+        boolean updated = update(Wrappers.lambdaUpdate(WsCard.class)
+                .eq(WsCard::getId, card.getId())
+                .eq(hasExpected, WsCard::getScopeJson, bo.getExpectedScopeJson())
+                .isNull(!hasExpected, WsCard::getScopeJson)
+                .set(WsCard::getScopeJson, built));
+        if (!updated) {
+            throw new JbkException("授权范围已被其他操作变更，请刷新后重试");
+        }
+        return Boolean.TRUE;
+    }
+
+    /** 服务端构造 SCOPE_JSON：all 只留类型；specified 只写非空维度（与 normalize 契约一致）。 */
+    private String buildScopeJson(com.jbk.tool.data.user.bo.WsCardScopeBo bo) {
+        com.alibaba.fastjson2.JSONObject obj = new com.alibaba.fastjson2.JSONObject();
+        obj.put("scopeType", bo.getScopeType());
+        if (!"all".equals(bo.getScopeType())) {
+            putDimension(obj, "stationIds", bo.getStationIds());
+            putDimension(obj, "deviceIds", bo.getDeviceIds());
+            putDimension(obj, "outletIds", bo.getOutletIds());
+        }
+        return obj.toJSONString();
+    }
+
+    private static void putDimension(com.alibaba.fastjson2.JSONObject obj, String key, List<Long> ids) {
+        if (ids != null && !ids.isEmpty()) {
+            obj.put(key, ids.stream().map(String::valueOf).collect(Collectors.toList()));
+        }
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.jbk.serve.mapper.station.WsStationMapper scopeStationMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.jbk.serve.mapper.device.WsDeviceMapper scopeDeviceMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.jbk.serve.mapper.device.WsDeviceOutletMapper scopeOutletMapper;
+
+    /** 三维 ID 必须指向真实存在的档案：选择器之外拼进来的幽灵 ID 在此 fail-closed。 */
+    private void requireEntitiesExist(com.jbk.tool.data.user.bo.WsCardScopeBo bo) {
+        requireCount(bo.getStationIds(), ids -> scopeStationMapper.selectCount(
+                Wrappers.lambdaQuery(com.jbk.tool.data.station.po.WsStation.class)
+                        .in(com.jbk.tool.data.station.po.WsStation::getId, ids)), "水站");
+        requireCount(bo.getDeviceIds(), ids -> scopeDeviceMapper.selectCount(
+                Wrappers.lambdaQuery(com.jbk.tool.data.device.po.WsDevice.class)
+                        .in(com.jbk.tool.data.device.po.WsDevice::getId, ids)), "设备");
+        requireCount(bo.getOutletIds(), ids -> scopeOutletMapper.selectCount(
+                Wrappers.lambdaQuery(com.jbk.tool.data.device.po.WsDeviceOutlet.class)
+                        .in(com.jbk.tool.data.device.po.WsDeviceOutlet::getId, ids)), "出水口");
+    }
+
+    private void requireCount(List<Long> ids,
+                              java.util.function.Function<List<Long>, Long> counter, String label) {
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        List<Long> distinct = ids.stream().filter(ObjectUtil::isNotNull).distinct().toList();
+        Long found = counter.apply(distinct);
+        if (found == null || found != distinct.size()) {
+            throw new JbkException("选择的" + label + "不存在或已删除，请刷新后重新选择");
+        }
+    }
+
     /** 卡详情的授权成员列表（含成员用户姓名/手机号派生） */
     private List<WsCardMemberVo> listMembers(Long cardId) {
         List<WsCardMember> members = cardMemberMapper.selectList(Wrappers.lambdaQuery(WsCardMember.class)

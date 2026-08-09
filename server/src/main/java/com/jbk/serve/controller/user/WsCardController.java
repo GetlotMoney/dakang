@@ -80,6 +80,17 @@ public class WsCardController {
 
     @LogOperation
     @RepeatSubmit
+    @PostMapping("/updateScope")
+    @Operation(summary = "修改授权范围（高风险：影响后续扫码/下单授权；不追溯历史订单）")
+    @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_MANAGE) }, permission = {
+            @SaCheckPermission(value = "user:card:scope", type = StpKit.DRIVER_MANAGE) })
+    public R<Boolean> updateScope(
+            @RequestBody @jakarta.validation.Valid com.jbk.tool.data.user.bo.WsCardScopeBo bo) {
+        return R.ok(cardService.updateScope(bo));
+    }
+
+    @LogOperation
+    @RepeatSubmit
     @PostMapping("/issueGift")
     @Operation(summary = "运营赠卡发放（高风险：人工权益发放；D-213 口径带有效期不可充值，请求号幂等）")
     @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_MANAGE) }, permission = {

@@ -8,14 +8,16 @@
   },
   "scripts": {
     "dev": "vite --open",
-    "build": "node scripts/check-module-nav.mjs && vue-tsc --noEmit && vite build",
-    "build:demo": "node scripts/check-module-nav.mjs && vue-tsc --noEmit && vite build --mode demo",
+    "build": "node scripts/check-module-nav.mjs && node scripts/check-card-scope-ids.mjs && vue-tsc --noEmit && vite build",
+    "build:demo": "node scripts/check-module-nav.mjs && node scripts/check-card-scope-ids.mjs && vue-tsc --noEmit && vite build --mode demo",
     "serve": "vite preview",
     "lint": "eslint",
     "fix": "eslint --fix",
     "lint:prettier": "prettier --write \"**/*.{js,cjs,ts,json,tsx,css,less,scss,vue,html,md}\"",
     "lint:stylelint": "stylelint  \"**/*.{css,scss,vue}\" --fix",
-    "check:nav": "node scripts/check-module-nav.mjs"
+    "check:nav": "node scripts/check-module-nav.mjs",
+    "check:card-scope-ids": "node scripts/check-card-scope-ids.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
@@ -78,6 +80,7 @@
     "vite": "^7.1.5",
     "vite-plugin-compression": "^0.5.1",
     "vite-plugin-vue-devtools": "^7.7.6",
+    "vitest": "^4.1.10",
     "vue-demi": "^0.14.9",
     "vue-img-cutter": "^3.0.5",
     "vue-tsc": "~2.1.6"

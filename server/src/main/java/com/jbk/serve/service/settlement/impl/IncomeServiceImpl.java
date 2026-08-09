@@ -59,13 +59,14 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
         // FOR UPDATE 锁定读恒取最新已提交余额，与提现互斥串行，一次成功、无重试路径。
         ensureAccount(userId);
         WsIncomeAccount account = baseMapper.selectByUserIdForUpdate(userId);
-        long after = account.getBalanceFen() + amountFen;
+        long balance = account.getBalanceFen();
+        long afterCredit = balance + amountFen;
         // 流水先行：幂等键撞键即已入过账（唯一事实判据，先于余额变动）
         WsIncomeFlow flow = new WsIncomeFlow()
                 .setUserId(userId)
                 .setFlowType(SettlementEnum.IncomeFlowType.SPLIT_IN.getValue())
                 .setAmountFen(amountFen)
-                .setAfterFen(after)
+                .setAfterFen(afterCredit)
                 .setSplitId(splitId)
                 .setOrderNo(orderNo)
                 .setBizIdempotencyKey("INCOME:" + splitId);
@@ -75,10 +76,34 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
         catch (DuplicateKeyException e) {
             return false;
         }
+        // D-420 补差优先：存在冲减待补差额时，本次入账先补差额、剩余才进可用余额。
+        // 抵扣单独成一条流水（负额），账本 AFTER 链保持连续；补足后提现限制自然解除。
+        long deficit = account.getClawbackDeficitFen() == null ? 0L : account.getClawbackDeficitFen();
+        long offset = Math.min(deficit, amountFen);
+        long finalBalance = afterCredit - offset;
+        if (offset > 0) {
+            WsIncomeFlow offsetFlow = new WsIncomeFlow()
+                    .setUserId(userId)
+                    .setFlowType(SettlementEnum.IncomeFlowType.SPLIT_REVERSE.getValue())
+                    .setAmountFen(-offset)
+                    .setAfterFen(finalBalance)
+                    .setSplitId(splitId)
+                    .setOrderNo(orderNo)
+                    .setBizIdempotencyKey("DEFICIT-OFFSET:" + splitId)
+                    .setFlowRemark("分润入账抵扣冲减待补差额（D-420）");
+            try {
+                flowMapper.insert(offsetFlow);
+            }
+            catch (DuplicateKeyException e) {
+                // INCOME: 键已挡住重放，同 splitId 的抵扣键撞键=证据链断裂
+                throw new JbkException("补差流水幂等键冲突，入账中止");
+            }
+        }
         // 行锁在手，按主键直更即安全；仍递增 VERSION 供提现侧乐观读者感知变化
         boolean updated = update(Wrappers.lambdaUpdate(WsIncomeAccount.class)
                 .eq(WsIncomeAccount::getId, account.getId())
-                .set(WsIncomeAccount::getBalanceFen, after)
+                .set(WsIncomeAccount::getBalanceFen, finalBalance)
+                .set(WsIncomeAccount::getClawbackDeficitFen, deficit - offset)
                 .set(WsIncomeAccount::getVersion, account.getVersion() + 1));
         if (!updated) {
             throw new JbkException("收益入账写入失败");
@@ -116,9 +141,12 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
                         userId, agg.getEarliestCreateTime());
             }
         }
+        long deficitFen = ObjectUtil.isNull(account) || account.getClawbackDeficitFen() == null
+                ? 0L : account.getClawbackDeficitFen();
         return new MiniWalletVo()
                 .setBalanceFen(ObjectUtil.isNull(account) ? 0L : account.getBalanceFen())
                 .setFrozenFen(ObjectUtil.isNull(account) ? 0L : account.getFrozenFen())
+                .setClawbackDeficitFen(deficitFen)
                 .setPendingSplitFen(pendingFen)
                 .setEarliestUnfreezeTime(earliestUnfreeze)
                 .setFlows(flows.stream().map(flow -> new MiniWalletVo.Flow()
@@ -145,6 +173,13 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
         }
         WsIncomeAccount account = getOne(Wrappers.lambdaQuery(WsIncomeAccount.class)
                 .eq(WsIncomeAccount::getUserId, userId));
+        // D-420 提现闸先于余额判断：存在冲减待补差额时无论余额多少一律拒绝——差额由
+        // 后续分润入账优先补足，补足即解除。CAS 前态含 VERSION：冲减即使余额零变动
+        // 也递增版本，无读旧放行窗口
+        if (ObjectUtil.isNotNull(account) && account.getClawbackDeficitFen() != null
+                && account.getClawbackDeficitFen() > 0) {
+            throw new JbkException("分润存在退款扣回待补差额，暂不可提现（后续收益将优先补足）");
+        }
         if (ObjectUtil.isNull(account) || account.getBalanceFen() < amountFen) {
             throw new JbkException("可用分润余额不足");
         }

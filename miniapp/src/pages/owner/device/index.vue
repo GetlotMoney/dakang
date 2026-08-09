@@ -150,7 +150,7 @@ async function refresh() {
                 {{ item.deviceName }} · {{ item.stationName }}
               </view>
             </view>
-            <wd-icon name="arrow-right" size="16px" color="#646a73" />
+            <wd-icon name="arrow-right" size="16px" color="var(--app-text-secondary)" />
           </view>
           <view class="device-card-tags">
             <wd-tag :type="ONLINE_STATUS_TONES[item.onlineStatus]" plain>
@@ -217,6 +217,6 @@ async function refresh() {
 }
 
 .fault-code-text {
-  color: #fa4350;
+  color: var(--app-color-danger);
 }
 </style>

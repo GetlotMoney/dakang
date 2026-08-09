@@ -56,6 +56,15 @@ public interface IWsDomainEventService extends IService<WsDomainEvent> {
     void recordReliable(OpsEnum.EventType eventType, String eventKey, Object oldValue, Object newValue);
 
     /**
+     * 成功状态审计（REQUIRED 同事务、无幂等键）：加入调用方业务事务——业务回滚时
+     * 审计一并消失，杜绝「业务没成功、审计声称成功」的幽灵记录；写入失败抛出，
+     * 业务与审计共同回滚（可靠语义）。适用于可重复发生的成功状态流转
+     * （暂停/恢复/取消、驳回后重提等），每次真实变化各成一行、互不撞键。
+     * REQUIRES_NEW 的 {@link #recordReliable} 只留给拒绝/失败证据。
+     */
+    void recordReliableInTx(OpsEnum.EventType eventType, String eventKey, Object oldValue, Object newValue);
+
+    /**
      * 记录按业务幂等键全库最多一条、且与业务写入同一事务的<b>正向状态</b>可靠领域事件
      * （配送创单、申诉登记/裁决等）。
      *

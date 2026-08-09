@@ -21,6 +21,8 @@ import com.jbk.serve.service.delivery.impl.CourierAccess;
 import com.jbk.serve.service.mini.IMiniDeliveryService;
 import com.jbk.serve.service.mini.IMiniOrderService;
 import com.jbk.tool.consts.delivery.DeliveryEnum;
+import com.jbk.tool.consts.message.MessageEnum;
+import com.jbk.tool.consts.ops.OpsEnum;
 import com.jbk.tool.consts.trade.TradeEnum;
 import com.jbk.tool.consts.user.UserEnum;
 import com.jbk.tool.data.delivery.bo.DeliveryAppealCreateBo;
@@ -302,6 +304,96 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
                 .setRequestedRegion(blankToNull(courier.getServiceRegion()))
                 .setSubmittedTime(courier.getCreateTime())
                 .setRejectReason(rejected ? blankToNull(courier.getAuditRemark()) : null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.jbk.serve.service.message.IWsMessageService messageService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.jbk.serve.service.ops.IWsDomainEventService domainEventService;
+
+    /**
+     * 自助准入申请（S3）。并发裁决点=本人 ws_user 行锁：ws_courier 无 USER_ID 唯一键
+     * （历史允许多条记录），「读最新→判分支→写入」窗口靠行锁串行化——后到者等锁后
+     * 重读，命中先到者刚写入的待审核记录即被拒绝，恒至多一条有效申请。
+     */
+    @Override
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class,
+            isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public MiniCourierAdmissionVo submitAdmission(com.jbk.tool.data.mini.bo.MiniAdmissionSubmitBo bo, Long userId) {
+        List<Long> stationIds = bo.getRequestedStationIds() == null ? List.of()
+                : bo.getRequestedStationIds().stream().filter(ObjectUtil::isNotNull).distinct().toList();
+        String region = StrUtil.trimToNull(bo.getRequestedRegion());
+        if (stationIds.isEmpty() && region == null) {
+            throw new JbkException("申请服务区域或水站至少填写一项");
+        }
+        if (stationIds.size() > 20) {
+            throw new JbkException("申请水站数量过多，请精简后提交");
+        }
+        if (!stationIds.isEmpty()) {
+            // 水站必须真实存在且正常营业：停业/不存在的站进服务范围会让审核通过后接不到任何单
+            List<WsStation> stations = stationMapper.selectBatchIds(stationIds);
+            boolean allLegal = stations.size() == stationIds.size()
+                    && stations.stream().allMatch(s -> ObjectUtil.equal(s.getStationStatus(), 1));
+            if (!allLegal) {
+                throw new JbkException("申请的水站不存在或已停业，请重新选择");
+            }
+        }
+        if (ObjectUtil.isNull(courierMapper.lockUserRow(userId))) {
+            throw new JbkException("登录状态异常");
+        }
+        WsCourier existing = courierMapper.selectOne(Wrappers.lambdaQuery(WsCourier.class)
+                .eq(WsCourier::getUserId, userId)
+                .orderByDesc(WsCourier::getId)
+                .last("LIMIT 1"));
+        String now = DateUtils.time();
+        String stationIdsText = stationIds.isEmpty() ? null
+                : stationIds.stream().map(String::valueOf).collect(Collectors.joining(","));
+        Long recordId;
+        if (ObjectUtil.isNull(existing)) {
+            WsCourier fresh = new WsCourier()
+                    .setUserId(userId)
+                    .setCourierName(bo.getApplicantName().trim())
+                    .setCourierPhone(bo.getPhone())
+                    .setStationIds(stationIdsText)
+                    .setServiceRegion(region)
+                    .setCourierStatus(UserEnum.CourierStatus.PENDING.getValue());
+            courierMapper.insert(fresh);
+            recordId = fresh.getId();
+        }
+        else if (ObjectUtil.equal(existing.getCourierStatus(), UserEnum.CourierStatus.REJECTED.getValue())) {
+            // 驳回后重新提交：复用原记录（保留历史审核备注为证据），精确前态 CAS 防并发覆盖
+            int updated = courierMapper.update(null, Wrappers.lambdaUpdate(WsCourier.class)
+                    .eq(WsCourier::getId, existing.getId())
+                    .eq(WsCourier::getCourierStatus, UserEnum.CourierStatus.REJECTED.getValue())
+                    .set(WsCourier::getCourierName, bo.getApplicantName().trim())
+                    .set(WsCourier::getCourierPhone, bo.getPhone())
+                    .set(WsCourier::getStationIds, stationIdsText)
+                    .set(WsCourier::getServiceRegion, region)
+                    .set(WsCourier::getCourierStatus, UserEnum.CourierStatus.PENDING.getValue()));
+            if (updated != 1) {
+                throw new JbkException("申请状态已变化，请刷新后重试");
+            }
+            recordId = existing.getId();
+        }
+        else if (ObjectUtil.equal(existing.getCourierStatus(), UserEnum.CourierStatus.PENDING.getValue())) {
+            throw new JbkException("申请正在审核中，请耐心等待结果");
+        }
+        else if (ObjectUtil.equal(existing.getCourierStatus(), UserEnum.CourierStatus.ENABLED.getValue())) {
+            throw new JbkException("您已具备配送能力，无需重复申请");
+        }
+        else {
+            throw new JbkException("配送能力已停用，请联系运营处理");
+        }
+        // 留痕：领域事件与提交写入同事务（REQUIRED）——插入/复用记录回滚时审计随之
+        // 消失，无幽灵；首次申请与每次驳回重提各成一行（无幂等键，互不撞键）。
+        // 站内消息同事务：发送失败=提交整体回滚（用户重试即可，绝不留半套事实）
+        domainEventService.recordReliableInTx(OpsEnum.EventType.DELIVERY_NODE,
+                "ADMISSION:" + userId, ObjectUtil.isNull(existing) ? null : existing.getCourierStatus(),
+                UserEnum.CourierStatus.PENDING.getValue());
+        messageService.sendInApp(userId, MessageEnum.MsgDomain.DELIVERY,
+                "配送准入申请已提交", "申请已进入审核，结果将另行通知", "admission",
+                String.valueOf(recordId), now);
+        return getAdmission(userId);
     }
 
     // ==================== 媒体 ====================

@@ -36,4 +36,11 @@ public interface IWsCardService extends IService<WsCard> {
      * 3已过期/4已注销 为系统终态不可手动改，REQ-075 卡状态影响刷卡授权）
      */
     Boolean changeStatus(WsCardBo cardBo);
+
+    /**
+     * 修改授权范围（S4）：服务端按结构化维度构造 SCOPE_JSON（禁止直接编辑原文），
+     * WaterCardScope 唯一规范化校验；旧值 CAS 防并发覆盖；只影响后续扫码/下单/扣款
+     * 校验，不追溯改写历史订单快照。前后快照与原因经 @LogOperation 进操作日志。
+     */
+    Boolean updateScope(com.jbk.tool.data.user.bo.WsCardScopeBo bo);
 }

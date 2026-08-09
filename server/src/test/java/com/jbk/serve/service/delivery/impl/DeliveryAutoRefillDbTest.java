@@ -240,6 +240,12 @@ class DeliveryAutoRefillDbTest {
         }
 
         @Bean
+        com.jbk.serve.service.delivery.IMiniAutoRuleService miniAutoRuleService() {
+            // S2 用户自助管理：与生成器同库同事实（本人过滤、三键 CAS、终态不可恢复）
+            return new MiniAutoRuleServiceImpl();
+        }
+
+        @Bean
         JdbcTemplate jdbcTemplate(DataSource ds) {
             return new JdbcTemplate(ds);
         }
@@ -247,6 +253,8 @@ class DeliveryAutoRefillDbTest {
 
     @Autowired
     private IDeliveryOrderService orderService;
+    @Autowired
+    private com.jbk.serve.service.delivery.IMiniAutoRuleService miniAutoRuleService;
     @Autowired
     private JdbcTemplate jdbc;
     /** spy：默认走真实现；只有「审计写入自身失败」那条用例对失败留痕打桩。 */
@@ -677,5 +685,115 @@ class DeliveryAutoRefillDbTest {
         // 合法时钟随后仍能正常工作（证明上一轮异常没有污染状态）
         assertEquals(1, worker.runOnce(DateUtils.time().substring(0, 0)
                 + DeliveryClock.plusHours(anchorOf(ruleId), 24 * 8)));
+    }
+
+    // ==================== S2. 用户自助管理（查看/暂停/恢复/取消） ====================
+
+    /** S2：规则只对本人可见；他人列表为空（不泄露存在性）。 */
+    @Test
+    void rulesVisibleOnlyToOwner() {
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        var mine = miniAutoRuleService.listMine(USER_ID);
+        assertEquals(1, mine.size());
+        assertEquals(ruleId, mine.get(0).getId());
+        assertEquals("纯净水", mine.get(0).getWaterTypeName(), "水种名关联 ws_water_type 派生");
+        org.junit.jupiter.api.Assertions.assertNotNull(mine.get(0).getNextDueTime(), "启用规则必给下次到期时间");
+        assertEquals(0, miniAutoRuleService.listMine(USER_ID + 1).size(), "他人列表恒空");
+    }
+
+    /** S2：他人规则直达操作拒绝，报文与「不存在」同形状，且状态零变化。 */
+    @Test
+    void othersRuleActionsRejectedWithoutExistenceLeak() {
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        long stranger = USER_ID + 1;
+        for (Runnable action : new Runnable[] {
+                () -> miniAutoRuleService.pause(stranger, ruleId),
+                () -> miniAutoRuleService.cancel(stranger, ruleId) }) {
+            com.jbk.tool.exception.JbkException rejected =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            com.jbk.tool.exception.JbkException.class, action::run);
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    rejected.getMsg().contains("规则不存在"), "他人规则与不存在规则同报文");
+        }
+        assertEquals(1, (int) jdbc.queryForObject(
+                "SELECT RULE_STATUS FROM ws_delivery_auto_rule WHERE ID=?", Integer.class, ruleId),
+                "越权操作零状态变化");
+    }
+
+    /** S2：暂停后 Worker 不生成订单。 */
+    @Test
+    void pausedRuleGeneratesNothing() {
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        miniAutoRuleService.pause(USER_ID, ruleId);
+        String due = DeliveryClock.plusHours(anchorOf(ruleId), 24 * 8);
+        assertEquals(0, worker.runOnce(due), "停用规则不在扫描集");
+        assertEquals(1, count("ws_order"), "只有首单");
+        assertEquals(BALANCE_FEN - PERIOD_FEN, cardBalance(CARD_ID), "零追加扣款");
+    }
+
+    /** S2：恢复后只生成当前到期期次，不追补暂停期间的历史期。 */
+    @Test
+    void resumedRuleGeneratesOnlyCurrentPeriod() {
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        miniAutoRuleService.pause(USER_ID, ruleId);
+        String due3 = DeliveryClock.plusHours(anchorOf(ruleId), 24 * 22);
+        assertEquals(0, worker.runOnce(due3), "暂停期间零生成");
+        miniAutoRuleService.resume(USER_ID, ruleId);
+        assertEquals(1, worker.runOnce(due3), "恢复后只生成当前期");
+        String expectedNo = DeliveryOrderNo.deriveAutoRefill(USER_ID, ruleId, 3);
+        assertEquals(1, orderCount(expectedNo), "生成的是第3期（当前期），不是暂停期间的第1/2期");
+        assertEquals(2, count("ws_order"), "首单+当前期，历史期不追补");
+    }
+
+    /** S2：取消为终态——Worker 永不再生成，恢复操作永不匹配前态。 */
+    @Test
+    void cancelledRulePermanentlyStopsGeneration() {
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        miniAutoRuleService.cancel(USER_ID, ruleId);
+        String due = DeliveryClock.plusHours(anchorOf(ruleId), 24 * 8);
+        assertEquals(0, worker.runOnce(due), "已取消规则零生成");
+        com.jbk.tool.exception.JbkException rejected = org.junit.jupiter.api.Assertions.assertThrows(
+                com.jbk.tool.exception.JbkException.class,
+                () -> miniAutoRuleService.resume(USER_ID, ruleId));
+        org.junit.jupiter.api.Assertions.assertTrue(rejected.getMsg().contains("不支持恢复"),
+                "已取消不可恢复");
+        assertEquals(0, worker.runOnce(DeliveryClock.plusHours(anchorOf(ruleId), 24 * 15)),
+                "后续期次同样零生成");
+        assertEquals(1, count("ws_order"));
+        assertEquals(BALANCE_FEN - PERIOD_FEN, cardBalance(CARD_ID), "取消后零扣款");
+    }
+
+    /** S2：取消与 Worker 扫描并发——取消成功后绝不再产生新订单（期次创单事务内锁定复核）。 */
+    @Test
+    void cancelConcurrentWithWorkerNeverGeneratesAfterCancel() throws Exception {
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        String due = DeliveryClock.plusHours(anchorOf(ruleId), 24 * 8);
+        java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            pool.invokeAll(java.util.List.of(
+                    () -> {
+                        barrier.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                        miniAutoRuleService.cancel(USER_ID, ruleId);
+                        return true;
+                    },
+                    () -> {
+                        barrier.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                        worker.runOnce(due);
+                        return true;
+                    }), 30, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+        }
+        // 竞态两序都合法：worker 先→本期 1 单后取消；cancel 先→本期零单。
+        // 不变式：取消已成功，此后任何期次扫描恒零新增、零追加扣款
+        int ordersAfterRace = count("ws_order");
+        org.junit.jupiter.api.Assertions.assertTrue(ordersAfterRace <= 2, "至多首单+竞态期1单");
+        assertEquals(3, (int) jdbc.queryForObject(
+                "SELECT RULE_STATUS FROM ws_delivery_auto_rule WHERE ID=?", Integer.class, ruleId),
+                "取消恒成功（终态）");
+        assertEquals(0, worker.runOnce(DeliveryClock.plusHours(anchorOf(ruleId), 24 * 15)),
+                "取消后的后续期次恒零生成");
+        assertEquals(ordersAfterRace, count("ws_order"), "取消后订单数冻结");
     }
 }

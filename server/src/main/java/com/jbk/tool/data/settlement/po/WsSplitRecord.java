@@ -69,7 +69,11 @@ public class WsSplitRecord extends BaseEntity implements Serializable {
     @TableField("SPLIT_REMARK")
     private String splitRemark;
 
-    @Schema(description = "触发回退的退款单ID（扩展位：退款冲减分润经甲方确认后启用）")
+    @Schema(description = "触发冲减的退款单ID（D-420 已启用）：行被水费退款冲减时绑定；同一行至多被一个退款冲减")
     @TableField("REFUND_ID")
     private Long refundId;
+
+    @Schema(description = "已冲减金额(分)（D-420）：取水行全额（PENDING 置4）；配送分线行只冲水费份额，结算按净额=SPLIT_AMOUNT-本列；0=未冲减")
+    @TableField("REVERSED_AMOUNT")
+    private Long reversedAmount;
 }

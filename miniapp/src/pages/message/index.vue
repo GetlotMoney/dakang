@@ -199,7 +199,7 @@ async function openMessage(item: MessageItem) {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--wot-color-danger, #fa4350);
+  background: var(--app-color-danger);
 }
 
 .message-title {

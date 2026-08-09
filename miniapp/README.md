@@ -11,23 +11,32 @@
 ```bash
 pnpm install --frozen-lockfile
 
-pnpm dev:mp-weixin     # 微信开发构建 → dist/dev/mp-weixin（用微信开发者工具打开这个目录）
+pnpm dev:mp-weixin     # 微信开发 watch → dist/dev/mp-weixin（用微信开发者工具打开这个目录）
 pnpm dev:h5            # H5 布局预览，不能替代微信验收
 
 pnpm type-check && pnpm lint && pnpm test
 pnpm build:mp-weixin   # 生产构建 → dist/build/mp-weixin
+
+# 验收用一次性构建：产物同样落 dist/dev/mp-weixin，但编译完即退出，可核对进程归零
+UNI_OUTPUT_DIR="$PWD/dist/dev/mp-weixin" pnpm exec uni build -p mp-weixin --mode development
 ```
 
 要求 Node.js ≥20、pnpm ≥9（仓库钉 10.10.0）。
 
-**验收产物必须用 `dev:mp-weixin` 构建**：`build:mp-weixin` 走 production 模式只读 `env/.env`
+**验收产物必须走 development 模式**：`build:mp-weixin` 是 production，只读 `env/.env`
 （AppID 是 `touristappid`），真实 AppID 只在不入库的 `env/.env.development.local` 里。
 接入正式微信登录、手机号、隐私、支付与订阅消息前，需替换为甲方 AppID 并完成契约评审。
 
+`--mode development` 只切换 env 加载，**不切换输出目录**：`uni build` 会把 `NODE_ENV` 无条件
+置为 production（见 `@dcloudio/vite-plugin-uni/dist/cli/utils.js`，那里还留着 `// TODO 需要识别 mode`），
+产物默认落 `dist/build/`。所以必须显式给 `UNI_OUTPUT_DIR`，否则去 `dist/dev/` 核验，看的是上一次
+watch 留下的旧产物。
+
 **构建纪律**（2026-08-01 产物污染事故）：`dev:mp-weixin` 是 watch 进程，杀 pnpm 包装进程不会
-杀掉真正的编译器。构建前后都要确认 `pgrep -f "vite-plugin-uni/bin/uni.js"` 为 0，有残留先
-`pkill -f` 清掉；"Build complete" 只表示编译完成、不代表落盘完毕。产物核验看内容
-（`build-fingerprint.json`、`api/runtime.js` 的模式值、AppID、后端 IP），不看构建日志。
+杀掉真正的编译器。验收用上面那条一次性构建，构建前后都要确认
+`pgrep -f "vite-plugin-uni/bin/uni.js"` 为 0，有残留先 `pkill -f` 清掉；"Build complete" 只表示
+编译完成、不代表落盘完毕。产物核验看内容（`build-fingerprint.json` 指纹是否变新、
+`api/runtime.js` 的模式值、AppID、后端 IP），不看构建日志。
 
 ## 数据源
 
@@ -75,6 +84,7 @@ pnpm build:mp-weixin   # 生产构建 → dist/build/mp-weixin
 | O01 | `pages/owner/overview/index` 经营概览 | D05 | `pages/courier/task/exception` 配送异常 |
 | O02 | `pages/owner/device/index` 机主设备 | O04 | `pages/owner/transaction/index` 交易收益 |
 | O03 | `pages/owner/device/detail` 设备详情 | O05 | `pages/owner/service/index` 报修配件 |
+| U16 | `pages/user/delivery/auto-rules` 自动补货规则 | | |
 
 ## 验收与门禁
 

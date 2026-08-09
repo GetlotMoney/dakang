@@ -124,7 +124,7 @@ async function refresh() {
       </view>
 
       <view class="page-section readonly-banner">
-        <wd-icon name="lock-on" size="14px" color="#646a73" />
+        <wd-icon name="lock-on" size="14px" color="var(--app-text-secondary)" />
         <text>仅查看，不支持远程控制设备</text>
       </view>
 
@@ -241,7 +241,7 @@ async function refresh() {
 }
 
 .fault-code-text {
-  color: #fa4350;
+  color: var(--app-color-danger);
 }
 
 .outlet-row {

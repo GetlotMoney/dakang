@@ -13,9 +13,7 @@
 
 ## 示例
 
-字典幂等必须用 `NOT EXISTS`，**不能用 `INSERT IGNORE`**：`api_dict_type`/`api_dict_data`
-除主键外没有任何唯一键，而字典 INSERT 不写自增 ID，IGNORE 无键可撞、等同普通 INSERT，
-重复执行即翻倍，而字典查询遇重复行直接 500。本项目已因此踩过两次。
+字典幂等必须用 `NOT EXISTS`，**不能用 `INSERT IGNORE`**：`api_dict_type`/`api_dict_data` 除主键外没有任何唯一键，而字典 INSERT 不写自增 ID，IGNORE 无键可撞、等同普通 INSERT，重复执行即翻倍，而字典查询遇重复行直接 500。本项目已因此踩过两次。
 
 ```sql
 INSERT INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`)

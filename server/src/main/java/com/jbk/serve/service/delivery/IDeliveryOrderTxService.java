@@ -34,6 +34,15 @@ public interface IDeliveryOrderTxService {
     WsOrder createPaidDeliveryOrder(WsOrder order, WsDeliveryTask task, WsDeliveryAutoRule autoRule, String now);
 
     /**
+     * 自动补货期次单创建（S2）：与 {@link #createPaidDeliveryOrder} 唯一差别是事务内
+     * 先锁定读规则并复核当前为启用——取消/暂停与 Worker 扫描并发的裁决点，
+     * 快照期被取消/停用的规则在此 fail-closed，绝不在取消后生成新订单。
+     *
+     * @param ruleId 规则ID（锁定复核对象；订单/任务字段仍由编排层按规则装配）
+     */
+    WsOrder createAutoRefillPeriodOrder(Long ruleId, WsOrder order, WsDeliveryTask task, String now);
+
+    /**
      * 待接单取消的<b>第一段事务</b>（E2E-04 包A）：任务 1→6 CAS + 订单 2→7 CAS +
      * 登记一笔整单满额的待执行卡内退款——三步同事务，任一影响行 ≠ 1 即整体回滚。
      *

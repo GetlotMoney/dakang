@@ -86,7 +86,9 @@ export const BUSINESS_MODULE_NAVIGATION: Record<BusinessModuleKey, BusinessModul
       { label: '申诉处理', path: '/order/appeal', icon: 'ri:customer-service-2-line' },
       { label: '分账明细', path: '/order/split', icon: 'ri:pie-chart-2-line' },
       { label: '日对账', path: '/order/reconcile', icon: 'ri:scales-3-line' },
-      { label: '分账比例配置', path: '/order/splitconfig', icon: 'ri:percent-line' }
+      { label: '分账比例配置', path: '/order/splitconfig', icon: 'ri:percent-line' },
+      { label: '自动补货规则', path: '/order/autorule', icon: 'ri:refresh-line' },
+      { label: '水种用量统计', path: '/order/waterstats', icon: 'ri:bar-chart-2-line' }
     ]
   }
 }

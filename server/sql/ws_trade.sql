@@ -211,7 +211,8 @@ CREATE TABLE `ws_split_record` (
   `WX_SPLIT_NO`      varchar(64)  COMMENT '微信分账单号(max64)',
   `SPLIT_TIME`       varchar(14)  COMMENT '分账完成时间',
   `SPLIT_REMARK`     varchar(500) COMMENT '备注(max500)',
-  `REFUND_ID`        bigint       COMMENT '触发回退的退款单ID（扩展位：退款冲减分润经甲方确认后启用，SPLIT_STATUS=4 时必填）',
+  `REFUND_ID`        bigint       COMMENT '历史兼容字段（R1 起不再承担幂等职责，冲减幂等归 ws_split_clawback 唯一键；保留读兼容）',
+  `REVERSED_AMOUNT`  bigint       NOT NULL DEFAULT 0 COMMENT '累计已冲减金额(分)（D-420 R1）：多次部分退款逐笔累加（明细在 ws_split_clawback）；结算与入账按净额=SPLIT_AMOUNT-本列；恒不超过行水费线原始份额。0=未冲减',
   PRIMARY KEY (`ID`),
   -- 同单同收款方恒一行：铁律②库层幂等，分账 Worker 并发/重放零重复（E2E-08 包A）
   UNIQUE KEY `uk_split_order_receiver` (`ORDER_ID`, `RECEIVER_TYPE`, `RECEIVER_USER_ID`),
@@ -363,3 +364,68 @@ INSERT IGNORE INTO `ws_wallet_flow` (`ID`, `DATA_STATUS`, `CREATE_BY`, `CREATE_T
 -- ----------------------------
 
 -- 菜单与按钮权限统一维护在 deploy/mysql/init/03-demo-baseline.sql；本领域 SQL 只定义表、字典和样例数据。
+
+-- ----------------------------
+-- 分润冲减事实表（D-420 R1）：每(售后动作,分账行)一行冲减事实，两段式——
+-- 登记与客户退款成功同事务（outbox 语义：退款成功即事实存在，绝不因冲减失败回滚）；
+-- 执行独立事务可重试可转人工。多次部分退款=多个 ACTION 各自成行、同行累计；
+-- uk(ACTION_ID,SPLIT_ID) 保证同一动作对同一分账行恒零重复。
+-- ----------------------------
+DROP TABLE IF EXISTS `ws_split_clawback`;
+CREATE TABLE `ws_split_clawback` (
+  `ID`               bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`      tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：冲减事实必须保持0，不做业务逻辑删除',
+  `CREATE_BY`        bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`      varchar(14)  NOT NULL COMMENT '创建时间',
+  `UPDATE_BY`        bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`      varchar(14)  NOT NULL COMMENT '更新时间',
+  `ACTION_ID`        bigint       NOT NULL COMMENT '售后动作ID（ws_after_sale_action.ID；CARD_REFUND/GATEWAY_REFUND 成功后登记）',
+  `ORDER_ID`         bigint       NOT NULL COMMENT '订单ID（冗余自分账行，执行扫描与对账用）',
+  `SPLIT_ID`         bigint       NOT NULL COMMENT '分账行ID（ws_split_record.ID）',
+  `CLAWBACK_AMOUNT`  bigint       NOT NULL COMMENT '本次应冲金额(分)：按行水费线原始份额比例分摊实际退款额，平台行吃舍入余数',
+  `CLAWBACK_STATUS`  tinyint      NOT NULL COMMENT '状态(1387)：1待处理 2已完成 3需人工',
+  `PROCESS_REMARK`   varchar(500) COMMENT '处理备注(max500)：失败原因/人工转办说明',
+  PRIMARY KEY (`ID`),
+  -- 同一动作对同一分账行恒一行：重放与并发登记的库层幂等闸
+  UNIQUE KEY `uk_split_clawback_action_split` (`ACTION_ID`, `SPLIT_ID`),
+  INDEX `idx_split_clawback_status` (`CLAWBACK_STATUS`),
+  INDEX `idx_split_clawback_order` (`ORDER_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='分润冲减事实表（D-420 R1 两段式）';
+
+INSERT INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`)
+SELECT s.* FROM (SELECT '分润冲减状态' AS DICT_NAME, '1387' AS DICT_TYPE, '冲减事实处理状态' AS DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE = s.DICT_TYPE);
+
+INSERT INTO `api_dict_data`(`DICT_CLASS`,`DICT_DEFAULT_FLAG`,`DICT_TYPE`,`DICT_SORT`,`DICT_VALUE`,`DICT_LABEL`)
+SELECT NULL, 1, s.DICT_TYPE, s.DICT_SORT, s.DICT_VALUE, s.DICT_LABEL FROM (
+            SELECT '1387' AS DICT_TYPE, 1 AS DICT_SORT, 1 AS DICT_VALUE, '待处理' AS DICT_LABEL
+  UNION ALL SELECT '1387', 2, 2, '已完成'
+  UNION ALL SELECT '1387', 3, 3, '需人工'
+) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_data d WHERE d.DICT_TYPE = s.DICT_TYPE AND d.DICT_VALUE = s.DICT_VALUE);
+
+-- ----------------------------
+-- 分润冲减动作级 outbox（D-420 R2）：客户退款成功事务内唯一写入的冲减登记——
+-- 单行 INSERT、零分账读、ACTION_ID 唯一；分账形状解析/比例分摊/额度校验/明细
+-- 生成全部在独立执行事务完成，任何分账证据异常置 3 需人工，绝不回滚客户退款。
+-- Worker 以本表为发现源：分项明细缺失/被改时动作仍可被发现并对账。
+-- ----------------------------
+DROP TABLE IF EXISTS `ws_split_clawback_action`;
+CREATE TABLE `ws_split_clawback_action` (
+  `ID`                 bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`        tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：冲减事实必须保持0',
+  `CREATE_BY`          bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`        varchar(14)  NOT NULL COMMENT '创建时间（登记时刻，随退款成功事务）',
+  `UPDATE_BY`          bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`        varchar(14)  NOT NULL COMMENT '更新时间',
+  `ACTION_ID`          bigint       NOT NULL COMMENT '售后动作ID（ws_after_sale_action.ID）',
+  `ORDER_ID`           bigint       NOT NULL COMMENT '订单ID（登记时冻结，执行段与权威动作比对）',
+  `ACTION_TYPE`        tinyint      NOT NULL COMMENT '动作类型（登记时冻结）：1卡内退款 3机构退款',
+  `REFUND_PRODUCT_FEN` bigint       NOT NULL COMMENT '水品实退金额(分)（登记时冻结，执行段分摊基数）',
+  `OUTBOX_STATUS`      tinyint      NOT NULL COMMENT '状态(1387)：1待处理 2已完成 3需人工',
+  `PROCESS_REMARK`     varchar(500) COMMENT '处理备注(max500)',
+  PRIMARY KEY (`ID`),
+  -- 同一售后动作恒一条冲减登记：重放撞键走等价核验，参数漂移转人工
+  UNIQUE KEY `uk_split_clawback_action` (`ACTION_ID`),
+  INDEX `idx_clawback_action_status` (`OUTBOX_STATUS`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='分润冲减动作级outbox（D-420 R2）';

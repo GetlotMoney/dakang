@@ -285,7 +285,8 @@ class DeliveryCancelTxDbTest {
             // 三种传播（REQUIRED 登记 / REQUIRES_NEW 认领与落痕 / REQUIRES_NEW+RC 资金）
             // 必须由真实 Spring 事务织入，mock 掉就等于把被测边界本身拿掉
             return new AfterSaleActionTxServiceImpl(actionMapper, orderMapper, tradeCardMapper,
-                    walletFlowMapper, domainEventService, entitlementLedger);
+                    walletFlowMapper, domainEventService, entitlementLedger,
+                    org.mockito.Mockito.mock(com.jbk.serve.service.settlement.ISplitClawbackTxService.class));
         }
 
         @Bean

@@ -448,7 +448,28 @@ public final class DeliveryDbSchema {
                   SPLIT_AMOUNT BIGINT NOT NULL, SPLIT_RATE_SNAP VARCHAR(20) NOT NULL,
                   SPLIT_STATUS TINYINT NOT NULL, WX_SPLIT_NO VARCHAR(64) NULL,
                   SPLIT_TIME VARCHAR(14) NULL, SPLIT_REMARK VARCHAR(500) NULL, REFUND_ID BIGINT NULL,
+                  REVERSED_AMOUNT BIGINT NOT NULL DEFAULT 0,
                   UNIQUE KEY uk_split_order_receiver (ORDER_ID, RECEIVER_TYPE, RECEIVER_USER_ID)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_split_clawback (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(14),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(14),
+                  ACTION_ID BIGINT NOT NULL, ORDER_ID BIGINT NOT NULL, SPLIT_ID BIGINT NOT NULL,
+                  CLAWBACK_AMOUNT BIGINT NOT NULL, CLAWBACK_STATUS TINYINT NOT NULL,
+                  PROCESS_REMARK VARCHAR(500) NULL,
+                  UNIQUE KEY uk_split_clawback_action_split (ACTION_ID, SPLIT_ID)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_split_clawback_action (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(14),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(14),
+                  ACTION_ID BIGINT NOT NULL, ORDER_ID BIGINT NOT NULL, ACTION_TYPE TINYINT NOT NULL,
+                  REFUND_PRODUCT_FEN BIGINT NOT NULL, OUTBOX_STATUS TINYINT NOT NULL,
+                  PROCESS_REMARK VARCHAR(500) NULL,
+                  UNIQUE KEY uk_split_clawback_action (ACTION_ID)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_split_config (
@@ -465,7 +486,8 @@ public final class DeliveryDbSchema {
                   DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),
                   UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20),
                   USER_ID BIGINT NOT NULL, BALANCE_FEN BIGINT NOT NULL DEFAULT 0,
-                  FROZEN_FEN BIGINT NOT NULL DEFAULT 0, VERSION INT NOT NULL DEFAULT 1,
+                  FROZEN_FEN BIGINT NOT NULL DEFAULT 0, CLAWBACK_DEFICIT_FEN BIGINT NOT NULL DEFAULT 0,
+                  VERSION INT NOT NULL DEFAULT 1,
                   UNIQUE KEY uk_income_account_user (USER_ID)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
@@ -511,7 +533,8 @@ public final class DeliveryDbSchema {
                 "ws_wallet_flow", "ws_command", "ws_order", "ws_card", "ws_courier", "ws_water_type",
                 "ws_station", "ws_user", "api_employee",
                 "ws_alarm", "ws_work_order", "ws_command_batch", "ws_device",
-                "ws_split_record", "ws_split_config", "ws_income_account", "ws_income_flow",
+                "ws_split_record", "ws_split_clawback", "ws_split_clawback_action",
+                "ws_split_config", "ws_income_account", "ws_income_flow",
                 "ws_reconcile_task", "ws_reconcile_diff"}) {
             jdbc.execute("TRUNCATE TABLE " + table);
         }

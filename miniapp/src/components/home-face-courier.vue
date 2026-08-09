@@ -196,7 +196,7 @@ async function refresh() {
 
 .face-blocked {
   margin-top: 8px;
-  color: var(--wot-color-danger, #fa4350);
+  color: var(--app-color-danger);
   font-size: 13px;
 }
 

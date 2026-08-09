@@ -104,6 +104,29 @@ public interface SettlementEnum {
         }
     }
 
+    /** 分润冲减事实状态 (dictType=1387，D-420 R1) */
+    enum ClawbackStatus {
+        PENDING(1, "待处理"),
+        DONE(2, "已完成"),
+        MANUAL(3, "需人工");
+
+        private final int value;
+        private final String desc;
+
+        ClawbackStatus(int value, String desc) {
+            this.value = value;
+            this.desc = desc;
+        }
+
+        public int getValue() {
+            return value;
+        }
+
+        public String getDesc() {
+            return desc;
+        }
+    }
+
     /** 收益流水类型 (dictType=1378) */
     enum IncomeFlowType {
         SPLIT_IN(1, "分润入账"),

@@ -242,10 +242,14 @@ public class SplitServiceImpl extends ServiceImpl<WsSplitRecordMapper, WsSplitRe
             return false;
         }
         // 平台行不入个人钱包（RECEIVER_USER_ID=0 哨兵）；机主/配送员行同事务入账，
-        // 入账幂等键 INCOME:<splitId> 兜底「推进成功但重放」的边界
-        if (row.getReceiverUserId() != null && row.getReceiverUserId() != 0L) {
+        // 入账幂等键 INCOME:<splitId> 兜底「推进成功但重放」的边界。
+        // D-420：分线行冻结期内被水费退款部分冲减后（REVERSED_AMOUNT>0、行保持待分账），
+        // 入账按净额=SPLIT_AMOUNT−REVERSED_AMOUNT——配送费线份额照常入账，水费线份额已回退
+        long reversed = row.getReversedAmount() == null ? 0L : row.getReversedAmount();
+        long netAmount = row.getSplitAmount() - reversed;
+        if (row.getReceiverUserId() != null && row.getReceiverUserId() != 0L && netAmount > 0) {
             incomeService.creditFromSplit(row.getId(), row.getReceiverUserId(),
-                    row.getSplitAmount(), row.getSplitRemark());
+                    netAmount, row.getSplitRemark());
         }
         return true;
     }

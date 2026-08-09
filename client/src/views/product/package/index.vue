@@ -346,7 +346,9 @@
         label: `${d.deviceName}（${d.deviceNo}）`,
         value: String(d.id)
       }))
-      const outletLists = await Promise.all(devices.map((d) => fetchOutletListByDevice(d.id)))
+      const outletLists = await Promise.all(
+        devices.map((d) => fetchOutletListByDevice(String(d.id)))
+      )
       outletOptions.value = devices.flatMap((d, i) =>
         (outletLists[i] ?? []).map((o) => ({
           label: `${d.deviceName}·${o.outletNo}号口${o.waterType ? '·' + o.waterType : ''}`,

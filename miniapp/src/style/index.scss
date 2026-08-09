@@ -1,17 +1,90 @@
+// 注释一律用 `//`：SCSS 的 `/* */` 会原样编进 app.wxss，把说明文字和历史色值带进小程序包，
+// 之后按内容核验产物时会被自己的注释误伤。
 :root,
 page {
-  /* 六维达康品牌 Design Tokens（B 活力水滴 为主 + A 净蓝科技 点缀），与 PC 同色值。
-   * 页面统一引用这些变量，避免散落硬编码；改此处即全端主题切换、可一键回退。 */
-  --wot-color-theme: #2e7cf6; /* Wot 组件主色 = B 活力蓝 */
-  --app-color-primary: #2e7cf6; /* B 活力蓝 主色 */
-  --app-color-green: #16c784; /* B 健康绿 辅主色 */
-  --app-color-water: #0ea5b7; /* A 净蓝科技 强调/点缀 */
+  // ─── 品牌语义色：全端唯一定义处 ──────────────────────────────
+  // 六维达康品牌（B 活力水滴 为主 + A 净蓝科技 点缀），与 PC 同色值。
+  // 页面统一引用这些变量，避免散落硬编码；改此处即全端主题切换、可一键回退。
+  --app-color-primary: #2e7cf6; // B 活力蓝 主色
+  --app-color-green: #16c784; // B 健康绿 辅主色
+  --app-color-water: #0ea5b7; // A 净蓝科技 强调/点缀
   --app-color-success: #16c784;
   --app-color-warning: #ff9f0a;
   --app-color-danger: #ff3b30;
   --app-bg-page: #f5f7fa;
   --app-text-primary: #1f2329;
   --app-text-secondary: #646a73;
+
+  // ─── Wot UI 语义色接管 ───────────────────────────────────────
+  // 此前只接管了 theme 一条，success / warning / danger 因此落回 wot-design-uni 1.14.0
+  // 自带的默认值（见 components/common/abstracts/variable.scss 第 13~15 行）。页面自己写
+  // CSS 想跟相邻 wd-tag 对上，就只能手抄那三个值——全端二十多处与品牌 token 不同源的色值
+  // 字面量全部源于此，不是开发者随手写的。四条一起接管后，「组件渲染的色」与「页面 CSS
+  // 写的色」才有同一个来源。由 tools/check-miniapp-colors.py 常态看守。
+  //
+  // 这些变量刻意留在本文件而不是 App.ku.vue 的 ConfigProvider themeVars：themeVars 与本文件
+  // 是同一批变量的两种写法，两处各写一份正是漂移的成因；且 ConfigProvider 的 provide 到不了
+  // root-portal 渲染的 Toast / MessageBox，挂在 page 节点上的 CSS 变量覆盖得更全
+  // （wot 官方「定制主题」即用此法）。
+  --wot-color-theme: var(--app-color-primary);
+  --wot-color-success: var(--app-color-success);
+  --wot-color-warning: var(--app-color-warning);
+  --wot-color-danger: var(--app-color-danger);
+  --wot-color-border-light: var(--line-2);
+
+  // 自定义 tabbar 未选中态默认取 $-color-title（纯黑），在浅色底栏上过重。
+  // 选中态默认已随 --wot-color-theme，不另行覆盖。
+  --wot-tabbar-inactive-color: var(--app-text-secondary);
+
+  // ─── 中性色补档 ──────────────────────────────────────────────
+  // 原先只有 primary / secondary 两级，页面缺第三级弱化色与禁用色时各自造了近似值。
+  // 补齐这两档收编它们。
+  --app-text-tertiary: #8f959e;
+  --app-text-disabled: #c9ced6;
+
+  // 分隔线：全端此前用 rgba(0, 0, 0, 0.05)，在 #f5f7fa 页底上几乎不可见。
+  // line-1 用于卡内相邻行，line-2 用于容器边界（与 uni.scss 的 $uni-border-color 同值）。
+  --line-1: #ebedf0;
+  --line-2: #e5e6eb;
+
+  // ─── 状态浅底 ────────────────────────────────────────────────
+  // 状态色的第二落点，用于「状态不能只落在小号 tag 上」的场景：
+  // 列表卡只有 warning / danger 可用浅底，正常态一律不上底，避免整屏花。
+  --tint-primary: rgba(46, 124, 246, 0.08);
+  --tint-success: rgba(22, 199, 132, 0.1);
+  --tint-warning: rgba(255, 159, 10, 0.12);
+  --tint-danger: rgba(255, 59, 48, 0.1);
+  --tint-water: rgba(14, 165, 183, 0.1);
+
+  // ─── 间距 ────────────────────────────────────────────────────
+  // 区块节奏分三档，取代此前全端统一 12px 导致的「所有区块等权」。
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --gap-hero: 16px; // 页头 → 首个焦点块
+  --gap-block: 12px; // 同一分组内的相邻区块
+  --gap-group: 20px; // 语义分组之间
+
+  // ─── 圆角与投影 ──────────────────────────────────────────────
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+  --sh-card: 0 1px 2px rgba(31, 35, 41, 0.04), 0 4px 12px rgba(31, 35, 41, 0.04);
+  --sh-bar: 0 -2px 12px rgba(31, 35, 41, 0.06); // 吸底动作栏专用
+
+  // ─── 字阶 ────────────────────────────────────────────────────
+  // 只约束本项目自己写的样式，不覆盖 Wot 内部的图标、Badge、辅助标记与无障碍元素。
+  // display 只给「整页唯一核心数字或大状态」，页面标题用 metric 档，不得用 display。
+  --fs-display: 32px;
+  --fs-metric: 24px;
+  --fs-title: 17px;
+  --fs-body: 15px;
+  --fs-caption: 13px;
+  --fs-note: 12px;
 
   color: var(--app-text-primary);
   background: var(--app-bg-page);

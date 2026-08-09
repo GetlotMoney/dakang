@@ -87,6 +87,11 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
     private final WsWalletFlowMapper walletFlowMapper;
     private final WsCardMemberMapper cardMemberMapper;
     private final IWsDomainEventService domainEventService;
+    /**
+     * 分润冲减登记（D-420 R1 段1）：与机构退款结算同事务（outbox）；执行段由
+     * 退款事实管道驱动（processAction 独立事务），失败不回滚已成功的结算。
+     */
+    private final com.jbk.serve.service.settlement.ISplitClawbackTxService splitClawbackTxService;
     /** 登记走包A 的统一入口（REQUIRED 传播，并入本受理事务）：售后号与状态机起点只有那一份实现。 */
     private final IAfterSaleActionTxService actionTxService;
     /** 当前退款通道只提供受信任来源常量；来源必须与原支付单严格同源。 */
@@ -568,6 +573,15 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
                         .set("afterSaleNo", action.getAfterSaleNo())
                         .set("actionType", ActionType.GATEWAY_REFUND.getValue())
                         .set("refundAmount", refundedFen));
+        // 分润冲减登记（D-420 R2 段1，同事务动作级 outbox）：单行 INSERT 不可失败路径，
+        // 机构退款以本次实退额为水品退款基数（充值退款单无配送费/水量维度）。
+        // 分摊与校验全在独立执行事务；充值订单无分账行时执行段完成留痕「零冲减」
+        WsAfterSaleAction registered = new WsAfterSaleAction();
+        registered.setId(action.getId());
+        registered.setOrderId(action.getOrderId());
+        registered.setActionType(action.getActionType());
+        registered.setRefundProductFen(action.getRefundProductFen());
+        splitClawbackTxService.registerForAction(registered, now);
     }
 
     // ------------------------------------------------------------------

@@ -241,7 +241,7 @@ async function handleSubmit() {
                   v-if="selectedPackageId === pkg.id"
                   name="check-outline"
                   size="18px"
-                  color="#5d87ff"
+                  color="var(--app-color-primary)"
                 />
               </view>
             </wd-cell>

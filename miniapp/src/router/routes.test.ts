@@ -3,11 +3,11 @@ import { evaluateRouteAccess } from './guard'
 import { appRoutes, buildRouteUrl, findRouteById } from './routes'
 
 describe('miniapp route contracts', () => {
-  it('contains 29 unique routes and exactly three fixed tab pages', () => {
-    // E2E-08 增 O06 收益钱包：28→29
-    expect(appRoutes).toHaveLength(29)
-    expect(new Set(appRoutes.map(route => route.id)).size).toBe(29)
-    expect(new Set(appRoutes.map(route => route.path)).size).toBe(29)
+  it('contains 30 unique routes and exactly three fixed tab pages', () => {
+    // E2E-08 增 O06 收益钱包：28→29；S2 增 U16 自动补货规则：29→30
+    expect(appRoutes).toHaveLength(30)
+    expect(new Set(appRoutes.map(route => route.id)).size).toBe(30)
+    expect(new Set(appRoutes.map(route => route.path)).size).toBe(30)
 
     const tabRoutes = appRoutes.filter(route => 'tab' in route)
     expect(tabRoutes.map(route => route.tab)).toEqual(['home', 'order', 'profile'])

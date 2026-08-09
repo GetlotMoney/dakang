@@ -880,7 +880,8 @@ CREATE TABLE `ws_split_record` (
   `WX_SPLIT_NO`      varchar(64)  COMMENT '微信分账单号(max64)',
   `SPLIT_TIME`       varchar(14)  COMMENT '分账完成时间',
   `SPLIT_REMARK`     varchar(500) COMMENT '备注(max500)',
-  `REFUND_ID`        bigint       COMMENT '触发回退的退款单ID（扩展位：退款冲减分润经甲方确认后启用，SPLIT_STATUS=4 时必填）',
+  `REFUND_ID`        bigint       COMMENT '历史兼容字段（R1 起不再承担幂等职责，冲减幂等归 ws_split_clawback 唯一键；保留读兼容）',
+  `REVERSED_AMOUNT`  bigint       NOT NULL DEFAULT 0 COMMENT '累计已冲减金额(分)（D-420 R1）：多次部分退款逐笔累加（明细在 ws_split_clawback）；结算与入账按净额=SPLIT_AMOUNT-本列；恒不超过行水费线原始份额。0=未冲减',
   PRIMARY KEY (`ID`),
   -- 同单同收款方恒一行：铁律②库层幂等，分账 Worker 并发/重放零重复（E2E-08 包A）
   UNIQUE KEY `uk_split_order_receiver` (`ORDER_ID`, `RECEIVER_TYPE`, `RECEIVER_USER_ID`),
@@ -996,6 +997,7 @@ CREATE TABLE `ws_income_account` (
   `USER_ID`        bigint      NOT NULL COMMENT '收益人（ws_user.ID）；查询按会话强制过滤（铁律6）',
   `BALANCE_FEN`    bigint      NOT NULL DEFAULT 0 COMMENT '可用分润余额(分)；恒等于末笔流水 AFTER（对账不变式）',
   `FROZEN_FEN`     bigint      NOT NULL DEFAULT 0 COMMENT '提现审核冻结中(分)',
+  `CLAWBACK_DEFICIT_FEN` bigint NOT NULL DEFAULT 0 COMMENT '冲减待补差额(分)（D-420/C-04.1 选项B）：退款扣回时可用余额不足的缺口，恒>=0。>0 时禁止提现（fail-closed）；后续分润入账先补此差额再进可用余额，补足即解除限制；不记负余额、公司不兜底',
   `VERSION`        int         NOT NULL DEFAULT 1 COMMENT '乐观锁：余额变动走前值+VERSION 双条件 CAS',
   PRIMARY KEY (`ID`),
   UNIQUE KEY `uk_income_account_user` (`USER_ID`)
@@ -1342,7 +1344,7 @@ CREATE TABLE `ws_delivery_auto_rule` (
   `RECEIVE_PHONE`    varchar(20)  NOT NULL COMMENT '收货电话(max20)',
   `INTERVAL_DAYS`    int          NOT NULL COMMENT '固定周期天数(3~90，用户显式配置)',
   `ANCHOR_TIME`      varchar(14)  NOT NULL COMMENT '周期锚点=规则创建时间；第n期到期时间=锚点+n*INTERVAL_DAYS天，期序是幂等键组成部分',
-  `RULE_STATUS`      tinyint      NOT NULL COMMENT '规则状态(1355)：1启用 2停用',
+  `RULE_STATUS`      tinyint      NOT NULL COMMENT '规则状态(1355)：1启用 2停用 3已取消（终态不可恢复）',
   PRIMARY KEY (`ID`),
   -- 规则创建幂等的数据库层保证：同 userId+requestId 重复提交不并存第二条规则
   UNIQUE INDEX `uk_dauto_rule_key` (`RULE_KEY`),
@@ -1390,6 +1392,7 @@ INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE
 INSERT IGNORE INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`) VALUES ('自动补货规则状态', '1355', '配送自动补货规则启停');
 INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE`, `DICT_SORT`, `DICT_VALUE`, `DICT_LABEL`) VALUES (NULL, 1, '1355', 1, 1, '启用');
 INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE`, `DICT_SORT`, `DICT_VALUE`, `DICT_LABEL`) VALUES (NULL, 1, '1355', 2, 2, '停用');
+INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE`, `DICT_SORT`, `DICT_VALUE`, `DICT_LABEL`) VALUES (NULL, 1, '1355', 3, 3, '已取消');
 
 -- ----------------------------
 -- 测试数据（一名启用配送员+一条配送中任务，覆盖列表开发）
@@ -1969,3 +1972,153 @@ INSERT IGNORE INTO `ws_audit_export_task`
 (4,0,1,'20260714160000',1,'20260714160000','AUD-EXP-20260714-004','登录日志','20260713000000 至 20260714160000；操作人 139****1111；业务对象 DK-DEV-0002','排查异常登录与设备操作的关联','手机号中间四位脱敏；身份信息不导出',1,'超级管理员',NULL,NULL,NULL),
 (5,0,1,'20260714170000',1,'20260714170000','AUD-EXP-20260714-005','领域事件','20260714000000 至 20260714170000','复核领域事件白名单导出口径','手机号中间四位脱敏；身份信息不导出',3,'超级管理员','文件生成器与对象存储尚未接入',NULL,NULL),
 (6,0,1,'20260715090000',1,'20260715090000','AUD-EXP-20260715-001','指令回执','20260715000000 至 20260715090000','跨天序号验证：任务号按天重新起算','手机号中间四位脱敏；身份信息不导出',1,'超级管理员',NULL,NULL,NULL);
+
+-- ============================================================
+-- 六维达康 · 小程序入口与运营配置域（ws_mini_entry，S6）
+-- 表：ws_mini_entry_config
+-- 字典段：1384 入口类型、1385 跳转类型、1386 配置状态
+-- 需求映射：REQ-086 入口配置（B21）——只做配置底座，不开发商城/健康服务/广告业务
+-- 安全口径：
+--   1) 小程序只读「已发布」版本；草稿/已撤回不下发
+--   2) 内部路由必须命中路由编号白名单（路由合同+能力守卫仍在前端 goTo 执行）
+--   3) 外链仅 https 且域名在配置白名单（默认空=全拒绝）；javascript:/任意 scheme 禁止
+--   4) 固定 Tabbar 与账号能力权限不受配置覆盖
+-- ============================================================
+
+DROP TABLE IF EXISTS `ws_mini_entry_config`;
+CREATE TABLE `ws_mini_entry_config` (
+  `ID`            bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`   tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY`     bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`   varchar(14)  NOT NULL COMMENT '创建时间',
+  `UPDATE_BY`     bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`   varchar(14)  NOT NULL COMMENT '更新时间',
+  `ENTRY_KEY`     varchar(50)  NOT NULL COMMENT '入口键(max50)：功能入口=路由编号(U07/U08/U10/U13/U16等)；内容位=protocol/faq/service/notice',
+  `ENTRY_TYPE`    tinyint      NOT NULL COMMENT '入口类型(1384)：1功能入口 2内容链接 3维护公告',
+  `ENTRY_NAME`    varchar(50)  NOT NULL COMMENT '展示名称(max50)',
+  `SORT_NO`       int          NOT NULL DEFAULT 0 COMMENT '排序（小程序按此升序稳定排列）',
+  `ENABLED_FLAG`  tinyint      NOT NULL DEFAULT 2 COMMENT '是否启用(1)：1否 2是；停用或未发布的入口小程序默认隐藏',
+  `JUMP_TYPE`     tinyint      COMMENT '跳转类型(1385)：1内部路由 2外部链接；维护公告无跳转可空',
+  `ROUTE_ID`      varchar(10)  COMMENT '内部路由编号（服务端白名单+前端路由合同双重校验）',
+  `EXTERNAL_URL`  varchar(500) COMMENT '外部链接(max500)：仅 https 且域名在白名单，禁 javascript:/任意 scheme',
+  `CONTENT_TEXT`  varchar(500) COMMENT '内容文本(max500)：维护公告正文',
+  `CONFIG_STATUS` tinyint      NOT NULL COMMENT '配置状态(1386)：1草稿 2已发布 3已撤回；小程序只读已发布',
+  `PUBLISH_TIME`  varchar(14)  COMMENT '最近发布时间',
+  `VERSION`       int          NOT NULL DEFAULT 1 COMMENT '乐观锁：状态流转与内容修改的 CAS 前态（并发发布只有一个有效版本）',
+  PRIMARY KEY (`ID`),
+  -- 同一入口键恒一行：发布/撤回就地流转，绝不产生同键多版本并存
+  UNIQUE KEY `uk_mini_entry_key` (`ENTRY_KEY`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='小程序入口与运营配置表（S6 配置底座）';
+
+-- ----------------------------
+-- 字典（无业务唯一键的字典表：幂等必须 NOT EXISTS，见 mysql8 skill）
+-- ----------------------------
+INSERT INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`)
+SELECT s.* FROM (SELECT '小程序入口类型' AS DICT_NAME, '1384' AS DICT_TYPE, '功能入口/内容链接/维护公告' AS DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE = s.DICT_TYPE);
+
+INSERT INTO `api_dict_data`(`DICT_CLASS`,`DICT_DEFAULT_FLAG`,`DICT_TYPE`,`DICT_SORT`,`DICT_VALUE`,`DICT_LABEL`)
+SELECT NULL, 1, s.DICT_TYPE, s.DICT_SORT, s.DICT_VALUE, s.DICT_LABEL FROM (
+            SELECT '1384' AS DICT_TYPE, 1 AS DICT_SORT, 1 AS DICT_VALUE, '功能入口' AS DICT_LABEL
+  UNION ALL SELECT '1384', 2, 2, '内容链接'
+  UNION ALL SELECT '1384', 3, 3, '维护公告'
+) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_data d WHERE d.DICT_TYPE = s.DICT_TYPE AND d.DICT_VALUE = s.DICT_VALUE);
+
+INSERT INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`)
+SELECT s.* FROM (SELECT '小程序入口跳转类型' AS DICT_NAME, '1385' AS DICT_TYPE, '内部路由/外部链接' AS DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE = s.DICT_TYPE);
+
+INSERT INTO `api_dict_data`(`DICT_CLASS`,`DICT_DEFAULT_FLAG`,`DICT_TYPE`,`DICT_SORT`,`DICT_VALUE`,`DICT_LABEL`)
+SELECT NULL, 1, s.DICT_TYPE, s.DICT_SORT, s.DICT_VALUE, s.DICT_LABEL FROM (
+            SELECT '1385' AS DICT_TYPE, 1 AS DICT_SORT, 1 AS DICT_VALUE, '内部路由' AS DICT_LABEL
+  UNION ALL SELECT '1385', 2, 2, '外部链接'
+) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_data d WHERE d.DICT_TYPE = s.DICT_TYPE AND d.DICT_VALUE = s.DICT_VALUE);
+
+INSERT INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`)
+SELECT s.* FROM (SELECT '小程序入口配置状态' AS DICT_NAME, '1386' AS DICT_TYPE, '草稿/已发布/已撤回' AS DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE = s.DICT_TYPE);
+
+INSERT INTO `api_dict_data`(`DICT_CLASS`,`DICT_DEFAULT_FLAG`,`DICT_TYPE`,`DICT_SORT`,`DICT_VALUE`,`DICT_LABEL`)
+SELECT NULL, 1, s.DICT_TYPE, s.DICT_SORT, s.DICT_VALUE, s.DICT_LABEL FROM (
+            SELECT '1386' AS DICT_TYPE, 1 AS DICT_SORT, 1 AS DICT_VALUE, '草稿' AS DICT_LABEL
+  UNION ALL SELECT '1386', 2, 2, '已发布'
+  UNION ALL SELECT '1386', 3, 3, '已撤回'
+) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_data d WHERE d.DICT_TYPE = s.DICT_TYPE AND d.DICT_VALUE = s.DICT_VALUE);
+
+-- ----------------------------
+-- 测试数据（既有首页宫格四入口的默认配置：全部已发布，行为与硬编码基线一致）
+-- ----------------------------
+INSERT IGNORE INTO `ws_mini_entry_config`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`ENTRY_KEY`,`ENTRY_TYPE`,`ENTRY_NAME`,`SORT_NO`,`ENABLED_FLAG`,`JUMP_TYPE`,`ROUTE_ID`,`EXTERNAL_URL`,`CONTENT_TEXT`,`CONFIG_STATUS`,`PUBLISH_TIME`,`VERSION`)
+VALUES
+(1,0,1,'20260807120000',1,'20260807120000','U07',1,'附近水站',10,2,1,'U07',NULL,NULL,2,'20260807120000',1),
+(2,0,1,'20260807120000',1,'20260807120000','U08',1,'配送订水',20,2,1,'U08',NULL,NULL,2,'20260807120000',1),
+(3,0,1,'20260807120000',1,'20260807120000','U10',1,'充值',30,2,1,'U10',NULL,NULL,2,'20260807120000',1),
+(4,0,1,'20260807120000',1,'20260807120000','U13',1,'家庭资料',40,2,1,'U13',NULL,NULL,2,'20260807120000',1),
+(5,0,1,'20260807120000',1,'20260807120000','notice',3,'维护公告',0,1,NULL,NULL,NULL,'系统维护期间部分功能暂不可用',1,NULL,1);
+
+-- ----------------------------
+-- 分润冲减事实表（D-420 R1）：每(售后动作,分账行)一行冲减事实，两段式——
+-- 登记与客户退款成功同事务（outbox 语义：退款成功即事实存在，绝不因冲减失败回滚）；
+-- 执行独立事务可重试可转人工。多次部分退款=多个 ACTION 各自成行、同行累计；
+-- uk(ACTION_ID,SPLIT_ID) 保证同一动作对同一分账行恒零重复。
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `ws_split_clawback` (
+  `ID`               bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`      tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：冲减事实必须保持0，不做业务逻辑删除',
+  `CREATE_BY`        bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`      varchar(14)  NOT NULL COMMENT '创建时间',
+  `UPDATE_BY`        bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`      varchar(14)  NOT NULL COMMENT '更新时间',
+  `ACTION_ID`        bigint       NOT NULL COMMENT '售后动作ID（ws_after_sale_action.ID；CARD_REFUND/GATEWAY_REFUND 成功后登记）',
+  `ORDER_ID`         bigint       NOT NULL COMMENT '订单ID（冗余自分账行，执行扫描与对账用）',
+  `SPLIT_ID`         bigint       NOT NULL COMMENT '分账行ID（ws_split_record.ID）',
+  `CLAWBACK_AMOUNT`  bigint       NOT NULL COMMENT '本次应冲金额(分)：按行水费线原始份额比例分摊实际退款额，平台行吃舍入余数',
+  `CLAWBACK_STATUS`  tinyint      NOT NULL COMMENT '状态(1387)：1待处理 2已完成 3需人工',
+  `PROCESS_REMARK`   varchar(500) COMMENT '处理备注(max500)：失败原因/人工转办说明',
+  PRIMARY KEY (`ID`),
+  -- 同一动作对同一分账行恒一行：重放与并发登记的库层幂等闸
+  UNIQUE KEY `uk_split_clawback_action_split` (`ACTION_ID`, `SPLIT_ID`),
+  INDEX `idx_split_clawback_status` (`CLAWBACK_STATUS`),
+  INDEX `idx_split_clawback_order` (`ORDER_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='分润冲减事实表（D-420 R1 两段式）';
+
+INSERT INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`)
+SELECT s.* FROM (SELECT '分润冲减状态' AS DICT_NAME, '1387' AS DICT_TYPE, '冲减事实处理状态' AS DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE = s.DICT_TYPE);
+
+INSERT INTO `api_dict_data`(`DICT_CLASS`,`DICT_DEFAULT_FLAG`,`DICT_TYPE`,`DICT_SORT`,`DICT_VALUE`,`DICT_LABEL`)
+SELECT NULL, 1, s.DICT_TYPE, s.DICT_SORT, s.DICT_VALUE, s.DICT_LABEL FROM (
+            SELECT '1387' AS DICT_TYPE, 1 AS DICT_SORT, 1 AS DICT_VALUE, '待处理' AS DICT_LABEL
+  UNION ALL SELECT '1387', 2, 2, '已完成'
+  UNION ALL SELECT '1387', 3, 3, '需人工'
+) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_data d WHERE d.DICT_TYPE = s.DICT_TYPE AND d.DICT_VALUE = s.DICT_VALUE);
+
+-- ----------------------------
+-- 分润冲减动作级 outbox（D-420 R2）：客户退款成功事务内唯一写入的冲减登记——
+-- 单行 INSERT、零分账读、ACTION_ID 唯一；分账形状解析/比例分摊/额度校验/明细
+-- 生成全部在独立执行事务完成，任何分账证据异常置 3 需人工，绝不回滚客户退款。
+-- Worker 以本表为发现源：分项明细缺失/被改时动作仍可被发现并对账。
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `ws_split_clawback_action` (
+  `ID`                 bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`        tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：冲减事实必须保持0',
+  `CREATE_BY`          bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`        varchar(14)  NOT NULL COMMENT '创建时间（登记时刻，随退款成功事务）',
+  `UPDATE_BY`          bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`        varchar(14)  NOT NULL COMMENT '更新时间',
+  `ACTION_ID`          bigint       NOT NULL COMMENT '售后动作ID（ws_after_sale_action.ID）',
+  `ORDER_ID`           bigint       NOT NULL COMMENT '订单ID（登记时冻结，执行段与权威动作比对）',
+  `ACTION_TYPE`        tinyint      NOT NULL COMMENT '动作类型（登记时冻结）：1卡内退款 3机构退款',
+  `REFUND_PRODUCT_FEN` bigint       NOT NULL COMMENT '水品实退金额(分)（登记时冻结，执行段分摊基数）',
+  `OUTBOX_STATUS`      tinyint      NOT NULL COMMENT '状态(1387)：1待处理 2已完成 3需人工',
+  `PROCESS_REMARK`     varchar(500) COMMENT '处理备注(max500)',
+  PRIMARY KEY (`ID`),
+  -- 同一售后动作恒一条冲减登记：重放撞键走等价核验，参数漂移转人工
+  UNIQUE KEY `uk_split_clawback_action` (`ACTION_ID`),
+  INDEX `idx_clawback_action_status` (`OUTBOX_STATUS`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='分润冲减动作级outbox（D-420 R2）';
