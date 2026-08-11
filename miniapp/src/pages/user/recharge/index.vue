@@ -152,7 +152,7 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u10">
     <AppNavbar :title="pageTitle" back-to="U03" />
     <wd-toast />
     <wd-message-box />
@@ -241,7 +241,7 @@ async function handleSubmit() {
                   v-if="selectedPackageId === pkg.id"
                   name="check-outline"
                   size="18px"
-                  color="var(--app-color-primary)"
+                  color="#5d87ff"
                 />
               </view>
             </wd-cell>

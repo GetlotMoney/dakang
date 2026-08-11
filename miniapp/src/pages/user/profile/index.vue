@@ -280,12 +280,12 @@ onShow(loadInviteCode)
 </script>
 
 <template>
-  <view class="page-shell top-level-page" :style="{ paddingTop: safeHeader.pageTopPadding }">
+  <view class="page-shell top-level-page screen-u03" :style="{ paddingTop: safeHeader.pageTopPadding }">
     <wd-toast />
     <view v-if="context" class="profile-header" @click="openProfileEdit">
       <view class="profile-avatar">
         <image v-if="avatarSrc" class="profile-avatar-img" :src="avatarSrc" mode="aspectFill" />
-        <wd-icon v-else name="user" size="28px" color="var(--app-color-primary)" />
+        <wd-icon v-else name="user" size="28px" color="#5d87ff" />
       </view>
       <view class="profile-header-main">
         <view class="profile-name">
@@ -551,7 +551,7 @@ onShow(loadInviteCode)
 
 .profile-edit-avatar-tip {
   font-size: 12px;
-  color: var(--app-color-primary);
+  color: #5d87ff;
 }
 
 .profile-edit-input {

@@ -118,7 +118,7 @@ async function loadTransactions() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-o04">
     <AppNavbar title="交易快照" back-to="O01" />
 
     <view v-if="errorMessage" class="page-section">

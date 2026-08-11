@@ -87,7 +87,7 @@ function handleDelete(item: DeliveryAddress) {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u14">
     <AppNavbar title="水配送地址" back-to="U03" />
     <wd-toast />
     <wd-message-box />

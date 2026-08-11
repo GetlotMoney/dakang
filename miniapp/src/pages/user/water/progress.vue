@@ -23,18 +23,13 @@ definePage({
   },
 })
 
-/**
- * 状态大字的色调，与 wd-tag 同一口径。
- *
- * <p>此处只产出 tone 名，由样式表把 tone 映射到 token；曾经在这里直接存五个十六进制值，
- * 那五个值抄的是 Wot 1.14.0 组件默认色，主题变量一改就与相邻 tag 脱节。</p>
- */
-const TONE_CLASS: Record<TagTone, string> = {
-  default: 'tone-default',
-  primary: 'tone-primary',
-  danger: 'tone-danger',
-  warning: 'tone-warning',
-  success: 'tone-success',
+/** 状态大字用色，与 wd-tag 色调保持同一口径。 */
+const TONE_COLORS: Record<TagTone, string> = {
+  default: '#646a73',
+  primary: '#5d87ff',
+  danger: '#fa4350',
+  warning: '#f0883a',
+  success: '#34d19d',
 }
 
 /** 订单终态集合；出水中(3)等待设备回传，不算终态。 */
@@ -64,11 +59,11 @@ const activeIndex = computed(() => {
   return isTerminal.value ? trace.value.length : trace.value.length - 1
 })
 
-const statusToneClass = computed(() => {
+const statusColor = computed(() => {
   if (!detail.value || !playbackDone.value) {
-    return TONE_CLASS.default
+    return TONE_COLORS.default
   }
-  return TONE_CLASS[ORDER_STATUS_TONES[detail.value.order.orderStatus]]
+  return TONE_COLORS[ORDER_STATUS_TONES[detail.value.order.orderStatus]]
 })
 
 /** 异常(6)/取消(5) 时从 trace 提取原因原位展示。 */
@@ -163,7 +158,7 @@ function goDetail() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u05">
     <AppNavbar title="取水进度" back-to="U01" />
 
     <view v-if="pageState === 'loading'" class="page-section loading-box">
@@ -189,7 +184,7 @@ function goDetail() {
       <view class="page-section">
         <wd-card custom-class="block-card">
           <view class="progress-status">
-            <view class="progress-status-text" :class="statusToneClass">
+            <view class="progress-status-text" :style="{ color: statusColor }">
               {{ playbackDone ? ORDER_STATUS_LABELS[detail.order.orderStatus] : '取水处理中…' }}
             </view>
             <view v-if="playbackDone && detail.order.orderStatus === 3" class="muted-text">
@@ -291,26 +286,6 @@ function goDetail() {
 .progress-status-text {
   font-size: 24px;
   font-weight: 600;
-}
-
-.tone-default {
-  color: var(--app-text-secondary);
-}
-
-.tone-primary {
-  color: var(--app-color-primary);
-}
-
-.tone-danger {
-  color: var(--app-color-danger);
-}
-
-.tone-warning {
-  color: var(--app-color-warning);
-}
-
-.tone-success {
-  color: var(--app-color-success);
 }
 
 .step-desc {

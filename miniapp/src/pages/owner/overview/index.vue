@@ -66,7 +66,7 @@ async function refresh() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-o01">
     <AppNavbar title="经营概览" back-to="U01" />
 
     <view v-if="loading" class="page-section muted-text">
@@ -87,7 +87,7 @@ async function refresh() {
 
     <template v-else-if="overview">
       <view class="page-section scope-line">
-        <wd-icon name="dashboard" size="16px" color="var(--app-color-primary)" />
+        <wd-icon name="dashboard" size="16px" color="#5d87ff" />
         <text>授权 {{ overview.stationCount }} 个水站 · {{ overview.deviceCount }} 台设备</text>
       </view>
 
@@ -162,7 +162,7 @@ async function refresh() {
                 <wd-tag v-if="item.runStatus === 'FAULT'" :type="RUN_STATUS_TONES[item.runStatus]" plain>
                   {{ RUN_STATUS_LABELS[item.runStatus] }}
                 </wd-tag>
-                <wd-icon name="arrow-right" size="14px" color="var(--app-text-secondary)" />
+                <wd-icon name="arrow-right" size="14px" color="#646a73" />
               </view>
             </view>
           </template>
@@ -219,15 +219,15 @@ async function refresh() {
 }
 
 .metric-value--online {
-  color: var(--app-color-success);
+  color: #34d19d;
 }
 
 .metric-value--warning {
-  color: var(--app-color-warning);
+  color: #f0883a;
 }
 
 .metric-value--danger {
-  color: var(--app-color-danger);
+  color: #fa4350;
 }
 
 .snapshot-line {
@@ -264,6 +264,6 @@ async function refresh() {
 }
 
 .fault-code-text {
-  color: var(--app-color-danger);
+  color: #fa4350;
 }
 </style>

@@ -159,7 +159,7 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-d04">
     <AppNavbar title="三照签收" back-to="D03" />
     <wd-toast />
     <wd-message-box />

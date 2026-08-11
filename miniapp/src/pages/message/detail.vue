@@ -117,7 +117,7 @@ function handleBack() {
 </script>
 
 <template>
-  <view class="message-page">
+  <view class="message-page screen-c03">
     <AppNavbar title="消息详情" back-to="C02" />
     <view class="page-shell">
       <wd-toast />

@@ -237,7 +237,7 @@ async function onGetPhoneNumber(event: { detail?: { code?: string, errMsg?: stri
 </script>
 
 <template>
-  <view class="entry-page">
+  <view class="entry-page screen-c01">
     <wd-toast />
     <view class="e2e-runtime-contract" aria-hidden="true">
       BUILD={{ buildFingerprint }};{{ e2eApiModes }}
@@ -410,7 +410,7 @@ async function onGetPhoneNumber(event: { detail?: { code?: string, errMsg?: stri
 
     <!-- 身份说明：替代"选择角色"——身份由平台数据决定，不由用户自选 -->
     <view v-if="isRealAuth" class="login-identity-tip">
-      <wd-icon name="info-circle" size="14px" color="var(--app-text-secondary)" />
+      <wd-icon name="info-circle" size="14px" color="#646a73" />
       <text>若你是机主或配送员，请先联系运营开通。</text>
     </view>
   </view>
@@ -680,7 +680,7 @@ async function onGetPhoneNumber(event: { detail?: { code?: string, errMsg?: stri
 }
 
 .login-privacy-link {
-  color: var(--app-color-primary);
+  color: #5d87ff;
 }
 
 /* 加载骨架：比一行"登录中"更少白屏感 */

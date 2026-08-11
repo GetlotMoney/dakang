@@ -132,7 +132,7 @@ function latestNodeText(task: DeliveryTask) {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-d01">
     <AppNavbar title="配送任务中心" back-to="U01" />
 
     <view class="page-section">

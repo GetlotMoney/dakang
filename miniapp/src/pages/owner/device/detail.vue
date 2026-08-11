@@ -76,7 +76,7 @@ async function refresh() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-o03">
     <AppNavbar title="设备详情" back-to="O02" />
 
     <view v-if="loading" class="page-section muted-text">
@@ -124,7 +124,7 @@ async function refresh() {
       </view>
 
       <view class="page-section readonly-banner">
-        <wd-icon name="lock-on" size="14px" color="var(--app-text-secondary)" />
+        <wd-icon name="lock-on" size="14px" color="#646a73" />
         <text>仅查看，不支持远程控制设备</text>
       </view>
 
@@ -241,7 +241,7 @@ async function refresh() {
 }
 
 .fault-code-text {
-  color: var(--app-color-danger);
+  color: #fa4350;
 }
 
 .outlet-row {

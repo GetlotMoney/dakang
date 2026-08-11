@@ -121,7 +121,7 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-d05">
     <AppNavbar title="配送异常" back-to="D03" />
     <wd-toast />
     <wd-message-box />
