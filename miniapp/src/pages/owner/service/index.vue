@@ -194,7 +194,7 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-o05">
     <AppNavbar title="报修与配件" back-to="O01" />
     <wd-toast />
     <wd-message-box />
@@ -345,7 +345,7 @@ async function handleSubmit() {
                     class="evidence-add"
                     @click="chooseEvidence"
                   >
-                    <wd-icon name="camera" size="20px" color="var(--app-text-secondary)" />
+                    <wd-icon name="camera" size="20px" color="#646a73" />
                   </view>
                 </view>
               </wd-cell>

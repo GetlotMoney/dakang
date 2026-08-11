@@ -96,7 +96,7 @@ function handleStationTap(station: StationSummary) {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u07">
     <AppNavbar title="附近水站" back-to="U01" />
     <wd-toast />
     <AppPrototypeNotice :text="stationNotice" />
@@ -155,7 +155,7 @@ function handleStationTap(station: StationSummary) {
           </template>
           <view class="station-body" @click="handleStationTap(station)">
             <view class="station-address">
-              <wd-icon name="location" size="14px" color="var(--app-text-secondary)" />
+              <wd-icon name="location" size="14px" color="#646a73" />
               <view>{{ station.address }}</view>
             </view>
             <view class="station-metrics">

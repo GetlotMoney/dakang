@@ -117,7 +117,7 @@ function memberPeriodText(member: CardMember) {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u11">
     <AppNavbar title="水卡详情" back-to="U03" />
     <wd-toast />
     <wd-message-box />

@@ -35,6 +35,10 @@ function handleChange({ value }: { value: string | number }) {
     fixed
     placeholder
     safe-area-inset-bottom
+    shape="round"
+    :bordered="false"
+    active-color="#456f45"
+    inactive-color="#9baa8f"
     @change="handleChange"
   >
     <wd-tabbar-item

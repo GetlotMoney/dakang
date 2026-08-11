@@ -494,7 +494,7 @@ async function handleCancelOrder() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u06">
     <AppNavbar title="订单详情" back-to="U02" />
     <wd-toast />
     <wd-message-box />

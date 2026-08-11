@@ -40,6 +40,22 @@ const runtimeContract = buildRuntimeModes()
 
 const faces = computed(() => availableHomeFaces(context.value))
 
+const lifeGreeting = computed(() => {
+  const hour = new Date().getHours()
+  if (hour < 11) {
+    return '早上好'
+  }
+  if (hour < 14) {
+    return '中午好'
+  }
+  if (hour < 18) {
+    return '下午好'
+  }
+  return '晚上好'
+})
+
+const lifeIdentity = computed(() => context.value?.userName || '你好')
+
 /** 副标题：已绑号显示脱敏号码，未绑号（仅微信身份建号）提示去补绑，绝不对空号码取子串。 */
 const identityLine = computed(() => {
   const ctx = context.value
@@ -127,12 +143,55 @@ function selectFace(next: HomeFace) {
 </script>
 
 <template>
-  <view class="page-shell top-level-page" :style="{ paddingTop: safeHeader.pageTopPadding }">
+  <view
+    class="page-shell top-level-page screen-u01"
+    :class="{ 'home-cv2-shell': face === 'life' }"
+    :style="{ paddingTop: safeHeader.pageTopPadding }"
+  >
     <wd-toast />
     <view class="e2e-build-fingerprint" aria-hidden="true">
       BUILD={{ buildFingerprint }};{{ runtimeContract }}
     </view>
-    <view class="home-header">
+    <view v-if="face === 'life'" class="cv2-header">
+      <view class="cv2-orb cv2-orb-main" aria-hidden="true" />
+      <view class="cv2-orb cv2-orb-soft" aria-hidden="true" />
+
+      <view class="cv2-header-copy">
+        <view class="cv2-greeting">
+          {{ lifeGreeting }}，{{ lifeIdentity }}
+        </view>
+        <view class="cv2-headline">
+          <view>今天也要</view>
+          <view>喝一杯好水</view>
+        </view>
+      </view>
+
+      <view class="cv2-header-actions" :style="{ marginRight: safeHeader.capsuleAvoidWidth }">
+        <view v-if="faces.length > 1" class="cv2-face-capsule">
+          <view
+            v-for="item in faces"
+            :key="item"
+            class="cv2-face-pill"
+            :class="{ 'cv2-face-pill-active': face === item }"
+            @click="selectFace(item)"
+          >
+            {{ HOME_FACE_LABELS[item] }}
+          </view>
+        </view>
+        <view class="cv2-message" @click="goTo('C02')">
+          <wd-badge
+            :model-value="unreadCount"
+            :hidden="unreadCount === 0"
+            :max="99"
+            bg-color="#d9ea7a"
+          >
+            <wd-icon name="notification" size="22px" color="#fffdf7" />
+          </wd-badge>
+        </view>
+      </view>
+    </view>
+
+    <view v-else class="home-header">
       <view>
         <view class="home-title">
           六维达康智慧水站
@@ -174,6 +233,13 @@ function selectFace(next: HomeFace) {
 <style scoped lang="scss">
 .top-level-page {
   padding-top: calc(env(safe-area-inset-top) + 20px);
+}
+
+.home-cv2-shell {
+  padding-right: 0;
+  padding-left: 0;
+  overflow-x: hidden;
+  background: #f5f0e5;
 }
 
 .e2e-build-fingerprint {
@@ -225,5 +291,99 @@ function selectFace(next: HomeFace) {
 
 .home-message {
   padding: 6px;
+}
+
+.cv2-header {
+  position: relative;
+  box-sizing: border-box;
+  height: 330rpx;
+  padding: 72rpx 48rpx 0;
+}
+
+.cv2-orb {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.cv2-orb-main {
+  top: -220rpx;
+  right: -170rpx;
+  width: 500rpx;
+  height: 500rpx;
+  background: #456f45;
+}
+
+.cv2-orb-soft {
+  top: -12rpx;
+  right: 34rpx;
+  width: 214rpx;
+  height: 280rpx;
+  background: #cce0b7;
+  opacity: 0.95;
+}
+
+.cv2-header-copy {
+  position: relative;
+  z-index: 2;
+}
+
+.cv2-greeting {
+  color: rgba(23, 63, 50, 0.68);
+  font-size: 23rpx;
+  font-weight: 600;
+  letter-spacing: 1rpx;
+}
+
+.cv2-headline {
+  margin-top: 10rpx;
+  color: #173f32;
+  font-family: 'STKaiti', 'KaiTi', 'PingFang SC', serif;
+  font-size: 62rpx;
+  font-weight: 700;
+  letter-spacing: -2rpx;
+  line-height: 1.05;
+}
+
+.cv2-header-actions {
+  position: absolute;
+  top: 6rpx;
+  right: 18rpx;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+}
+
+.cv2-face-capsule {
+  display: flex;
+  align-items: center;
+  padding: 4rpx;
+  border-radius: 999rpx;
+  background: rgba(23, 63, 50, 0.46);
+  backdrop-filter: blur(8px);
+}
+
+.cv2-face-pill {
+  padding: 8rpx 16rpx;
+  border-radius: 999rpx;
+  color: rgba(255, 253, 247, 0.76);
+  font-size: 20rpx;
+}
+
+.cv2-face-pill-active {
+  background: #d9ea7a;
+  color: #173f32;
+  font-weight: 700;
+}
+
+.cv2-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 58rpx;
+  height: 58rpx;
+  border-radius: 50%;
+  background: rgba(23, 63, 50, 0.5);
 }
 </style>

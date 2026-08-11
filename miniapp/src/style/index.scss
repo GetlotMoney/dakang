@@ -1,90 +1,60 @@
-// 注释一律用 `//`：SCSS 的 `/* */` 会原样编进 app.wxss，把说明文字和历史色值带进小程序包，
-// 之后按内容核验产物时会被自己的注释误伤。
 :root,
 page {
-  // ─── 品牌语义色：全端唯一定义处 ──────────────────────────────
-  // 六维达康品牌（B 活力水滴 为主 + A 净蓝科技 点缀），与 PC 同色值。
-  // 页面统一引用这些变量，避免散落硬编码；改此处即全端主题切换、可一键回退。
-  --app-color-primary: #2e7cf6; // B 活力蓝 主色
-  --app-color-green: #16c784; // B 健康绿 辅主色
-  --app-color-water: #0ea5b7; // A 净蓝科技 强调/点缀
-  --app-color-success: #16c784;
-  --app-color-warning: #ff9f0a;
-  --app-color-danger: #ff3b30;
-  --app-bg-page: #f5f7fa;
-  --app-text-primary: #1f2329;
-  --app-text-secondary: #646a73;
-
-  // ─── Wot UI 语义色接管 ───────────────────────────────────────
-  // 此前只接管了 theme 一条，success / warning / danger 因此落回 wot-design-uni 1.14.0
-  // 自带的默认值（见 components/common/abstracts/variable.scss 第 13~15 行）。页面自己写
-  // CSS 想跟相邻 wd-tag 对上，就只能手抄那三个值——全端二十多处与品牌 token 不同源的色值
-  // 字面量全部源于此，不是开发者随手写的。四条一起接管后，「组件渲染的色」与「页面 CSS
-  // 写的色」才有同一个来源。由 tools/check-miniapp-colors.py 常态看守。
-  //
-  // 这些变量刻意留在本文件而不是 App.ku.vue 的 ConfigProvider themeVars：themeVars 与本文件
-  // 是同一批变量的两种写法，两处各写一份正是漂移的成因；且 ConfigProvider 的 provide 到不了
-  // root-portal 渲染的 Toast / MessageBox，挂在 page 节点上的 CSS 变量覆盖得更全
-  // （wot 官方「定制主题」即用此法）。
-  --wot-color-theme: var(--app-color-primary);
-  --wot-color-success: var(--app-color-success);
-  --wot-color-warning: var(--app-color-warning);
-  --wot-color-danger: var(--app-color-danger);
-  --wot-color-border-light: var(--line-2);
-
-  // 自定义 tabbar 未选中态默认取 $-color-title（纯黑），在浅色底栏上过重。
-  // 选中态默认已随 --wot-color-theme，不另行覆盖。
-  --wot-tabbar-inactive-color: var(--app-text-secondary);
-
-  // ─── 中性色补档 ──────────────────────────────────────────────
-  // 原先只有 primary / secondary 两级，页面缺第三级弱化色与禁用色时各自造了近似值。
-  // 补齐这两档收编它们。
-  --app-text-tertiary: #8f959e;
-  --app-text-disabled: #c9ced6;
-
-  // 分隔线：全端此前用 rgba(0, 0, 0, 0.05)，在 #f5f7fa 页底上几乎不可见。
-  // line-1 用于卡内相邻行，line-2 用于容器边界（与 uni.scss 的 $uni-border-color 同值）。
-  --line-1: #ebedf0;
-  --line-2: #e5e6eb;
-
-  // ─── 状态浅底 ────────────────────────────────────────────────
-  // 状态色的第二落点，用于「状态不能只落在小号 tag 上」的场景：
-  // 列表卡只有 warning / danger 可用浅底，正常态一律不上底，避免整屏花。
-  --tint-primary: rgba(46, 124, 246, 0.08);
-  --tint-success: rgba(22, 199, 132, 0.1);
-  --tint-warning: rgba(255, 159, 10, 0.12);
-  --tint-danger: rgba(255, 59, 48, 0.1);
-  --tint-water: rgba(14, 165, 183, 0.1);
-
-  // ─── 间距 ────────────────────────────────────────────────────
-  // 区块节奏分三档，取代此前全端统一 12px 导致的「所有区块等权」。
-  --sp-1: 4px;
-  --sp-2: 8px;
-  --sp-3: 12px;
-  --sp-4: 16px;
-  --sp-5: 20px;
-  --sp-6: 24px;
-  --gap-hero: 16px; // 页头 → 首个焦点块
-  --gap-block: 12px; // 同一分组内的相邻区块
-  --gap-group: 20px; // 语义分组之间
-
-  // ─── 圆角与投影 ──────────────────────────────────────────────
-  --r-sm: 8px;
-  --r-md: 12px;
-  --r-lg: 16px;
-  --r-pill: 999px;
-  --sh-card: 0 1px 2px rgba(31, 35, 41, 0.04), 0 4px 12px rgba(31, 35, 41, 0.04);
-  --sh-bar: 0 -2px 12px rgba(31, 35, 41, 0.06); // 吸底动作栏专用
-
-  // ─── 字阶 ────────────────────────────────────────────────────
-  // 只约束本项目自己写的样式，不覆盖 Wot 内部的图标、Badge、辅助标记与无障碍元素。
-  // display 只给「整页唯一核心数字或大状态」，页面标题用 metric 档，不得用 display。
-  --fs-display: 32px;
-  --fs-metric: 24px;
-  --fs-title: 17px;
-  --fs-body: 15px;
-  --fs-caption: 13px;
-  --fs-note: 12px;
+  /* UI-MINIAPP-C-V2-ALL-V1：森氧生活正式主题。
+   * 所有业务值仍来自真实接口，这里只统一颜色、圆角与基础表面。 */
+  --wot-color-theme: #456f45;
+  --wot-color-success: #5f8a57;
+  --wot-color-warning: #d9a441;
+  --app-color-primary: #456f45;
+  --app-color-green: #5f8a57;
+  --app-color-water: #8eb27b;
+  --app-color-success: #5f8a57;
+  --app-color-warning: #d9a441;
+  --app-color-danger: #b65f4c;
+  --app-bg-page: #f5f0e5;
+  --app-bg-paper: #fffdf7;
+  --app-bg-mint: #e4efd7;
+  --app-bg-sage: #cce0b7;
+  --app-color-forest: #173f32;
+  --app-color-lime: #d9ea7a;
+  --app-text-primary: #173f32;
+  --app-text-secondary: #718078;
+  --app-radius-card: 22px;
+  --wot-color-white: #fffdf7;
+  --wot-color-title: #173f32;
+  --wot-color-content: #344f43;
+  --wot-color-secondary: #718078;
+  --wot-color-aid: #9baa8f;
+  --wot-color-border: #d8decf;
+  --wot-color-border-light: #e8e8dc;
+  --wot-color-bg: #eef2e7;
+  --wot-card-bg: #fffdf7;
+  --wot-card-radius: 22px;
+  --wot-card-margin: 0;
+  --wot-card-padding: 0 18px;
+  --wot-card-shadow-color: 0 12px 28px rgba(23, 63, 50, 0.06);
+  --wot-card-title-color: #173f32;
+  --wot-card-content-color: #52665b;
+  --wot-cell-group-title-color: #456f45;
+  --wot-cell-title-color: #173f32;
+  --wot-cell-label-color: #718078;
+  --wot-cell-value-color: #344f43;
+  --wot-cell-tap-bg: rgba(69, 111, 69, 0.08);
+  --wot-tabs-nav-bg: transparent;
+  --wot-tabs-nav-color: #718078;
+  --wot-tabs-nav-active-color: #456f45;
+  --wot-tabs-nav-line-bg-color: #456f45;
+  --wot-navbar-background: #f5f0e5;
+  --wot-navbar-color: #173f32;
+  --wot-navbar-desc-font-color: #173f32;
+  --wot-button-large-radius: 999px;
+  --wot-button-medium-radius: 999px;
+  --wot-button-small-radius: 999px;
+  --wot-button-primary-bg-color: #456f45;
+  --wot-button-primary-color: #fffdf7;
+  --wot-button-plain-bg-color: transparent;
+  --wot-picker-bg: #fffdf7;
+  --wot-picker-column-select-bg: #e4efd7;
 
   color: var(--app-text-primary);
   background: var(--app-bg-page);
@@ -107,4 +77,1187 @@ page {
 .muted-text {
   color: var(--app-text-secondary);
   font-size: 13px;
+}
+
+/* UI-MINIAPP-C-V2-ALL-V1：共用表面。页面只共享材质，不共享构图。 */
+.page-shell.screen-u01,
+.page-shell.screen-u02,
+.page-shell.screen-u03,
+.page-shell.screen-u04,
+.page-shell.screen-u05,
+.page-shell.screen-u06,
+.page-shell.screen-u07,
+.page-shell.screen-u08,
+.page-shell.screen-u09,
+.page-shell.screen-u10,
+.page-shell.screen-u11,
+.page-shell.screen-u12,
+.page-shell.screen-u13,
+.page-shell.screen-u14,
+.page-shell.screen-u15,
+.page-shell.screen-d01,
+.page-shell.screen-d02,
+.page-shell.screen-d03,
+.page-shell.screen-d04,
+.page-shell.screen-d05,
+.page-shell.screen-o01,
+.page-shell.screen-o02,
+.page-shell.screen-o03,
+.page-shell.screen-o04,
+.page-shell.screen-o05,
+.page-shell.screen-o06 {
+  position: relative;
+  padding-right: 20px;
+  padding-bottom: 96px;
+  padding-left: 20px;
+  overflow: hidden;
+  background: var(--app-bg-page);
+}
+
+.screen-c02 .page-shell,
+.screen-c03 .page-shell {
+  padding-right: 20px;
+  padding-left: 20px;
+  background: var(--app-bg-page);
+}
+
+.screen-c02 .page-section,
+.screen-c03 .page-section,
+.page-shell[class*='screen-'] .page-section {
+  margin-top: 16px;
+}
+
+/* C01 欢迎回来：整页深林绿，登录能力仍沿用原真实鉴权。 */
+.entry-page.screen-c01.screen-c01 {
+  background:
+    radial-gradient(circle at 84% 16%, rgba(217, 234, 122, 0.24) 0 12%, transparent 12.5%),
+    radial-gradient(circle at 8% 38%, rgba(204, 224, 183, 0.14) 0 18%, transparent 18.5%),
+    #173f32;
+}
+
+.screen-c01.screen-c01 .brand-hero {
+  align-items: flex-start;
+  padding: 12px 8px 0;
+}
+
+.screen-c01.screen-c01 .brand-mark {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 28px;
+}
+
+.screen-c01.screen-c01 .brand-drop {
+  width: 46px;
+  height: 46px;
+  background: linear-gradient(145deg, #d9ea7a, #8eb27b);
+  box-shadow: 0 12px 30px rgba(217, 234, 122, 0.24);
+}
+
+.screen-c01.screen-c01 .brand-ripple {
+  border-color: rgba(217, 234, 122, 0.38);
+}
+
+.screen-c01.screen-c01 .brand-title {
+  max-width: 280px;
+  color: #fffdf7;
+  font-size: 31px;
+  letter-spacing: 0;
+}
+
+.screen-c01.screen-c01 .brand-slogan {
+  color: #cce0b7;
+  letter-spacing: 2px;
+}
+
+.screen-c01.screen-c01 .login-card {
+  padding: 28px 24px;
+  border: 1px solid rgba(255, 253, 247, 0.64);
+  border-radius: 30px;
+  background: #fffdf7;
+  box-shadow: 0 28px 60px rgba(5, 31, 23, 0.32);
+}
+
+.screen-c01.screen-c01 .login-primary-btn {
+  background: #456f45;
+  box-shadow: 0 8px 20px rgba(23, 63, 50, 0.24);
+}
+
+.screen-c01.screen-c01 .login-identity-tip {
+  color: #cce0b7;
+}
+
+/* C02 消息中心：时间线。 */
+.screen-c02.screen-c02 .domain-tabs {
+  padding: 5px;
+  border-radius: 999px;
+  background: #e4efd7;
+}
+
+.screen-c02.screen-c02 .message-list {
+  position: relative;
+  padding-left: 18px;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.screen-c02.screen-c02 .message-list::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 5px;
+  width: 2px;
+  border-radius: 2px;
+  background: #cce0b7;
+  content: '';
+}
+
+.screen-c02.screen-c02 .message-title-row::before {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border: 3px solid #f5f0e5;
+  border-radius: 50%;
+  margin-left: -34px;
+  background: #456f45;
+  content: '';
+}
+
+.screen-c02.screen-c02 .message-title {
+  font-size: 16px;
+}
+
+/* C03 消息详情：编辑部式大标题 + 深绿正文。 */
+.screen-c03.screen-c03 .detail-card {
+  padding: 12px 0 0;
+  background: transparent;
+}
+
+.screen-c03.screen-c03 .detail-title {
+  max-width: 310px;
+  font-size: 28px;
+  line-height: 1.25;
+}
+
+.screen-c03.screen-c03 .detail-tags {
+  margin-top: 16px;
+}
+
+.screen-c03.screen-c03 .detail-content {
+  padding: 24px;
+  border-radius: 28px 28px 28px 8px;
+  margin-top: 22px;
+  background: #173f32;
+  color: #fffdf7;
+  line-height: 1.9;
+}
+
+/* U02 我的订单：绿色筛选图表区 + 错落票据列表。 */
+.screen-u02.screen-u02 {
+  background:
+    radial-gradient(circle at 92% 7%, rgba(204, 224, 183, 0.7) 0 72px, transparent 73px),
+    #f5f0e5;
+}
+
+.screen-u02.screen-u02 .page-title {
+  color: #173f32;
+  font-size: 30px;
+  letter-spacing: -1px;
+}
+
+.screen-u02.screen-u02 .filter-card {
+  position: relative;
+  min-height: 112px;
+  padding: 8px 12px 12px;
+  border-radius: 28px;
+  overflow: hidden;
+  background: #456f45;
+  --wot-tabs-nav-color: #cce0b7;
+  --wot-tabs-nav-active-color: #fffdf7;
+  --wot-tabs-nav-line-bg-color: #d9ea7a;
+  --wot-cell-title-color: #e4efd7;
+  --wot-cell-value-color: #fffdf7;
+  --wot-color-border-light: rgba(255, 253, 247, 0.16);
+}
+
+.screen-u02.screen-u02 .filter-card::after {
+  position: absolute;
+  right: 28px;
+  bottom: 16px;
+  width: 9px;
+  height: 18px;
+  border-radius: 5px 5px 0 0;
+  background: rgba(217, 234, 122, 0.48);
+  box-shadow:
+    16px -10px 0 rgba(217, 234, 122, 0.72),
+    32px -28px 0 #d9ea7a;
+  content: '';
+  pointer-events: none;
+}
+
+.screen-u02.screen-u02 .order-item {
+  border-left: 6px solid #456f45;
+  border-radius: 4px 24px 24px 4px;
+  overflow: hidden;
+  background: #fffdf7;
+  box-shadow: 0 12px 28px rgba(23, 63, 50, 0.06);
+}
+
+.screen-u02.screen-u02 .order-item:nth-child(even) {
+  border-left-color: #d9a441;
+  transform: translateX(8px);
+}
+
+.screen-u02.screen-u02 .order-amount {
+  color: #456f45;
+  font-size: 23px;
+}
+
+/* U03 我的：深绿身份头 + 非对称账户拼图。 */
+.screen-u03.screen-u03 {
+  background: linear-gradient(180deg, #173f32 0 286px, #f5f0e5 287px);
+  --wot-cell-group-title-color: #456f45;
+}
+
+.screen-u03.screen-u03 .profile-header {
+  min-height: 112px;
+  padding: 18px 6px 30px;
+  color: #fffdf7;
+}
+
+.screen-u03.screen-u03 .profile-header .muted-text,
+.screen-u03.screen-u03 .profile-edit-hint {
+  color: #cce0b7;
+}
+
+.screen-u03.screen-u03 .profile-avatar {
+  width: 68px;
+  height: 68px;
+  border: 3px solid rgba(217, 234, 122, 0.72);
+  background: #456f45;
+}
+
+.screen-u03.screen-u03 .profile-avatar-img {
+  width: 68px;
+  height: 68px;
+}
+
+.screen-u03.screen-u03 .profile-name {
+  font-size: 24px;
+}
+
+.screen-u03.screen-u03 .page-section {
+  border-radius: 24px;
+  overflow: hidden;
+  background: #fffdf7;
+  box-shadow: 0 12px 28px rgba(23, 63, 50, 0.06);
+}
+
+.screen-u03.screen-u03 .bind-phone-card,
+.screen-u03.screen-u03 .profile-edit-card {
+  border-radius: 24px;
+}
+
+.screen-u03.screen-u03 .invite-line:first-child {
+  padding: 14px;
+  border-radius: 18px;
+  background: #e4efd7;
+}
+
+/* U04 确认取水：水滴选择台 + 底部确认单。 */
+.screen-u04.screen-u04 {
+  background:
+    radial-gradient(circle at 50% 152px, #e4efd7 0 68px, transparent 69px),
+    radial-gradient(circle at 50% 152px, transparent 0 88px, rgba(204, 224, 183, 0.7) 89px 91px, transparent 92px),
+    #f5f0e5;
+}
+
+.screen-u04.screen-u04 .block-card {
+  border-radius: 28px;
+  overflow: hidden;
+}
+
+.screen-u04.screen-u04 .card-picker {
+  padding: 10px;
+  border-radius: 28px;
+  background: rgba(255, 253, 247, 0.86);
+}
+
+.screen-u04.screen-u04 .preset-row {
+  justify-content: center;
+}
+
+.screen-u04.screen-u04 .estimate-row {
+  padding: 16px 0 8px;
+  border-top: 1px dashed #c8d2bf;
+}
+
+.screen-u04.screen-u04 .confirm-footer {
+  padding: 18px;
+  border-radius: 26px;
+  background: #fffdf7;
+  box-shadow: 0 -10px 32px rgba(23, 63, 50, 0.08);
+}
+
+/* U05 正在取水：沉浸式深绿同心圆。 */
+.screen-u05.screen-u05 {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 50% 280px, rgba(217, 234, 122, 0.22) 0 74px, transparent 75px),
+    radial-gradient(circle at 50% 280px, transparent 0 116px, rgba(204, 224, 183, 0.24) 117px 119px, transparent 120px),
+    radial-gradient(circle at 50% 280px, transparent 0 160px, rgba(204, 224, 183, 0.12) 161px 163px, transparent 164px),
+    #173f32;
+  color: #fffdf7;
+  --wot-card-bg: rgba(255, 253, 247, 0.08);
+  --wot-card-title-color: #fffdf7;
+  --wot-card-content-color: #cce0b7;
+  --wot-cell-title-color: #fffdf7;
+  --wot-cell-value-color: #d9ea7a;
+  --wot-cell-label-color: #cce0b7;
+  --wot-color-border-light: rgba(255, 253, 247, 0.12);
+}
+
+.screen-u05.screen-u05 .muted-text,
+.screen-u05.screen-u05 .step-desc {
+  color: #cce0b7;
+}
+
+.screen-u05.screen-u05 .wd-cell-group,
+.screen-u05.screen-u05 .wd-cell-group__body,
+.screen-u05.screen-u05 .wd-cell {
+  background: transparent;
+}
+
+.screen-u05.screen-u05 .wd-cell::after {
+  border-color: rgba(255, 253, 247, 0.12);
+}
+
+.screen-u05.screen-u05 .progress-status {
+  min-height: 218px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.screen-u05.screen-u05 .progress-status-text {
+  color: #d9ea7a;
+  font-size: 32px;
+}
+
+.screen-u05.screen-u05 .status-actions {
+  padding: 18px;
+  border: 1px solid rgba(255, 253, 247, 0.18);
+  border-radius: 999px;
+}
+
+/* U06 订单详情：可追溯票据。 */
+.screen-u06.screen-u06 {
+  background: #dce9d6;
+  --wot-card-bg: #fffdf7;
+}
+
+.screen-u06.screen-u06 .block-card,
+.screen-u06.screen-u06 .notice-wrap,
+.screen-u06.screen-u06 .price-rows {
+  border-radius: 22px;
+  background: #fffdf7;
+}
+
+.screen-u06.screen-u06 .block-card {
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 14px 34px rgba(23, 63, 50, 0.08);
+}
+
+.screen-u06.screen-u06 .block-card::after {
+  display: block;
+  height: 1px;
+  margin: 8px 18px 0;
+  background: repeating-linear-gradient(90deg, #c8d2bf 0 7px, transparent 7px 13px);
+  content: '';
+}
+
+.screen-u06.screen-u06 .price-rows {
+  padding: 16px;
+  border: 1px dashed #b9c9b3;
+}
+
+.screen-u06.screen-u06 .photo-card {
+  border-color: #8eb27b;
+  border-radius: 18px;
+  background: #e4efd7;
+}
+
+/* U07 附近水站：地图底图 + 浮层站点卡。 */
+.screen-u07.screen-u07 {
+  background:
+    linear-gradient(12deg, transparent 0 18%, rgba(255, 253, 247, 0.84) 18.3% 22%, transparent 22.3% 100%),
+    linear-gradient(102deg, transparent 0 42%, rgba(185, 209, 178, 0.8) 42.3% 45%, transparent 45.3% 100%),
+    #dce9d6;
+}
+
+.screen-u07.screen-u07::before,
+.screen-u07.screen-u07::after {
+  position: absolute;
+  z-index: 0;
+  border: 8px solid #456f45;
+  border-radius: 50%;
+  background: #d9ea7a;
+  box-shadow: 0 6px 18px rgba(23, 63, 50, 0.2);
+  content: '';
+}
+
+.screen-u07.screen-u07::before {
+  top: 118px;
+  left: 22%;
+  width: 22px;
+  height: 22px;
+}
+
+.screen-u07.screen-u07::after {
+  top: 206px;
+  right: 18%;
+  width: 16px;
+  height: 16px;
+}
+
+.screen-u07.screen-u07 > view {
+  position: relative;
+  z-index: 1;
+}
+
+.screen-u07.screen-u07 .page-section:first-of-type {
+  margin-top: 176px;
+}
+
+.screen-u07.screen-u07 .block-card {
+  border-radius: 28px;
+  overflow: hidden;
+  box-shadow: 0 18px 38px rgba(23, 63, 50, 0.12);
+}
+
+.screen-u07.screen-u07 .station-metrics {
+  border-radius: 18px;
+  background: #e4efd7;
+}
+
+/* U08 配送下单：瓶形舞台 + 配送底单。 */
+.screen-u08.screen-u08 {
+  background:
+    radial-gradient(ellipse at 50% 116px, rgba(217, 234, 122, 0.72) 0 42px, transparent 43px),
+    radial-gradient(ellipse at 34% 140px, rgba(204, 224, 183, 0.82) 0 30px, transparent 31px),
+    radial-gradient(ellipse at 67% 142px, rgba(69, 111, 69, 0.35) 0 32px, transparent 33px),
+    #f5f0e5;
+}
+
+.screen-u08.screen-u08 .page-section:first-of-type {
+  margin-top: 108px;
+}
+
+.screen-u08.screen-u08 .page-section {
+  padding: 4px;
+  border-radius: 26px;
+  background: rgba(255, 253, 247, 0.9);
+}
+
+.screen-u08.screen-u08 .fee-row {
+  padding: 8px 2px;
+}
+
+.screen-u08.screen-u08 .fee-total {
+  color: #456f45;
+  font-size: 21px;
+}
+
+/* U09 配送申诉：暖琥珀问题处理页。 */
+.screen-u09.screen-u09 {
+  background:
+    radial-gradient(circle at 88% 12%, rgba(217, 164, 65, 0.22) 0 96px, transparent 97px),
+    #fbf3e4;
+  --wot-color-warning: #d9a441;
+}
+
+.screen-u09.screen-u09 .page-section {
+  border-radius: 24px;
+  overflow: hidden;
+  background: rgba(255, 253, 247, 0.9);
+}
+
+.screen-u09.screen-u09 .deadline-value {
+  color: #9a641f;
+  font-weight: 600;
+}
+
+.screen-u09.screen-u09 .submit-row {
+  padding: 18px;
+  border-top: 1px dashed #d9a441;
+  background: #f7e9c3;
+}
+
+/* U10 水卡充值：深色余额卡 + 套餐拼贴。 */
+.screen-u10.screen-u10 {
+  background: linear-gradient(180deg, #173f32 0 260px, #f5f0e5 261px);
+}
+
+.screen-u10.screen-u10 .page-section:first-of-type {
+  margin-top: 18px;
+}
+
+.screen-u10.screen-u10 .page-section:first-of-type .block-card {
+  border: 1px solid rgba(217, 234, 122, 0.32);
+  background: #173f32;
+  color: #fffdf7;
+  --wot-card-bg: #173f32;
+  --wot-card-title-color: #fffdf7;
+  --wot-card-content-color: #cce0b7;
+}
+
+.screen-u10.screen-u10 .card-metrics {
+  justify-content: space-around;
+  padding: 26px 0;
+}
+
+.screen-u10.screen-u10 .card-metric-value {
+  color: #d9ea7a;
+  font-size: 28px;
+}
+
+.screen-u10.screen-u10 .page-section:nth-last-child(2) {
+  padding: 8px;
+  border-radius: 28px;
+  background: #fffdf7;
+}
+
+/* U11 家庭共享卡：倾斜数字卡 + 成员轨道。 */
+.screen-u11.screen-u11 {
+  background:
+    radial-gradient(circle at 88% 28%, rgba(204, 224, 183, 0.72) 0 70px, transparent 71px),
+    #f5f0e5;
+}
+
+.screen-u11.screen-u11 .page-section:first-of-type .block-card {
+  border: 1px solid rgba(217, 234, 122, 0.28);
+  background: #173f32;
+  color: #fffdf7;
+  transform: rotate(-1deg);
+  --wot-card-bg: #173f32;
+  --wot-card-title-color: #fffdf7;
+  --wot-card-content-color: #cce0b7;
+}
+
+.screen-u11.screen-u11 .card-metric-value {
+  color: #d9ea7a;
+  font-size: 28px;
+}
+
+.screen-u11.screen-u11 .page-section:nth-of-type(2) .block-card {
+  border-radius: 32px;
+  background: #e4efd7;
+  --wot-card-bg: #e4efd7;
+}
+
+.screen-u11.screen-u11 .card-info-row {
+  border-bottom: 1px dashed rgba(204, 224, 183, 0.34);
+}
+
+/* U12 成员授权：编号能力清单。 */
+.screen-u12.screen-u12 {
+  background: linear-gradient(155deg, #e4efd7 0 210px, #f5f0e5 211px);
+}
+
+.screen-u12.screen-u12 .member-summary {
+  min-height: 90px;
+  padding: 18px;
+  border-radius: 28px;
+  background: #173f32;
+  color: #fffdf7;
+}
+
+.screen-u12.screen-u12 .member-summary-name {
+  font-size: 23px;
+}
+
+.screen-u12.screen-u12 .page-section {
+  counter-reset: permission;
+  border-radius: 28px;
+  overflow: hidden;
+}
+
+.screen-u12.screen-u12 .page-section:nth-of-type(2) {
+  background: #fffdf7;
+}
+
+/* U13 家庭健康：同心轨道 + 资料面板。 */
+.screen-u13.screen-u13 {
+  background:
+    radial-gradient(circle at 50% 174px, #d9ea7a 0 24px, transparent 25px),
+    radial-gradient(circle at 50% 174px, transparent 0 58px, #cce0b7 59px 61px, transparent 62px),
+    radial-gradient(circle at 50% 174px, transparent 0 94px, rgba(69, 111, 69, 0.24) 95px 97px, transparent 98px),
+    #f5f0e5;
+}
+
+.screen-u13.screen-u13 > .page-section:last-of-type {
+  margin-top: 154px;
+  border-radius: 30px;
+  overflow: hidden;
+  background: #fffdf7;
+  box-shadow: 0 18px 40px rgba(23, 63, 50, 0.08);
+}
+
+.screen-u13.screen-u13 .consent-banner {
+  border-radius: 18px;
+  background: #f7e9c3;
+}
+
+.screen-u13.screen-u13 .tab-panel {
+  padding: 18px 8px;
+}
+
+/* U14 配送地址：地图上拉地址单。 */
+.screen-u14.screen-u14 {
+  background:
+    linear-gradient(24deg, transparent 0 14%, rgba(255, 253, 247, 0.9) 14.4% 18%, transparent 18.4% 100%),
+    linear-gradient(118deg, transparent 0 36%, rgba(185, 209, 178, 0.88) 36.4% 40%, transparent 40.4% 100%),
+    #dce9d6;
+}
+
+.screen-u14.screen-u14::before {
+  position: absolute;
+  top: 116px;
+  left: calc(50% - 14px);
+  width: 28px;
+  height: 28px;
+  border: 8px solid #456f45;
+  border-radius: 50% 50% 50% 0;
+  background: #d9ea7a;
+  content: '';
+  transform: rotate(-45deg);
+}
+
+.screen-u14.screen-u14 > .page-section:first-of-type {
+  margin-top: 154px;
+}
+
+.screen-u14.screen-u14 .page-section {
+  border-radius: 30px;
+  overflow: hidden;
+}
+
+.screen-u14.screen-u14 .address-body {
+  padding: 14px 0;
+  border-top: 1px dashed #c8d2bf;
+}
+
+/* U15 编辑地址：地图定位头 + 表单底单。 */
+.screen-u15.screen-u15 {
+  background:
+    radial-gradient(circle at 50% 132px, #d9ea7a 0 18px, #456f45 19px 26px, transparent 27px),
+    linear-gradient(16deg, transparent 0 24%, rgba(255, 253, 247, 0.88) 24.3% 28%, transparent 28.3% 100%),
+    #dce9d6;
+}
+
+.screen-u15.screen-u15 > .page-section:first-of-type {
+  margin-top: 130px;
+  padding: 8px;
+  border-radius: 32px;
+  overflow: hidden;
+  background: #fffdf7;
+  box-shadow: 0 18px 40px rgba(23, 63, 50, 0.1);
+}
+
+.screen-u15.screen-u15 > .page-section:last-of-type {
+  padding: 8px;
+  border-radius: 999px;
+  background: #fffdf7;
+}
+
+/* D01 配送任务中心：调度地图 + 任务浮层。 */
+.screen-d01.screen-d01 {
+  background:
+    linear-gradient(8deg, transparent 0 21%, rgba(255, 253, 247, 0.88) 21.3% 24%, transparent 24.3% 100%),
+    linear-gradient(96deg, transparent 0 38%, rgba(185, 209, 178, 0.82) 38.4% 41%, transparent 41.4% 100%),
+    #dce9d6;
+}
+
+.screen-d01.screen-d01::before,
+.screen-d01.screen-d01::after {
+  position: absolute;
+  z-index: 0;
+  width: 34px;
+  height: 34px;
+  border: 7px solid #456f45;
+  border-radius: 50%;
+  background: #fffdf7;
+  content: '';
+  box-shadow: 0 8px 22px rgba(23, 63, 50, 0.18);
+}
+
+.screen-d01.screen-d01::before {
+  top: 132px;
+  left: 18%;
+}
+
+.screen-d01.screen-d01::after {
+  top: 226px;
+  right: 20%;
+  border-color: #d9a441;
+}
+
+.screen-d01.screen-d01 > view {
+  position: relative;
+  z-index: 1;
+}
+
+.screen-d01.screen-d01 .scope-card {
+  margin-top: 176px;
+  border-radius: 26px;
+  background: #173f32;
+  color: #fffdf7;
+  --wot-card-bg: #173f32;
+  --wot-card-title-color: #fffdf7;
+  --wot-card-content-color: #cce0b7;
+}
+
+.screen-d01.screen-d01 .task-card {
+  border-radius: 30px;
+  background: #fffdf7;
+  box-shadow: 0 16px 34px rgba(23, 63, 50, 0.1);
+}
+
+.screen-d01.screen-d01 .task-card-address {
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: #e4efd7;
+}
+
+.screen-d01.screen-d01 .task-card-amount {
+  color: #456f45;
+  font-size: 22px;
+}
+
+/* D02 配送准入：三步阶梯。 */
+.screen-d02.screen-d02 {
+  counter-reset: admission-step;
+  background: linear-gradient(150deg, #e4efd7 0 220px, #f5f0e5 221px);
+}
+
+.screen-d02.screen-d02 .admission-card {
+  position: relative;
+  min-height: 82px;
+  padding-left: 46px;
+  border-radius: 8px 28px 28px 8px;
+  background: #fffdf7;
+  box-shadow: 0 12px 28px rgba(23, 63, 50, 0.07);
+  counter-increment: admission-step;
+}
+
+.screen-d02.screen-d02 .admission-card:nth-child(even) {
+  margin-left: 18px;
+}
+
+.screen-d02.screen-d02 .admission-card::before {
+  position: absolute;
+  top: 18px;
+  left: 14px;
+  display: flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #456f45;
+  color: #fffdf7;
+  content: counter(admission-step);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.screen-d02.screen-d02 .declaration-row {
+  border-top: 1px dashed #c8d2bf;
+}
+
+.screen-d02.screen-d02 .submit-row {
+  padding: 18px;
+  border-radius: 28px;
+  background: #173f32;
+}
+
+/* D03 配送任务详情：路线状态头 + 履约阶梯。 */
+.screen-d03.screen-d03 {
+  background:
+    radial-gradient(circle at 90% 10%, rgba(217, 234, 122, 0.35) 0 78px, transparent 79px),
+    #f5f0e5;
+}
+
+.screen-d03.screen-d03 .status-header {
+  min-height: 118px;
+  align-items: flex-start;
+  padding: 22px;
+  border-radius: 30px;
+  background: #173f32;
+  color: #fffdf7;
+}
+
+.screen-d03.screen-d03 .status-title {
+  color: #d9ea7a;
+  font-size: 28px;
+}
+
+.screen-d03.screen-d03 .detail-card {
+  border-radius: 28px;
+  overflow: hidden;
+  background: #fffdf7;
+  box-shadow: 0 14px 32px rgba(23, 63, 50, 0.07);
+}
+
+.screen-d03.screen-d03 .evidence-list-item,
+.screen-d03.screen-d03 .exception-item {
+  padding: 14px;
+  border-bottom: 0;
+  border-radius: 18px;
+  margin-top: 8px;
+  background: #e4efd7;
+}
+
+.screen-d03.screen-d03 .sign-photo-image,
+.screen-d03.screen-d03 .sign-photo-placeholder {
+  border-radius: 20px;
+}
+
+/* D04 三照签收：取景框式证据页。 */
+.screen-d04.screen-d04 {
+  background:
+    linear-gradient(90deg, rgba(69, 111, 69, 0.08) 1px, transparent 1px),
+    linear-gradient(rgba(69, 111, 69, 0.08) 1px, transparent 1px),
+    #e4efd7;
+  background-size: 24px 24px;
+}
+
+.screen-d04.screen-d04 .page-section {
+  padding: 12px;
+  border: 2px solid #456f45;
+  border-radius: 28px 8px 28px 8px;
+  background: rgba(255, 253, 247, 0.94);
+}
+
+.screen-d04.screen-d04 .block-title {
+  color: #456f45;
+  font-size: 18px;
+}
+
+.screen-d04.screen-d04 .count-value {
+  padding: 8px;
+  border-radius: 999px;
+  background: #e4efd7;
+}
+
+.screen-d04.screen-d04 .status-actions {
+  border-style: dashed;
+  background: #d9ea7a;
+}
+
+/* D05 配送异常：暖色问题分类与证据留存。 */
+.screen-d05.screen-d05 {
+  background:
+    radial-gradient(circle at 12% 9%, rgba(217, 164, 65, 0.26) 0 86px, transparent 87px),
+    #fbf3e4;
+  --wot-picker-column-select-bg: #f7e9c3;
+}
+
+.screen-d05.screen-d05 .page-section {
+  padding: 8px;
+  border-radius: 26px;
+  background: #fffdf7;
+}
+
+.screen-d05.screen-d05 .submit-row {
+  padding: 18px;
+  border-top: 1px dashed #d9a441;
+  border-radius: 0 0 22px 22px;
+  background: #f7e9c3;
+}
+
+.screen-d05.screen-d05 .state-block {
+  background: transparent;
+}
+
+/* O01 经营概览：深绿收入头 + 数据拼图。 */
+.screen-o01.screen-o01 {
+  background: linear-gradient(180deg, #173f32 0 310px, #f5f0e5 311px);
+}
+
+.screen-o01.screen-o01 .scope-line,
+.screen-o01.screen-o01 .snapshot-line {
+  color: #fffdf7;
+}
+
+.screen-o01.screen-o01 .metric-row {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap: 10px;
+}
+
+.screen-o01.screen-o01 .metric-card {
+  min-height: 74px;
+  border: 1px solid rgba(217, 234, 122, 0.18);
+  border-radius: 26px;
+  background: #456f45;
+  color: #fffdf7;
+  text-align: left;
+  padding: 18px;
+}
+
+.screen-o01.screen-o01 .metric-card:first-child {
+  grid-row: span 2;
+  min-height: 150px;
+  background: #d9ea7a;
+  color: #173f32;
+}
+
+.screen-o01.screen-o01 .metric-value {
+  margin-top: 8px;
+  color: inherit;
+  font-size: 30px;
+}
+
+.screen-o01.screen-o01 .attention-row {
+  padding: 14px;
+  border-radius: 18px;
+  background: #fffdf7;
+}
+
+/* O02 我的设备：站点拓扑。 */
+.screen-o02.screen-o02 {
+  background:
+    linear-gradient(90deg, transparent 0 49%, #b9d1b2 49.4% 50.6%, transparent 51% 100%),
+    #f5f0e5;
+}
+
+.screen-o02.screen-o02::before {
+  position: absolute;
+  top: 96px;
+  left: calc(50% - 36px);
+  display: flex;
+  width: 72px;
+  height: 72px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #173f32;
+  box-shadow: 0 0 0 12px #e4efd7;
+  content: '站';
+  color: #d9ea7a;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.screen-o02.screen-o02 .page-section:first-of-type {
+  margin-top: 150px;
+}
+
+.screen-o02.screen-o02 .device-card {
+  position: relative;
+  border: 1px solid #c8d2bf;
+  border-radius: 28px;
+  background: #fffdf7;
+  box-shadow: 0 12px 28px rgba(23, 63, 50, 0.07);
+}
+
+.screen-o02.screen-o02 .device-card::before {
+  position: absolute;
+  top: -9px;
+  left: calc(50% - 8px);
+  width: 16px;
+  height: 16px;
+  border: 4px solid #f5f0e5;
+  border-radius: 50%;
+  background: #456f45;
+  content: '';
+}
+
+.screen-o02.screen-o02 .device-card-meta {
+  padding: 10px;
+  border-radius: 16px;
+  background: #e4efd7;
+}
+
+/* O03 设备详情：实时状态面板 + 双出水口。 */
+.screen-o03.screen-o03 {
+  background: #e4efd7;
+}
+
+.screen-o03.screen-o03 .detail-header {
+  min-height: 124px;
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at 88% 50%, rgba(217, 234, 122, 0.3) 0 52px, transparent 53px),
+    #173f32;
+  color: #fffdf7;
+  box-shadow: 0 18px 36px rgba(23, 63, 50, 0.14);
+}
+
+.screen-o03.screen-o03 .detail-device-no {
+  color: #d9ea7a;
+  font-size: 23px;
+}
+
+.screen-o03.screen-o03 .detail-time-row,
+.screen-o03.screen-o03 .detail-header .muted-text {
+  color: #cce0b7;
+}
+
+.screen-o03.screen-o03 .outlet-row {
+  padding: 18px;
+  border: 0;
+  border-radius: 22px;
+  margin-top: 10px;
+  background: #fffdf7;
+}
+
+.screen-o03.screen-o03 .outlet-row:nth-child(even) {
+  margin-left: 18px;
+  background: #d9ea7a;
+}
+
+.screen-o03.screen-o03 .readonly-banner {
+  border-radius: 18px;
+  background: rgba(23, 63, 50, 0.08);
+}
+
+/* O04 交易快照：净收入头 + 交易票条。 */
+.screen-o04.screen-o04 {
+  background: linear-gradient(180deg, #173f32 0 250px, #f5f0e5 251px);
+}
+
+.screen-o04.screen-o04 .summary-card {
+  min-height: 104px;
+  border-radius: 30px;
+  background: #d9ea7a;
+  color: #173f32;
+  box-shadow: 0 18px 36px rgba(5, 31, 23, 0.2);
+}
+
+.screen-o04.screen-o04 .summary-line {
+  font-size: 22px;
+}
+
+.screen-o04.screen-o04 .txn-card {
+  border-left: 6px solid #456f45;
+  border-radius: 6px 24px 24px 6px;
+  background: #fffdf7;
+}
+
+.screen-o04.screen-o04 .txn-card:nth-child(even) {
+  border-left-color: #d9a441;
+  transform: translateX(8px);
+}
+
+.screen-o04.screen-o04 .txn-amount {
+  color: #456f45;
+  font-size: 20px;
+}
+
+/* O05 报修与配件：设备健康时间线。 */
+.screen-o05.screen-o05 {
+  background:
+    radial-gradient(circle at 88% 8%, rgba(217, 234, 122, 0.7) 0 78px, transparent 79px),
+    #f5f0e5;
+}
+
+.screen-o05.screen-o05 .service-item {
+  position: relative;
+  padding: 16px 16px 16px 34px;
+  border: 0;
+  border-radius: 0 24px 24px 0;
+  background: #fffdf7;
+}
+
+.screen-o05.screen-o05 .service-item::before {
+  position: absolute;
+  top: 20px;
+  left: 12px;
+  width: 10px;
+  height: 10px;
+  border: 4px solid #e4efd7;
+  border-radius: 50%;
+  background: #456f45;
+  content: '';
+}
+
+.screen-o05.screen-o05 .service-item::after {
+  position: absolute;
+  top: 38px;
+  bottom: -12px;
+  left: 20px;
+  width: 2px;
+  background: #cce0b7;
+  content: '';
+}
+
+.screen-o05.screen-o05 .service-item--highlight {
+  background: #f7e9c3;
+}
+
+.screen-o05.screen-o05 .evidence-add,
+.screen-o05.screen-o05 .evidence-image {
+  border-radius: 20px;
+}
+
+/* O06 收益钱包：深绿余额卡 + 账本明细。 */
+.screen-o06.screen-o06 {
+  background: linear-gradient(165deg, #173f32 0 300px, #f5f0e5 301px);
+}
+
+.screen-o06.screen-o06 .page-section:first-of-type {
+  min-height: 154px;
+  padding: 24px;
+  border: 1px solid rgba(217, 234, 122, 0.24);
+  border-radius: 32px;
+  background: #456f45;
+  color: #fffdf7;
+  box-shadow: 0 20px 42px rgba(5, 31, 23, 0.24);
+}
+
+.screen-o06.screen-o06 .balance-line {
+  color: #d9ea7a;
+  font-size: 36px;
+}
+
+.screen-o06.screen-o06 .page-section:first-of-type .muted-text,
+.screen-o06.screen-o06 .page-section:first-of-type .caliber-note {
+  color: #cce0b7;
+}
+
+.screen-o06.screen-o06 .flow-row {
+  padding: 16px;
+  border: 0;
+  border-radius: 20px;
+  margin-top: 8px;
+  background: #fffdf7;
+}
+
+.screen-o06.screen-o06 .flow-row:nth-child(even) {
+  background: #e4efd7;
+}
+
+.screen-o06.screen-o06 .amount-in {
+  color: #456f45;
+}
+
+.screen-o06.screen-o06 .amount-out {
+  color: #b65f4c;
+}
+
+@media (max-width: 350px) {
+  .page-shell[class*='screen-'] {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .screen-o01.screen-o01 .metric-row {
+    grid-template-columns: 1fr;
+  }
+
+  .screen-o01.screen-o01 .metric-card:first-child {
+    grid-row: auto;
+  }
 }

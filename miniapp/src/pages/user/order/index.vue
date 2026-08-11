@@ -100,7 +100,7 @@ function orderSummary(item: OrderItem): string {
 </script>
 
 <template>
-  <view class="page-shell top-level-page" :style="{ paddingTop: safeHeader.pageTopPadding }">
+  <view class="page-shell top-level-page screen-u02" :style="{ paddingTop: safeHeader.pageTopPadding }">
     <view class="order-header">
       <view class="page-title">
         我的订单

@@ -145,7 +145,7 @@ async function refresh() {
 
 .face-blocked {
   margin-top: 8px;
-  color: var(--app-color-danger);
+  color: var(--wot-color-danger, #fa4350);
   font-size: 13px;
 }
 
@@ -166,7 +166,7 @@ async function refresh() {
 }
 
 .owner-metric-warn .owner-metric-value {
-  color: var(--app-color-danger);
+  color: var(--wot-color-danger, #fa4350);
 }
 
 .owner-revenue {

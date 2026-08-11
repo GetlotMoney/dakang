@@ -192,7 +192,7 @@ async function handleRevoke() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u12">
     <AppNavbar title="成员授权" back-to="U11" />
     <wd-toast />
     <wd-message-box />

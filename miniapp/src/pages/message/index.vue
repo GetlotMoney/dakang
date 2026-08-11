@@ -107,7 +107,7 @@ async function openMessage(item: MessageItem) {
 </script>
 
 <template>
-  <view class="message-page">
+  <view class="message-page screen-c02">
     <AppNavbar title="消息中心" back-to="U01" />
     <view class="page-shell">
       <wd-toast />
@@ -199,7 +199,7 @@ async function openMessage(item: MessageItem) {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--app-color-danger);
+  background: var(--wot-color-danger, #fa4350);
 }
 
 .message-title {

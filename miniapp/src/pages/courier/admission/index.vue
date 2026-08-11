@@ -159,7 +159,7 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-d02">
     <AppNavbar title="配送准入" back-to="U03" />
     <wd-toast />
     <wd-message-box />
@@ -315,7 +315,7 @@ async function handleSubmit() {
 .admission-reject {
   margin-bottom: 6px;
   font-size: 14px;
-  color: var(--app-color-danger);
+  color: #fa4350;
 }
 
 .declaration-row {

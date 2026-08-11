@@ -93,7 +93,7 @@ async function refresh() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-o02">
     <AppNavbar title="机主设备" back-to="O01" />
 
     <view v-if="loading" class="page-section muted-text">
@@ -150,7 +150,7 @@ async function refresh() {
                 {{ item.deviceName }} · {{ item.stationName }}
               </view>
             </view>
-            <wd-icon name="arrow-right" size="16px" color="var(--app-text-secondary)" />
+            <wd-icon name="arrow-right" size="16px" color="#646a73" />
           </view>
           <view class="device-card-tags">
             <wd-tag :type="ONLINE_STATUS_TONES[item.onlineStatus]" plain>
@@ -217,6 +217,6 @@ async function refresh() {
 }
 
 .fault-code-text {
-  color: var(--app-color-danger);
+  color: #fa4350;
 }
 </style>

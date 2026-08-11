@@ -307,7 +307,7 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u08">
     <AppNavbar title="配送下单" back-to="U01" />
     <wd-toast />
     <wd-message-box />
@@ -503,6 +503,6 @@ async function handleSubmit() {
 }
 
 .pay-option-blocked {
-  color: var(--app-color-danger);
+  color: var(--wot-color-danger, #fa4350);
 }
 </style>

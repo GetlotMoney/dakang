@@ -93,7 +93,7 @@ async function handleSave() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u15">
     <AppNavbar :title="pageTitle" back-to="U14" />
     <wd-toast />
 

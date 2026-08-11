@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ConfigProviderThemeVars } from 'wot-design-uni'
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { evaluateRouteAccess } from '@/router/guard'
@@ -10,10 +11,14 @@ const showTabbar = ref(false)
 const accountStore = useAccountStore()
 let handlingDirectAccess = false
 
-// 主题变量全部收在 style/index.scss 的 :root, page 里，本组件不再传 theme-vars。
-// 曾经两处各写一份（这里 4 条 + index.scss 1 条），只覆盖了 theme/success，
-// warning 与 danger 漏在 Wot 默认值上，页面为对齐 wd-tag 手抄出 22 处硬编码色。
-// ConfigProvider 保留是因为它是 KuRootView 的宿主，不再承担配色职责。
+// UI-MINIAPP-C-V2-ALL-V1：Wot UI 与页面主题使用同一套森氧生活色值。
+const themeVars: ConfigProviderThemeVars = {
+  colorTheme: '#456F45',
+  colorSuccess: '#5F8A57',
+  colorWarning: '#D9A441',
+  buttonPrimaryBgColor: '#456F45',
+  buttonPrimaryColor: '#FFFDF7',
+}
 
 function currentPageUrl() {
   const pages = getCurrentPages()
@@ -79,7 +84,7 @@ onShow(async () => {
 </script>
 
 <template>
-  <wd-config-provider>
+  <wd-config-provider :theme-vars="themeVars">
     <KuRootView />
     <AppTabbar v-if="showTabbar" />
   </wd-config-provider>

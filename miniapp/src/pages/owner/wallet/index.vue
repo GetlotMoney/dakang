@@ -49,7 +49,7 @@ async function refresh() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-o06">
     <AppNavbar title="收益钱包" back-to="U03" />
 
     <view v-if="loading" class="page-section muted-text">
@@ -116,7 +116,7 @@ async function refresh() {
       </view>
 
       <view class="page-section readonly-footer">
-        <wd-icon name="lock-on" size="14px" color="var(--app-text-secondary)" />
+        <wd-icon name="lock-on" size="14px" color="#646a73" />
         <text>暂不支持提现</text>
       </view>
     </template>
@@ -158,12 +158,12 @@ async function refresh() {
 }
 
 .amount-in {
-  color: var(--app-color-success);
+  color: #34d19d;
   font-weight: 600;
 }
 
 .amount-out {
-  color: var(--app-color-danger);
+  color: #fa4350;
   font-weight: 600;
 }
 

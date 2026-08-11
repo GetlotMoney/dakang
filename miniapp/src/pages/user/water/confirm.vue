@@ -309,7 +309,7 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell screen-u04">
     <AppNavbar title="取水确认" back-to="U01" />
     <wd-toast />
 
@@ -557,7 +557,7 @@ async function handleSubmit() {
 
 .form-error {
   margin-top: 8px;
-  color: var(--app-color-danger);
+  color: #fa4350;
   font-size: 13px;
 }
 
