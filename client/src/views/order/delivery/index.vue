@@ -18,7 +18,6 @@
           style="width: 210px"
           @input="applyFiltersDebounced"
         />
-        <ElButton @click="handleReset" v-ripple>重置</ElButton>
       </div>
 
       <ElTable :data="list" row-key="taskId" border v-loading="loading">
@@ -427,12 +426,6 @@
   }
 
   const applyFiltersDebounced = useDebounceFn(() => applyFilters(), 350)
-
-  async function handleReset() {
-    statusFilter.value = 0
-    keyword.value = ''
-    await applyFilters()
-  }
 
   async function showDetail(row: DeliveryTaskAdminItem) {
     detail.value = null

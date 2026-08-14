@@ -1,10 +1,12 @@
 <template>
-  <div class="dept-sidebar" :class="{ 'is-collapsed': isCollapsed }">
+  <div class="dept-sidebar" :class="{ 'is-collapsed': isCollapsed, 'is-compact': compact }">
     <!-- 侧边栏内容 -->
     <div class="sidebar-content">
       <!-- 顶部操作栏 -->
       <div class="sidebar-header">
-        <ElButton type="primary" size="small" @click="handleAddDept()">新增部门</ElButton>
+        <ElButton v-if="canAdd" type="primary" size="small" @click="handleAddDept()"
+          >新增部门</ElButton
+        >
         <div class="header-actions">
           <ElTooltip content="展开/收起" placement="bottom">
             <ElIcon class="action-icon" @click="toggleExpand">
@@ -48,6 +50,7 @@
               <div class="dept-node">
                 <span class="dept-name">{{ node.label }}</span>
                 <ElPopover
+                  v-if="canAdd || canUpdate || canDelete"
                   placement="right-start"
                   :width="120"
                   trigger="click"
@@ -60,15 +63,19 @@
                     </span>
                   </template>
                   <div class="popover-actions" @click.stop>
-                    <div class="action-item" @click="handleAddSubDept(data)">
+                    <div v-if="canAdd" class="action-item" @click="handleAddSubDept(data)">
                       <ElIcon><Plus /></ElIcon>
                       <span>新增</span>
                     </div>
-                    <div class="action-item" @click="handleEditDept(data)">
+                    <div v-if="canUpdate" class="action-item" @click="handleEditDept(data)">
                       <ElIcon><Edit /></ElIcon>
                       <span>编辑</span>
                     </div>
-                    <div class="action-item danger" @click="handleDeleteDept(data)">
+                    <div
+                      v-if="canDelete"
+                      class="action-item danger"
+                      @click="handleDeleteDept(data)"
+                    >
                       <ElIcon><Delete /></ElIcon>
                       <span>删除</span>
                     </div>
@@ -82,11 +89,16 @@
     </div>
 
     <!-- 右侧展开收起按钮 -->
-    <div class="collapse-trigger" @click="toggleCollapse">
+    <button
+      type="button"
+      class="collapse-trigger"
+      :aria-label="isCollapsed ? '展开部门筛选' : '收起部门筛选'"
+      @click="toggleCollapse"
+    >
       <ElIcon class="collapse-icon">
         <DArrowLeft />
       </ElIcon>
-    </div>
+    </button>
 
     <!-- 部门弹窗 -->
     <DeptDialog
@@ -119,8 +131,22 @@
   interface Emits {
     (e: 'select', deptId: string | undefined): void
     (e: 'refresh'): void
+    (e: 'loaded', items: { id: string; deptName: string }[]): void
   }
 
+  interface Props {
+    compact?: boolean
+    canAdd?: boolean
+    canUpdate?: boolean
+    canDelete?: boolean
+  }
+
+  const props = withDefaults(defineProps<Props>(), {
+    compact: false,
+    canAdd: false,
+    canUpdate: false,
+    canDelete: false
+  })
   const emit = defineEmits<Emits>()
 
   type DeptListItem = Api.SystemManage.DeptListItem
@@ -134,7 +160,6 @@
   const currentDeptId = ref<string>()
   const selectedDeptId = ref<string>()
 
-  // 弹窗相关
   const dialogVisible = ref(false)
   const dialogType = ref<'add' | 'edit'>('add')
   const currentDept = ref<Partial<DeptListItem>>({})
@@ -144,7 +169,12 @@
     children: 'children'
   }
 
-  // 过滤后的部门树
+  const flattenDeptTree = (nodes: DeptListItem[]): { id: string; deptName: string }[] =>
+    nodes.flatMap((node) => [
+      { id: node.id, deptName: node.deptName },
+      ...flattenDeptTree(node.children || [])
+    ])
+
   const filteredDeptTree = computed(() => {
     if (!searchKeyword.value) {
       return deptTree.value
@@ -152,12 +182,12 @@
     return deptTree.value
   })
 
-  // 加载部门树
   const loadDeptTree = async () => {
     try {
       loading.value = true
       const data = await fetchGetDeptTree()
       deptTree.value = data || []
+      emit('loaded', flattenDeptTree(deptTree.value))
     } catch {
       // error handled by http
     } finally {
@@ -165,18 +195,15 @@
     }
   }
 
-  // 搜索过滤
   watch(searchKeyword, (val) => {
     treeRef.value?.filter(val)
   })
 
-  // 树节点过滤
   const filterNode = (value: string, data: any) => {
     if (!value) return true
     return data.deptName.includes(value)
   }
 
-  // 展开/收起切换
   const toggleExpand = () => {
     isAllExpanded.value = !isAllExpanded.value
     const nodes = treeRef.value?.store.nodesMap || {}
@@ -185,38 +212,40 @@
     })
   }
 
-  // 侧边栏展开/收起
   const toggleCollapse = () => {
     isCollapsed.value = !isCollapsed.value
   }
 
-  // 刷新
+  watch(
+    () => props.compact,
+    (compact) => {
+      if (compact) isCollapsed.value = true
+    },
+    { immediate: true }
+  )
+
   const handleRefresh = () => {
     loadDeptTree()
   }
 
-  // 新增顶级部门
   const handleAddDept = () => {
     dialogType.value = 'add'
     currentDept.value = {}
     dialogVisible.value = true
   }
 
-  // 新增子部门
   const handleAddSubDept = (data: DeptListItem) => {
     dialogType.value = 'add'
     currentDept.value = { deptParentId: data.id }
     dialogVisible.value = true
   }
 
-  // 编辑部门
   const handleEditDept = (data: DeptListItem) => {
     dialogType.value = 'edit'
     currentDept.value = data
     dialogVisible.value = true
   }
 
-  // 删除部门
   const handleDeleteDept = (data: DeptListItem) => {
     ElMessageBox.confirm(`确定要删除部门"${data.deptName}"吗？`, '删除部门', {
       confirmButtonText: '确定',
@@ -234,7 +263,6 @@
     })
   }
 
-  // 弹窗提交
   const handleDialogSubmit = () => {
     loadDeptTree()
     emit('refresh')
@@ -242,19 +270,12 @@
 
   // 获取扁平化的部门列表（用于用户表单下拉）
   const getFlatDeptList = () => {
-    const flatten = (nodes: DeptListItem[]): { id: string; deptName: string }[] => {
-      return nodes.flatMap((node) => [
-        { id: node.id, deptName: node.deptName },
-        ...flatten(node.children || [])
-      ])
-    }
-    return flatten(deptTree.value)
+    return flattenDeptTree(deptTree.value)
   }
 
   // 点击树节点选中/取消选中
   const handleNodeClick = (data: DeptListItem) => {
     if (selectedDeptId.value === data.id) {
-      // 取消选中
       selectedDeptId.value = undefined
       emit('select', undefined)
     } else {
@@ -263,13 +284,11 @@
     }
   }
 
-  // 清除选中
   const clearSelection = () => {
     selectedDeptId.value = undefined
     treeRef.value?.setCurrentKey(null)
   }
 
-  // 初始化时加载部门树
   onMounted(() => {
     loadDeptTree()
   })
@@ -285,15 +304,21 @@
 <style scoped lang="scss">
   .dept-sidebar {
     position: relative;
+    flex: 0 0 260px;
     width: 260px;
     display: flex;
     flex-direction: column;
-    background: #fff;
-    border-right: 1px solid var(--el-border-color-lighter);
+    min-width: 0;
+    background: var(--el-bg-color);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 8px;
     transition: width 0.3s ease;
 
     &.is-collapsed {
+      flex-basis: 20px;
       width: 20px;
+      background: transparent;
+      border-color: transparent;
 
       .sidebar-content {
         display: none;
@@ -306,6 +331,34 @@
 
         .collapse-icon {
           transform: rotate(180deg);
+        }
+      }
+    }
+
+    &.is-compact {
+      flex: 0 0 20px;
+      width: 20px;
+      background: transparent;
+      border-color: transparent;
+
+      &:not(.is-collapsed) {
+        .sidebar-content {
+          position: absolute;
+          z-index: 12;
+          top: 0;
+          left: 0;
+          width: 280px;
+          height: 100%;
+          overflow: hidden;
+          background: var(--el-bg-color);
+          border: 1px solid var(--el-border-color);
+          border-radius: 8px;
+          box-shadow: var(--el-box-shadow-dark);
+        }
+
+        .collapse-trigger {
+          right: auto;
+          left: 266px;
         }
       }
     }
@@ -326,6 +379,8 @@
     align-items: center;
     justify-content: center;
     cursor: pointer;
+    padding: 0;
+    color: inherit;
     z-index: 10;
     transition: all 0.3s ease;
 

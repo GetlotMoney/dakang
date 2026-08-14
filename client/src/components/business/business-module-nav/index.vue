@@ -1,5 +1,9 @@
 <template>
-  <ElCard class="business-module-nav" shadow="never">
+  <ElCard
+    class="business-module-nav"
+    :class="{ 'business-module-nav--compact': props.compact }"
+    shadow="never"
+  >
     <div class="business-module-nav__inner">
       <div class="business-module-nav__heading">
         <div class="business-module-nav__title">{{ navigation.title }}</div>
@@ -28,9 +32,15 @@
   import { BUSINESS_MODULE_NAVIGATION, type BusinessModuleKey } from '@/config/businessNavigation'
   import { useMenuStore } from '@/store/modules/menu'
 
-  const props = defineProps<{
-    moduleKey: BusinessModuleKey
-  }>()
+  const props = withDefaults(
+    defineProps<{
+      moduleKey: BusinessModuleKey
+      compact?: boolean
+    }>(),
+    {
+      compact: false
+    }
+  )
 
   const route = useRoute()
   const router = useRouter()
@@ -68,18 +78,19 @@
   }
 
   .business-module-nav :deep(.el-card__body) {
-    padding: 14px 16px;
+    padding: 10px 14px;
   }
 
   .business-module-nav__inner {
     display: flex;
-    gap: 20px;
+    gap: 18px;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
   }
 
   .business-module-nav__heading {
-    min-width: 220px;
+    flex: 0 0 auto;
+    min-width: 92px;
   }
 
   .business-module-nav__title {
@@ -90,28 +101,29 @@
   }
 
   .business-module-nav__links {
-    display: flex;
+    display: inline-flex;
+    flex: 0 1 auto;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 2px;
     justify-content: flex-end;
-    padding: 4px;
-    background: var(--el-fill-color-light);
-    border-radius: 9px;
+    min-width: 0;
+    /* 标题居左、导航项贴右缘：中间留白由 margin-left:auto 吃掉 */
+    margin-left: auto;
   }
 
   .business-module-nav__link {
     display: inline-flex;
     gap: 6px;
     align-items: center;
-    height: 34px;
-    padding: 0 13px;
+    height: 32px;
+    padding: 0 11px;
     font: inherit;
     font-size: 13px;
     color: var(--el-text-color-regular);
     cursor: pointer;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 7px;
+    border-radius: 6px;
     transition:
       color 0.18s ease,
       background-color 0.18s ease,
@@ -120,19 +132,48 @@
 
   .business-module-nav__link:hover {
     color: var(--el-color-primary);
-    background: var(--el-bg-color);
+    background: var(--el-fill-color-light);
   }
 
   .business-module-nav__link.is-active {
     font-weight: 600;
     color: var(--el-color-primary);
-    background: var(--el-bg-color);
+    background: var(--el-color-primary-light-9);
     border-color: var(--el-color-primary-light-7);
-    box-shadow: var(--el-box-shadow-lighter);
+    box-shadow: none;
   }
 
   .business-module-nav__icon {
     font-size: 16px;
+  }
+
+  /* compact 只减少纵向高度，不再把链接区拉成贯穿整页的色块。 */
+  .business-module-nav--compact :deep(.el-card__body) {
+    padding: 10px 14px;
+  }
+
+  .business-module-nav--compact .business-module-nav__inner {
+    gap: 14px;
+  }
+
+  .business-module-nav--compact .business-module-nav__heading {
+    min-width: 104px;
+  }
+
+  .business-module-nav--compact .business-module-nav__links {
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .business-module-nav--compact .business-module-nav__link {
+    flex: 0 0 auto;
+    height: 30px;
+    padding: 0 10px;
+    font-size: 12px;
   }
 
   @media (width <= 900px) {
@@ -145,6 +186,18 @@
     .business-module-nav__links {
       justify-content: flex-start;
       width: 100%;
+      /* 纵排时不再贴右，恢复自然左对齐 */
+      margin-left: 0;
+    }
+
+    .business-module-nav--compact .business-module-nav__inner {
+      flex-direction: row;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .business-module-nav--compact .business-module-nav__links {
+      width: auto;
     }
   }
 </style>

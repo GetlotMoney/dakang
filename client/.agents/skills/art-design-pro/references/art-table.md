@@ -55,20 +55,21 @@
 
 ArtTable 继承自 Element Plus 的 el-table，**支持 el-table 的所有 Props**。以下是常用 Props：
 
-| 属性名                | 说明                     | 类型               | 默认值  |
-| --------------------- | ------------------------ | ------------------ | ------- |
-| data                  | 表格数据                 | `any[]`            | `[]`    |
-| columns               | 列配置（ColumnOption[]） | `ColumnOption[]`   | `[]`    |
-| loading               | 加载状态                 | `boolean`          | `false` |
-| pagination            | 分页配置                 | `PaginationConfig` | `-`     |
-| rowKey                | 行数据唯一标识           | `string`           | `'id'`  |
-| height                | 表格高度                 | `string \| number` | `-`     |
-| max-height            | 表格最大高度             | `string \| number` | `-`     |
-| empty-height          | 空状态区域高度           | `string`           | `300px` |
-| show-table-header     | 是否显示表头             | `boolean`          | `true`  |
-| border                | 是否显示边框             | `boolean`          | `true`  |
-| stripe                | 是否显示斑马纹           | `boolean`          | `false` |
-| highlight-current-row | 高亮当前行               | `boolean`          | `false` |
+| 属性名 | 说明 | 类型 | 默认值 |
+| --- | --- | --- | --- |
+| data | 表格数据 | `any[]` | `[]` |
+| columns | 列配置（ColumnOption[]） | `ColumnOption[]` | `[]` |
+| loading | 加载状态 | `boolean` | `false` |
+| pagination | 分页配置 | `PaginationConfig` | `-` |
+| rowKey | 行数据唯一标识 | `string` | `'id'` |
+| height | 表格高度 | `string \| number` | `-` |
+| max-height | 表格最大高度 | `string \| number` | `-` |
+| empty-height | 空状态区域高度 | `string` | `100%` |
+| empty-text | 空状态文案（走 #empty 插槽内的 ElEmpty description） | `string` | `暂无数据` |
+| show-table-header | 是否配合 ArtTableHeader 计算高度（无 ArtTableHeader 时传 `false`） | `boolean` | `true` |
+| border | 是否显示边框 | `boolean` | `true` |
+| stripe | 是否显示斑马纹 | `boolean` | `false` |
+| highlight-current-row | 高亮当前行 | `boolean` | `false` |
 
 ## Events
 

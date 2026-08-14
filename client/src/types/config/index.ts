@@ -108,36 +108,8 @@ export interface SystemConfig {
 }
 
 // 环境配置
-export interface EnvConfig {
-  // 环境名称
-  NODE_ENV: string
-  // 应用版本
-  VITE_VERSION: string
-  // 应用端口
-  VITE_PORT: string
-  // 应用基础路径
-  VITE_BASE_URL: string
-  // API 地址
-  VITE_API_URL: string
-  // 是否开启 Mock
-  VITE_USE_MOCK?: string
-  // 是否开启压缩
-  VITE_USE_GZIP?: string
-  // 是否开启 CDN
-  VITE_USE_CDN?: string
-}
 
 // 应用配置
-export interface AppConfig extends SystemConfig {
-  // 环境配置
-  env: EnvConfig
-  // 开发模式
-  isDev: boolean
-  // 生产模式
-  isProd: boolean
-  // 测试模式
-  isTest: boolean
-}
 
 // 功能配置项基础接口
 export interface FeatureConfigItem {

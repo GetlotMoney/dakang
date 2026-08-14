@@ -17,7 +17,12 @@
         @refresh="refreshData"
       >
         <template #left>
-          <ElSpace wrap> </ElSpace>
+          <BusinessTableSummary :total="pagination.total" :page-size="data.length" />
+        </template>
+        <template #right>
+          <ElButton v-if="canAuditExport" type="primary" plain @click="openAuditExport">
+            申请导出
+          </ElButton>
         </template>
       </ArtTableHeader>
 
@@ -49,10 +54,18 @@
   import { DictTypeEnum } from '@/constants/dict'
   import OperationLogSearch from './modules/operation-log-search.vue'
   import OperationLogDetailDrawer from './modules/operation-log-detail.vue'
+  import BusinessTableSummary from '@/components/business/business-table-summary/index.vue'
+  import { useUserStore } from '@/store/modules/user'
   import { ElSpace } from 'element-plus'
   import dayjs from 'dayjs'
 
   defineOptions({ name: 'OperationLog' })
+
+  const router = useRouter()
+  const userStore = useUserStore()
+  const canAuditExport = computed(() =>
+    userStore.rbacMenuList.some((item) => item.menuWebPerms === 'system:audit:export')
+  )
 
   type LogOperationItem = Api.Log.LogOperationItem
   type LogOperationSearchParams = Api.Log.LogOperationSearchParams & {
@@ -62,7 +75,7 @@
   // 搜索表单
   const searchForm = ref<LogOperationSearchParams>({
     logUserName: undefined,
-    logUserType: undefined,
+    logContent: undefined,
     logModule: undefined,
     logSuccessFlag: undefined,
     daterange: undefined
@@ -111,7 +124,7 @@
         },
         {
           prop: 'logUserName',
-          label: '用户名',
+          label: '管理员',
           minWidth: 120
         },
         {
@@ -121,7 +134,7 @@
         },
         {
           prop: 'logContent',
-          label: '操作内容',
+          label: '动作类型',
           minWidth: 160
         },
         {
@@ -185,5 +198,9 @@
   const showDetail = (row: LogOperationItem) => {
     currentLogId.value = row.id
     detailVisible.value = true
+  }
+
+  const openAuditExport = () => {
+    router.push({ path: '/system/compliance', query: { applyScope: '操作日志' } })
   }
 </script>

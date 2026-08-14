@@ -183,7 +183,7 @@
     },
     "wsUser": {
       "title": "User Management",
-      "list": "End Users",
+      "list": "User List",
       "card": "Water Card",
       "courier": "Courier Access",
       "message": "Message Records"
@@ -196,6 +196,7 @@
       "split": "Split Records",
       "reconcile": "Daily Reconcile",
       "splitconfig": "Split Config",
+      "attribution": "Split Attribution",
       "autorule": "Auto Refill Rules",
       "waterstats": "Water Usage Stats"
     },
@@ -214,6 +215,16 @@
         "login": "Login Log",
         "operation": "Operation Log"
       }
+    },
+    "mall": {
+      "title": "Mall",
+      "product": "Products",
+      "category": "Categories",
+      "warehouse": "Warehouses",
+      "stock": "Stock",
+      "order": "Mall Orders",
+      "fulfillment": "Mall Fulfillment",
+      "aftersale": "Mall After-Sales"
     }
   },
   "table": {

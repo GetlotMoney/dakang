@@ -55,22 +55,18 @@
 
   defineOptions({ name: 'Position' })
 
-  // 权限判断函数
   const hasPermission = (perm: string) => {
     return useUserStore().rbacMenuList.some((item) => item.menuWebPerms === perm)
   }
 
   type PositionListItem = Api.SystemManage.PositionListItem
 
-  // 弹窗相关
   const dialogType = ref<DialogType>('add')
   const dialogVisible = ref(false)
   const currentPositionData = ref<Partial<PositionListItem>>({})
 
-  // 选中行
   const selectedRows = ref<PositionListItem[]>([])
 
-  // 搜索表单
   const searchForm = ref({
     positionName: undefined,
     positionLevel: undefined
@@ -142,17 +138,11 @@
     }
   })
 
-  /**
-   * 搜索处理
-   */
   const handleSearch = (params: Api.SystemManage.PositionSearchParams) => {
     replaceSearchParams(params)
     getData()
   }
 
-  /**
-   * 显示职务弹窗
-   */
   const showDialog = (type: DialogType, row?: PositionListItem): void => {
     dialogType.value = type
     currentPositionData.value = row || {}
@@ -161,9 +151,6 @@
     })
   }
 
-  /**
-   * 删除职务
-   */
   const deletePosition = (row: PositionListItem): void => {
     ElMessageBox.confirm('确定要删除该职务吗？', '删除职务', {
       confirmButtonText: '确定',
@@ -180,18 +167,12 @@
     })
   }
 
-  /**
-   * 处理弹窗提交事件
-   */
   const handleDialogSubmit = async () => {
     dialogVisible.value = false
     currentPositionData.value = {}
     refreshData()
   }
 
-  /**
-   * 处理表格行选择变化
-   */
   const handleSelectionChange = (selection: PositionListItem[]): void => {
     selectedRows.value = selection
   }

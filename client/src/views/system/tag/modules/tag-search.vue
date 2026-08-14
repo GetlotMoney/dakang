@@ -4,6 +4,7 @@
     v-model="formData"
     :items="formItems"
     auto-search
+    :show-reset="false"
     :rules="rules"
     @reset="handleReset"
     @search="handleSearch"

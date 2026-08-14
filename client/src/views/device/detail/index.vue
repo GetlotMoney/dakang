@@ -262,14 +262,16 @@
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="单价" prop="outletPriceYuan">
+          <!-- 上限与后端 WaterBillingMath.UNIT_PRICE_MAX_FEN_PER_LITER（100000 分/升）对齐。
+               此前这里放到 9999 元/升，运营能填出一个后端读侧必拒的值，保存还提示成功。 -->
           <ElInputNumber
             v-model="outletForm.outletPriceYuan"
             :min="0.01"
-            :max="9999"
+            :max="1000"
             :precision="2"
             :step="0.1"
           />
-          <span class="ml-2 text-secondary">元/升</span>
+          <span class="ml-2 text-secondary">元/升（上限 1000）</span>
         </ElFormItem>
         <ElFormItem label="状态" prop="outletStatus">
           <ElRadioGroup v-model="outletForm.outletStatus">

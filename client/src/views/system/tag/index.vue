@@ -54,31 +54,25 @@
 
   defineOptions({ name: 'Tag' })
 
-  // 权限判断函数
   const hasPermission = (perm: string) => {
     return useUserStore().rbacMenuList.some((item) => item.menuWebPerms === perm)
   }
 
   type TagListItem = Api.SystemManage.TagListItem
 
-  // 状态管理
   const loading = ref(false)
   const tableRef = ref()
 
-  // 弹窗相关
   const dialogType = ref<DialogType>('add')
   const dialogVisible = ref(false)
   const currentTagData = ref<Partial<TagListItem>>({})
 
-  // 抽屉相关
   const drawerVisible = ref(false)
 
-  // 搜索表单
   const searchForm = ref({
     tagName: ''
   })
 
-  // 原始数据
   const tableData = ref<TagListItem[]>([])
 
   // 过滤后的数据（前端筛选）
@@ -89,7 +83,6 @@
     )
   })
 
-  // 获取标签列表
   const getTagList = async (): Promise<void> => {
     loading.value = true
     try {
@@ -102,19 +95,16 @@
     }
   }
 
-  // 搜索处理
   const handleSearch = (params: { tagName?: string }) => {
     searchForm.value.tagName = params.tagName || ''
     getTagList()
   }
 
-  // 重置搜索
   const handleReset = () => {
     searchForm.value.tagName = ''
     getTagList()
   }
 
-  // 表格列配置
   const { columnChecks, columns } = useTableColumns(() => [
     {
       prop: 'tagName',
@@ -147,7 +137,6 @@
     }
   ])
 
-  // 显示弹窗
   const showDialog = (type: DialogType, row?: TagListItem): void => {
     dialogType.value = type
     currentTagData.value = row || {}
@@ -156,7 +145,6 @@
     })
   }
 
-  // 显示用户抽屉
   const showDrawer = (row: TagListItem): void => {
     currentTagData.value = row
     nextTick(() => {
@@ -164,7 +152,6 @@
     })
   }
 
-  // 删除标签
   const deleteTag = (row: TagListItem): void => {
     ElMessageBox.confirm('确定要删除该标签吗？', '删除标签', {
       confirmButtonText: '确定',

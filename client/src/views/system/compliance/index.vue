@@ -63,7 +63,7 @@
               <ElButton
                 v-if="hasPermission('system:audit:export')"
                 type="primary"
-                @click="openApplyDialog"
+                @click="openApplyDialog()"
               >
                 申请审计导出
               </ElButton>
@@ -182,6 +182,7 @@
 
   defineOptions({ name: 'Compliance' })
 
+  const route = useRoute()
   const router = useRouter()
   const userStore = useUserStore()
   const hasPermission = (permission: string) =>
@@ -318,9 +319,12 @@
     }
   }
 
-  function openApplyDialog() {
+  function openApplyDialog(initialScope = '操作日志') {
+    const selectedScope = (exportScopeOptions as readonly string[]).includes(initialScope)
+      ? initialScope
+      : '操作日志'
     Object.assign(applyForm, {
-      exportScope: ['操作日志'],
+      exportScope: [selectedScope],
       operatorKeyword: '',
       businessKeyword: '',
       startTime: '',
@@ -371,7 +375,24 @@
     }
   }
 
-  onMounted(loadExportTasks)
+  let handledApplyScope = ''
+
+  async function handleApplyScopeQuery() {
+    const raw = Array.isArray(route.query.applyScope)
+      ? route.query.applyScope[0]
+      : route.query.applyScope
+    const scope = typeof raw === 'string' ? raw : ''
+    if (!scope || scope === handledApplyScope || !canViewExport.value) return
+    handledApplyScope = scope
+    openApplyDialog(scope)
+  }
+
+  onMounted(async () => {
+    await loadExportTasks()
+    await handleApplyScopeQuery()
+  })
+
+  watch(() => route.query.applyScope, handleApplyScopeQuery)
 </script>
 
 <style scoped lang="scss">

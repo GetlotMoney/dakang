@@ -1,14 +1,8 @@
 <!--
-  售后台账（E2E-04 包E）。挂在订单中心页内，不新增一级菜单、不新增路由。
-
-  台账把四条来源（待接单取消 / 配送申诉补偿 / 取水异常核账 / 充值退款）汇到同一份返还内核上，
-  运营在这里看到的每一列都来自服务端：四元额度、执行状态、重试排期、失败原因、批准人。
-  页面不做任何金额或水量计算，只做「分→元、毫升→升」的展示换算。
-
-  高风险操作（执行返还 / 发起退款 / 生成补送）三道闸：
-  动作权限（返还/补送为 handle，机构退款为 refund）→ 行状态与动作类型可执行性 →
-  二次确认弹窗里逐字重敲售后号。
-  三道都只是前置提示，真正的准入判定在后端（类型闸 + 状态 CAS + 共键复核 + 累计封顶）。
+  售后台账：挂在订单中心页内（不新增一级菜单/路由），四条来源汇到同一份返还内核，
+  每一列都来自服务端；页面不做金额/水量计算，只做「分→元、毫升→升」展示换算。
+  高风险操作三道闸（动作权限 → 行状态可执行性 → 逐字重敲售后号）都只是前置提示，
+  真正准入判定在后端（类型闸 + 状态 CAS + 共键复核 + 累计封顶）。
 -->
 <template>
   <div class="after-sale-ledger">
@@ -72,7 +66,6 @@
             :value="opt.value"
           />
         </ElSelect>
-        <ElButton @click="handleReset" v-ripple>重置</ElButton>
       </div>
 
       <ElTable :data="list" row-key="id" border v-loading="loading">
@@ -343,6 +336,11 @@
   interface Props {
     /** 初始关键字（支持从申诉处理/追溯抽屉带订单号或售后号直达）。 */
     initialKeyword?: string
+    /**
+     * 初始执行状态(1372)。订单中心顶部的售后待办每格按某个执行状态精确计数，
+     * 点开必须落到同一个条件上，否则点开的是全状态台账，那个数字在列表里找不到出处。
+     */
+    initialActionStatus?: number
     /** 面板是否处于激活视图；非激活时不发请求，避免订单中心切页签就打一次售后接口。 */
     active?: boolean
   }
@@ -353,6 +351,8 @@
     (e: 'trace', orderId: string): void
     /** 关键字变化，父级据此同步地址栏，保证深链可回放。 */
     (e: 'keyword-change', keyword: string): void
+    /** 执行状态筛选变化，父级据此同步地址栏与顶部待办的选中态。 */
+    (e: 'action-status-change', actionStatus?: number): void
   }>()
 
   const userStore = useUserStore()
@@ -373,7 +373,7 @@
     keyword: props.initialKeyword,
     sourceType: undefined,
     actionType: undefined,
-    actionStatus: undefined
+    actionStatus: props.initialActionStatus
   })
 
   const detailVisible = ref(false)
@@ -397,9 +397,20 @@
    * 首次切到售后台账才初始化，之后常驻不再重复拉取。
    */
   let initialized = false
+  /**
+   * 非激活期间收到的筛选变更（父级切视图时会把地址栏里的售后参数清空）只改了条件没重查，
+   * 回到本视图时必须补一次：否则筛选控件显示的是新条件、表里还是上一批数据。
+   */
+  let pendingReload = false
 
   async function ensureInitialized() {
-    if (initialized || !props.active) return
+    if (!props.active) return
+    if (initialized) {
+      if (!pendingReload) return
+      pendingReload = false
+      await loadData()
+      return
+    }
     initialized = true
     try {
       const [orderTypes, orderStatuses, payWays, sources, actionTypes, actionStatuses] =
@@ -432,8 +443,36 @@
       if (keyword === searchForm.keyword) return
       searchForm.keyword = keyword
       pageParams.current = 1
-      if (!props.active) return
+      if (!props.active) {
+        pendingReload = true
+        return
+      }
       // 尚未初始化时由 ensureInitialized 带着新关键字首次加载，避免连打两次台账接口
+      if (!initialized) {
+        ensureInitialized()
+        return
+      }
+      loadData()
+    }
+  )
+
+  /**
+   * 外部指定执行状态（顶部待办下钻）：只保留这一个条件。
+   * 计数就是按单个执行状态查出来的，台账再留着来源/动作类型的旧筛选，落地列表与那个数字就不同源了；
+   * 本页自己改状态时值已同步（下方 emit），此处比对相等即直接返回，不会误清用户手上的筛选。
+   */
+  watch(
+    () => props.initialActionStatus,
+    (actionStatus) => {
+      if (actionStatus === searchForm.actionStatus) return
+      searchForm.actionStatus = actionStatus
+      searchForm.sourceType = undefined
+      searchForm.actionType = undefined
+      pageParams.current = 1
+      if (!props.active) {
+        pendingReload = true
+        return
+      }
       if (!initialized) {
         ensureInitialized()
         return
@@ -487,8 +526,15 @@
 
   const detailEntry = computed(() => (detail.value ? entryOf(detail.value) : null))
 
+  /**
+   * 请求代际：一次下钻会同时改关键字与执行状态两个入参，两条链可能同时在飞；
+   * 不比代际的话，先发的那次后回包就会把上一组筛选的结果留在表里，而筛选控件显示的是新条件。
+   */
+  let loadSequence = 0
+
   async function loadData() {
     if (!canQuery.value) return
+    const sequence = ++loadSequence
     loading.value = true
     try {
       const result = await fetchAfterSaleActionPage({
@@ -499,28 +545,22 @@
         actionType: searchForm.actionType,
         actionStatus: searchForm.actionStatus
       })
+      if (sequence !== loadSequence) return
       list.value = result.list
       total.value = result.total
     } finally {
-      loading.value = false
+      if (sequence === loadSequence) loading.value = false
     }
   }
 
   async function applyFilters() {
     pageParams.current = 1
     emit('keyword-change', searchForm.keyword)
+    emit('action-status-change', searchForm.actionStatus)
     await loadData()
   }
 
   const applyFiltersDebounced = useDebounceFn(() => applyFilters(), 350)
-
-  async function handleReset() {
-    searchForm.keyword = ''
-    searchForm.sourceType = undefined
-    searchForm.actionType = undefined
-    searchForm.actionStatus = undefined
-    await applyFilters()
-  }
 
   async function showDetail(row: AfterSaleActionItem) {
     detail.value = null

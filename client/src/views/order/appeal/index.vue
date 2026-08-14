@@ -22,7 +22,6 @@
           style="width: 210px"
           @input="applyFiltersDebounced"
         />
-        <ElButton @click="handleReset" v-ripple>重置</ElButton>
       </div>
 
       <!-- 一行 = 一个案件（taskId）；同订单的多次申诉由后端聚合，行内展示代表申诉 -->
@@ -611,12 +610,8 @@
   })
 
   /**
-   * 除驳回外都需要批准数量。
-   *
-   * 资金类策略用它算返还额度；补送用它定「补几桶」——同样是必填。
-   * 唯一豁免的是 REJECT：服务端 AfterSaleStrategy.requireApprovedCount 只为它提前返回 0，
-   * 其余策略（含 RESEND）走到非空校验，不传即以「批准数量必须在 1 到 N 之间，实际 null」400。
-   * 本项一旦漏掉某个策略，该策略的裁决就 100% 提交失败，且运营在页面上没有补值入口。
+   * 除 REJECT 外所有策略（含 RESEND）都必须传批准数量：服务端非空校验会以 400 拒绝，
+   * 此处漏掉某个策略该策略的裁决就 100% 提交失败且页面无补值入口。
    */
   const needsApprovedCount = computed(() => decisionForm.strategyCode !== 'REJECT')
 
@@ -735,12 +730,6 @@
 
   const applyFiltersDebounced = useDebounceFn(() => applyFilters(), 350)
 
-  async function handleReset() {
-    statusFilter.value = 0
-    orderKeyword.value = ''
-    await applyFilters()
-  }
-
   async function showEvidence(row: AppealAdminItem) {
     evidence.value = null
     appealActions.value = []
@@ -779,11 +768,8 @@
     canUseAfterSaleExecuteEntry(entry, hasPermission)
 
   /**
-   * 拉取本次申诉产生的售后动作。
-   *
-   * 台账 keyword 是模糊匹配，故先按订单号检索、再按「来源=配送申诉 且 来源ID=本申诉ID」精确过滤。
-   * 用 taskId 或订单号当来源键都不行：uk_appeal_active_task 只约束「待处理」申诉，
-   * 同一任务可以合法产生多条已裁决申诉，混在一起会让运营照着上一轮的动作执行这一轮的补偿。
+   * 拉取本次申诉产生的售后动作：台账 keyword 是模糊匹配，先按订单号检索、
+   * 再按「来源=配送申诉 且 来源ID=本申诉ID」精确过滤（同一任务可合法有多条已裁决申诉）。
    */
   async function reloadAppealActions() {
     const appeal = evidence.value?.appeal

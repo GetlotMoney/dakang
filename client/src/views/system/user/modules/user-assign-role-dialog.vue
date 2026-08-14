@@ -109,7 +109,6 @@
     label: 'menuName'
   }
 
-  // 加载菜单列表
   const loadMenuList = async () => {
     const list = await fetchGetMenuList()
     const setDisabled = (items: any[]) => {
@@ -124,7 +123,6 @@
     menuData.value = list
   }
 
-  // 懒加载子节点
   const loadNode = async (node: any, resolve: (data: any[]) => void) => {
     if (node.level === 0) {
       return resolve(menuData.value)
@@ -133,7 +131,6 @@
     resolve(children)
   }
 
-  // 加载选中角色的菜单权限
   const loadSelectedRolesMenus = async () => {
     checkStrictly.value = true
     treeRef.value?.setCheckedKeys([])
@@ -144,17 +141,14 @@
 
     menuLoading.value = true
     try {
-      // 先加载菜单列表
       await loadMenuList()
 
-      // 并行加载所有选中角色的菜单权限
       const promises = selectedRoleIds.value.map(async (roleId) => {
         const menuIds = await fetchGetRoleMenuIds(roleId)
         roleMenuIdsMap.value[roleId] = menuIds
       })
       await Promise.all(promises)
 
-      // 设置树形控件的勾选状态
       nextTick(() => {
         // 只计算当前选中的角色的菜单权限
         const allMenuIds = selectedRoleIds.value.flatMap(
@@ -186,17 +180,14 @@
 
       selectedRoleIds.value = (employeeRoleRes || []).map((item) => item.id)
 
-      // 加载选中角色的菜单权限
       await loadSelectedRolesMenus()
 
-      // 标记初始加载完成
       isInitialLoaded.value = true
     } finally {
       loading.value = false
     }
   }
 
-  // 获取当前树形控件选中的菜单 ID
   const getTreeCheckedMenuIds = () => {
     const tree = treeRef.value
     if (!tree) return []
@@ -221,7 +212,6 @@
       //   })
       // }
 
-      // 更新用户的角色分配
       await fetchAssignRole({
         employeeId: props.userData.id,
         roleIdList: selectedRoleIds.value

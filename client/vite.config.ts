@@ -17,7 +17,9 @@ import tailwindcss from '@tailwindcss/vite'
  * 避免 HTML 导航被代理成后端接口。fetch/XHR（Accept 非 text/html）不受影响。
  */
 function demoHashRouteRedirect(): Plugin {
-  const uiPathPattern = /^\/(auth|dashboard|station|device|product|user|order|system|log)(?:\/|$)/
+  // mall 为二期商城混合前缀（页面 /mall/* + 接口 /mall/**），与 nginx.conf 混合组同步（R2-P1）
+  const uiPathPattern =
+    /^\/(auth|dashboard|station|device|product|user|order|mall|system|log)(?:\/|$)/
 
   return {
     name: 'dakang-demo-hash-route-redirect',
@@ -109,6 +111,11 @@ export default ({ mode }: { mode: string }) => {
         },
         // 运营总览聚合（2026-08-02 接真）：同上双处同步铁律
         '/ws': {
+          target: VITE_API_PROXY_URL,
+          changeOrigin: true
+        },
+        // 二期商城（E2E-09）：同上双处同步铁律——漏配=主环境 405（R1-P0-1 实锤过）
+        '/mall': {
           target: VITE_API_PROXY_URL,
           changeOrigin: true
         }

@@ -65,11 +65,18 @@
             >
               <div class="position-option">
                 <div class="option-label">{{ item.positionName }}</div>
-                <div class="option-actions">
-                  <ElButton type="primary" link size="small" @click.stop="handleEditPosition(item)">
+                <div v-if="canUpdatePosition || canDeletePosition" class="option-actions">
+                  <ElButton
+                    v-if="canUpdatePosition"
+                    type="primary"
+                    link
+                    size="small"
+                    @click.stop="handleEditPosition(item)"
+                  >
                     <ElIcon><Edit /></ElIcon>
                   </ElButton>
                   <ElButton
+                    v-if="canDeletePosition"
                     type="danger"
                     link
                     size="small"
@@ -80,7 +87,7 @@
                 </div>
               </div>
             </ElOption>
-            <div class="flex align-center justify-center">
+            <div v-if="canAddPosition" class="flex align-center justify-center">
               <ElButton type="text" @click="handleAddPosition">
                 <ElIcon><Plus /></ElIcon>
                 去添加
@@ -106,17 +113,29 @@
             >
               <div class="tag-option">
                 <span class="option-label">{{ item.tagName }}</span>
-                <div class="option-actions">
-                  <ElButton type="primary" link size="small" @click.stop="handleEditTag(item)">
+                <div v-if="canUpdateTag || canDeleteTag" class="option-actions">
+                  <ElButton
+                    v-if="canUpdateTag"
+                    type="primary"
+                    link
+                    size="small"
+                    @click.stop="handleEditTag(item)"
+                  >
                     <ElIcon><Edit /></ElIcon>
                   </ElButton>
-                  <ElButton type="danger" link size="small" @click.stop="handleDeleteTag(item.id)">
+                  <ElButton
+                    v-if="canDeleteTag"
+                    type="danger"
+                    link
+                    size="small"
+                    @click.stop="handleDeleteTag(item.id)"
+                  >
                     <ElIcon><Delete /></ElIcon>
                   </ElButton>
                 </div>
               </div>
             </ElOption>
-            <div class="flex align-center justify-center">
+            <div v-if="canAddTag" class="flex align-center justify-center">
               <ElButton type="text" @click="handleAddTag">
                 <ElIcon><Plus /></ElIcon>
                 去添加
@@ -161,6 +180,12 @@
     genderOptions: { label: string; value: number }[]
     positionOptions: { id: string; positionName: string }[]
     tagOptions: { id: string; tagName: string }[]
+    canAddPosition?: boolean
+    canUpdatePosition?: boolean
+    canDeletePosition?: boolean
+    canAddTag?: boolean
+    canUpdateTag?: boolean
+    canDeleteTag?: boolean
   }
 
   interface Emits {
@@ -172,7 +197,14 @@
     (e: 'openTagDialog', data?: Partial<Api.SystemManage.TagListItem>): void
   }
 
-  const props = defineProps<Props>()
+  const props = withDefaults(defineProps<Props>(), {
+    canAddPosition: false,
+    canUpdatePosition: false,
+    canDeletePosition: false,
+    canAddTag: false,
+    canUpdateTag: false,
+    canDeleteTag: false
+  })
   const emit = defineEmits<Emits>()
 
   const submitLoading = ref(false)
@@ -205,7 +237,8 @@
     employeePhone: [
       { required: true, message: '请输入手机号', trigger: 'blur' },
       { pattern: /^1[3-9]\d{9}$/, message: '请输入正确的手机号格式', trigger: 'blur' }
-    ]
+    ],
+    deptId: [{ required: true, message: '请选择部门', trigger: 'change' }]
   }
 
   // 新增职务

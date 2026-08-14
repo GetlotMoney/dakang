@@ -88,7 +88,7 @@
   import type { FormInstance, FormRules } from 'element-plus'
   import { ElMessage } from 'element-plus'
   import { fetchAddStation, fetchUpdateStation, type StationItem } from '@/api/station'
-  import { fetchWsUserPage, type WsUserItem } from '@/api/user'
+  import { fetchWsUserPage } from '@/api/user'
   import { fetchDictOptions, toDictOptions } from '@/utils/dict'
   import { DictTypeEnum } from '@/constants/dict'
 
@@ -142,9 +142,17 @@
     statusOptions.value = toDictOptions(await fetchDictOptions(DictTypeEnum.禁用状态))
   })
 
-  // 机主远程搜索
+  // 机主远程搜索。
+  // 选项 id 兼容两种来源：远程搜索来自用户列表（身份类 Long 恒为 string），
+  // 编辑回显来自水站行上的 ownerUserId（本域历史契约仍是 number）。
+  // 这里刻意不做数值转换——Number() 会在超过 2^53 时静默改人，宁可让两种形态并存。
+  interface OwnerOption {
+    id: string | number
+    userName: string
+    userPhone?: string
+  }
   const ownerLoading = ref(false)
-  const ownerOptions = ref<WsUserItem[]>([])
+  const ownerOptions = ref<OwnerOption[]>([])
 
   const searchOwner = async (query: string) => {
     ownerLoading.value = true
@@ -185,7 +193,7 @@
           id: row.ownerUserId,
           userName: row.ownerUserName,
           userPhone: row.ownerUserPhone || ''
-        } as WsUserItem
+        }
       ]
     } else {
       ownerOptions.value = []

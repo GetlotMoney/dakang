@@ -28,7 +28,11 @@
         />
       </ElFormItem>
       <ElFormItem label="联系电话" prop="courierPhone">
-        <ElInput v-model="formData.courierPhone" placeholder="请输入联系电话" maxlength="20" />
+        <ElInput
+          v-model="formData.courierPhone"
+          placeholder="请输入完整 11 位手机号"
+          maxlength="11"
+        />
       </ElFormItem>
       <ElFormItem label="身份证号" prop="idCardNo">
         <ElInput v-model="formData.idCardNo" placeholder="选填，用于实名资质留档" maxlength="30" />
@@ -90,7 +94,8 @@
   const submitLoading = ref(false)
 
   const formData = reactive({
-    userId: undefined as number | undefined,
+    // 身份类 Long ID 恒为 string：数值化会在超过 2^53 时静默改人
+    userId: undefined as string | undefined,
     courierName: '',
     courierPhone: '',
     idCardNo: '',
@@ -98,10 +103,42 @@
     serviceRegion: ''
   })
 
+  /** 中国大陆手机号。派单/异常联系全靠这一列，位数不对等于没有联系方式。 */
+  const MOBILE_PHONE = /^1[3-9]\d{9}$/
+
+  /**
+   * 联系电话格式校验。
+   *
+   * 「关联用户」下拉的标签用的是列表下发的脱敏号（139****1111），运营照着上面读、
+   * 敲进这个框是最自然的动作；而脱敏串恰好也是 11 位，肉眼与真号码无从区分。
+   * 后端 WsCourierBo 只有非空与长度约束，不写这条校验，脱敏号会一路存进配送员档案，
+   * 直到配送出问题联系不上人才被发现。故格式在提交前就拒，并明说要填什么。
+   */
+  const validateCourierPhone = (
+    _rule: unknown,
+    value: unknown,
+    callback: (error?: Error) => void
+  ) => {
+    const phone = String(value ?? '').trim()
+    if (!phone) {
+      return callback(new Error('请输入联系电话'))
+    }
+    if (phone.includes('*')) {
+      return callback(new Error('请输入完整手机号，不能填带 * 的号码'))
+    }
+    if (!MOBILE_PHONE.test(phone)) {
+      return callback(new Error('请输入完整 11 位手机号'))
+    }
+    callback()
+  }
+
   const rules: FormRules = {
     userId: [{ required: true, message: '请选择关联用户', trigger: 'change' }],
     courierName: [{ required: true, message: '请输入姓名', trigger: 'blur' }],
-    courierPhone: [{ required: true, message: '请输入联系电话', trigger: 'blur' }]
+    courierPhone: [
+      { required: true, message: '请输入联系电话', trigger: 'blur' },
+      { validator: validateCourierPhone, trigger: 'blur' }
+    ]
   }
 
   // C 端用户远程搜索
@@ -129,14 +166,15 @@
     stationOptions.value = (await fetchStationList()) || []
   })
 
-  // 选用户后自动带出姓名电话（可改）
+  // 选用户后自动带出姓名（可改）。
+  // 刻意不再自动带出电话：列表下发的号码是脱敏值，带过来会把 138****5678 当成真号码提交，
+  // 存进配送员表后再也拨不通，且看上去完全正常。联系电话必须人工录入完整号码。
   watch(
     () => formData.userId,
     (userId) => {
       const user = userOptions.value.find((u) => u.id === userId)
-      if (user) {
-        if (!formData.courierName) formData.courierName = user.userName
-        if (!formData.courierPhone) formData.courierPhone = user.userPhone
+      if (user && !formData.courierName) {
+        formData.courierName = user.userName
       }
     }
   )
@@ -166,9 +204,9 @@
         submitLoading.value = true
         try {
           await fetchAddCourier({
-            userId: formData.userId!,
+            userId: formData.userId as string,
             courierName: formData.courierName,
-            courierPhone: formData.courierPhone,
+            courierPhone: formData.courierPhone.trim(),
             idCardNo: formData.idCardNo || undefined,
             stationIds: formData.stationIdList.length
               ? formData.stationIdList.join(',')

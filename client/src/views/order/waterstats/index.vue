@@ -1,7 +1,7 @@
 <!-- 按水种业务用量统计（S5）：只聚合现有订单与配送任务事实；生产量无权威数据源，显式标注未提供 -->
 <template>
   <div class="art-full-height">
-    <BusinessModuleNav module-key="order" />
+    <BusinessModuleNav module-key="deliveryOps" />
 
     <ElAlert
       type="info"

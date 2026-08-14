@@ -5,7 +5,10 @@
  * 两棵树必须分离，避免 Layout/RBAC 的父子关系强迫侧栏出现无意义层级。
  */
 import type { AppRouteRecord } from '@/types/router'
-import { PRIMARY_BUSINESS_MENU_CONTRACTS } from '@/config/businessNavigation'
+import {
+  PRIMARY_BUSINESS_MENU_CONTRACTS,
+  type PrimaryBusinessMenuContract
+} from '@/config/businessNavigation'
 
 const SYSTEM_ROOT_PATH = '/system'
 const LOG_ROOT_PATH = '/system/log'
@@ -60,10 +63,24 @@ function findFirstAuthorizedPage(root: AppRouteRecord): AppRouteRecord | undefin
   return undefined
 }
 
-function resolveLanding(root: AppRouteRecord, preferredPath: string): AppRouteRecord | undefined {
-  const preferred = findRouteByPath(root, preferredPath)
-  if (preferred && isNavigablePage(preferred)) {
+function resolveLanding(
+  root: AppRouteRecord,
+  contract: PrimaryBusinessMenuContract
+): AppRouteRecord | undefined {
+  const preferred = findRouteByPath(root, contract.defaultPath)
+  const preferredBelongsToContract =
+    !contract.ownedPaths?.length || contract.ownedPaths.includes(contract.defaultPath)
+  if (preferredBelongsToContract && preferred && isNavigablePage(preferred)) {
     return preferred
+  }
+
+  // 分区投影只能降级到本工作区内的授权页面，不能串到同一技术根下的其他职责域。
+  if (contract.ownedPaths?.length) {
+    for (const path of contract.ownedPaths) {
+      const candidate = findRouteByPath(root, path)
+      if (candidate && isNavigablePage(candidate)) return candidate
+    }
+    return undefined
   }
 
   return findFirstAuthorizedPage(root)
@@ -77,6 +94,22 @@ function applyActivePath(route: AppRouteRecord, activePath: string): void {
   route.children?.forEach((child) => applyActivePath(child, activePath))
 }
 
+function applyOwnedActivePath(
+  root: AppRouteRecord,
+  contract: PrimaryBusinessMenuContract,
+  activePath: string
+): void {
+  if (!contract.ownedPaths?.length) {
+    applyActivePath(root, activePath)
+    return
+  }
+
+  for (const path of contract.ownedPaths) {
+    const ownedRoute = findRouteByPath(root, path)
+    if (ownedRoute) applyActivePath(ownedRoute, activePath)
+  }
+}
+
 /**
  * 为完整路由树补齐确定的默认落点和一级菜单激活路径。
  * 返回新树，不修改 MenuProcessor 的输入。
@@ -84,43 +117,56 @@ function applyActivePath(route: AppRouteRecord, activePath: string): void {
 export function applyMenuNavigationPolicy(routeList: AppRouteRecord[]): AppRouteRecord[] {
   const prepared = routeList.map(cloneRoute)
 
-  for (const contract of PRIMARY_BUSINESS_MENU_CONTRACTS) {
-    const root = prepared.find((route) => normalizePath(route.path) === contract.rootPath)
+  const rootPaths = [...new Set(PRIMARY_BUSINESS_MENU_CONTRACTS.map((item) => item.rootPath))]
+  for (const rootPath of rootPaths) {
+    const root = prepared.find((route) => normalizePath(route.path) === rootPath)
     if (!root) continue
 
-    const landing = resolveLanding(root, contract.defaultPath)
-    if (!landing) continue
+    const contracts = PRIMARY_BUSINESS_MENU_CONTRACTS.filter(
+      (contract) => contract.rootPath === rootPath
+    )
+    const primaryLanding = contracts
+      .map((contract) => resolveLanding(root, contract))
+      .find((landing): landing is AppRouteRecord => Boolean(landing))
+    if (!primaryLanding) continue
 
-    root.redirect = landing.path
-    applyActivePath(root, landing.path)
+    root.redirect = primaryLanding.path
+    root.meta = { ...root.meta, activePath: primaryLanding.path }
+
+    for (const contract of contracts) {
+      const landing = resolveLanding(root, contract)
+      if (landing) applyOwnedActivePath(root, contract, landing.path)
+    }
   }
 
   return prepared
 }
 
-function projectDirectBusinessMenu(root: AppRouteRecord): AppRouteRecord | undefined {
-  const contract = PRIMARY_BUSINESS_MENU_CONTRACTS.find(
-    (item) => item.rootPath === normalizePath(root.path)
-  )
-  if (!contract) return undefined
-
-  const landing = resolveLanding(root, contract.defaultPath)
+function projectDirectBusinessMenu(
+  root: AppRouteRecord,
+  contract: PrimaryBusinessMenuContract
+): AppRouteRecord | undefined {
+  const landing = resolveLanding(root, contract)
   if (!landing) return undefined
 
   return {
     ...root,
+    name: `${String(root.name || 'BusinessRoot')}-${contract.key}`,
     path: landing.path,
     component: landing.component,
     redirect: undefined,
     children: undefined,
     meta: {
       ...root.meta,
-      title: contract.useLandingTitle ? landing.meta.title : root.meta.title,
+      title:
+        contract.displayTitle ?? (contract.useLandingTitle ? landing.meta.title : root.meta.title),
+      icon: contract.displayIcon ?? root.meta.icon,
       fixedTab: landing.meta.fixedTab,
       activePath: landing.path,
       isFirstLevel: true,
       isDirectMenu: true,
-      menuRootPath: contract.rootPath
+      menuRootPath: contract.rootPath,
+      menuOwnedPaths: contract.ownedPaths ? [...contract.ownedPaths] : undefined
     }
   }
 }
@@ -154,13 +200,16 @@ function mergeLogMenuIntoSystem(displayMenuList: AppRouteRecord[]): AppRouteReco
 /** 从完整授权路由树生成侧栏/顶部菜单展示树。 */
 export function projectDisplayMenu(routeList: AppRouteRecord[]): AppRouteRecord[] {
   const projected = routeList
-    .map((route) => {
-      const isDirectBusinessRoot = PRIMARY_BUSINESS_MENU_CONTRACTS.some(
+    .flatMap((route) => {
+      const contracts = PRIMARY_BUSINESS_MENU_CONTRACTS.filter(
         (contract) => contract.rootPath === normalizePath(route.path)
       )
+      if (!contracts.length) return [cloneRoute(route)]
 
-      // 业务根没有任何授权落点时不应展示空入口；非业务根保持原树。
-      return isDirectBusinessRoot ? projectDirectBusinessMenu(route) : cloneRoute(route)
+      // 同一技术根可投影成多个职责工作区；无任何授权落点的工作区不展示。
+      return contracts
+        .map((contract) => projectDirectBusinessMenu(route, contract))
+        .filter((item): item is AppRouteRecord => Boolean(item))
     })
     .filter((route): route is AppRouteRecord => Boolean(route))
 
@@ -172,7 +221,12 @@ function findDirectMenuForPath(
   displayMenuList: AppRouteRecord[]
 ): AppRouteRecord | undefined {
   return displayMenuList.find((item) => {
-    if (!item.meta.isDirectMenu || !item.meta.menuRootPath) return false
+    if (!item.meta.isDirectMenu) return false
+    const ownedPaths = Array.isArray(item.meta.menuOwnedPaths)
+      ? item.meta.menuOwnedPaths.map((path) => normalizePath(String(path)))
+      : []
+    if (ownedPaths.length) return ownedPaths.includes(currentPath)
+    if (!item.meta.menuRootPath) return false
     const rootPath = normalizePath(String(item.meta.menuRootPath))
     return currentPath === rootPath || currentPath.startsWith(`${rootPath}/`)
   })

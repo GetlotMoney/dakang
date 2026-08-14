@@ -1,16 +1,8 @@
 /**
  * 水卡授权范围表单 ⇄ 提交载荷的纯函数层（S4 R3）。
- *
- * 身份类 Long ID 在前端边界恒为 string：后端 Long 超过 2^53 时 Number() 会静默
- * 舍入到相邻偶数，选中 A 卡实际改了 B 卡——本层禁止任何数值转换，
- * 选择、回显、过滤、提交全链逐字一致。金额/水量等真正数值字段不经本层。
- *
- * R3 两条铁律：
- * 1. 解析失败绝不预选「全部范围」——parseScopeJson 返回显式 ok/reason，损坏数据
- *    落到未选态（''），页面禁存直到运营重新明确选择（fail-closed）；
- * 2. 历史 numeric ID 只接受正的安全整数（JSON.parse 已把超界数字舍入成错值，
- *    String() 出来的也是错 ID）；字符串 ID 只接受规范正整数十进制且 ≤ Long.MAX_VALUE。
- *    任一 ID 不可信即整体拒绝，不静默丢弃、不静默改写。
+ * 身份类 Long ID 边界恒 string（>2^53 经 Number 静默舍入，选 A 改 B），本层禁止任何数值转换。
+ * 铁律：解析失败绝不预选「全部范围」，落未选态禁存（fail-closed）；
+ * 任一 ID 不可信即整体拒绝，不静默丢弃、不静默改写。
  */
 
 export interface ScopeFormState {
@@ -46,11 +38,8 @@ export function emptyScopeForm(): ScopeFormState {
 const LONG_MAX = '9223372036854775807'
 
 /**
- * 身份 ID 归一唯一入口（R3-P1-2）：
- * - string：规范正整数十进制（无符号/无前导零/无小数/无科学计数）且 ≤ Long.MAX_VALUE，逐字保留；
- * - number：仅正的安全整数（Number.isSafeInteger 且 >0）无损十进制化——超界 number 在
- *   JSON.parse 时已丢精度，String() 只会固化错值，必须拒绝；
- * - 其余一律 null（调用方各自 fail-closed：解析整体拒绝 / 选项行丢弃）。
+ * 身份 ID 归一唯一入口：string 只接受规范正整数十进制且 ≤ Long.MAX_VALUE；number 仅正安全整数
+ * （超界 number 在 JSON.parse 已丢精度，String() 只会固化错值）；其余一律 null，调用方 fail-closed。
  */
 export function normalizeScopeId(raw: unknown): string | null {
   if (typeof raw === 'string') {
@@ -69,10 +58,8 @@ export function normalizeScopeId(raw: unknown): string | null {
 }
 
 /**
- * 解析既有 SCOPE_JSON 回显表单（R3-P1-2 fail-closed）：
- * - 空原文=未配置：合法，返回未选态表单（运营必须显式选择）；
- * - JSON 损坏 / scopeType 缺失或未知 / 结构异常 / 任一 ID 不可信：ok=false，
- *   表单落未选态、禁止保存——绝不把「无法确认原范围」预选成全部范围。
+ * 解析既有 SCOPE_JSON 回显表单（fail-closed）：空原文=未配置，返回未选态；
+ * JSON 损坏/类型未知/任一 ID 不可信时 ok=false 落未选态禁存，绝不预选成全部范围。
  */
 export function parseScopeJson(scopeJson: string | undefined | null): ScopeParseResult {
   if (!scopeJson) {
@@ -178,9 +165,8 @@ export function retainLegalOutlets(selected: string[], legal: string[]): string[
 }
 
 // ==================== 范围维护选项归一化适配器（S4 R2/R3） ====================
-// 站点/设备/出水口接口的全局类型仍是 number id（数十处数值用法，全局 string 化
-// 波及面不可控）；本链路以专用适配器把接口响应按 unknown 归一为 string ID 选项，
-// ID 判定与 normalizeScopeId 同一入口：不可信 ID 整行丢弃 fail-closed——选错不如选不了。
+// 站点/设备/出水口全局类型仍是 number id；本链路用专用适配器归一为 string ID 选项，
+// ID 判定与 normalizeScopeId 同一入口，不可信 ID 整行丢弃 fail-closed。
 
 /** 范围维护·水站选项（ID 恒 string）。 */
 export interface ScopeStationOption {
