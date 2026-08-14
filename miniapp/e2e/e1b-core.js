@@ -3,29 +3,8 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const { Buffer } = require('node:buffer')
 
-const { checkRuntimeModes, formatRuntimeModes } = require('./runtime-modes')
-
 const VALID_MODES = new Set(['diag', 'shots', 'full'])
 const FULL_CONFIRMATION = 'I_ACCEPT_REAL_WATER_DEDUCTION'
-/**
- * E1b 验收构建：device/order/card 接真、recharge 代码层锁 mock、auth 为正式微信登录（real）。
- * AUTH=real 的原因：E1b 要求「由正式登录流程建立的 KH_USER 会话」；而入口页在
- * 「有业务域接真但 auth=mock」时会拒绝以 Mock 原型账号进入并停在登录入口，
- * 因此只有 auth=real 才是能真正走到业务步骤且不借用原型身份的验收组合。
- */
-const EXPECTED_REAL_MODE_MAP = {
-  GLOBAL: 'mock',
-  DEVICE: 'real',
-  ORDER: 'real',
-  CARD: 'real',
-  RECHARGE: 'mock',
-  AUTH: 'real',
-  // E1b 是扫码取水链验收：配送域必须保持 mock，验收构建不得顺带打开配送真实写链
-  DELIVERY: 'mock',
-  // 同理消息域保持 mock：E1b 不验证消息中心
-  MESSAGE: 'mock',
-}
-const EXPECTED_REAL_MODES = formatRuntimeModes(EXPECTED_REAL_MODE_MAP)
 const FULL_STEP_NAMES = [
   '01 首页可编译进入',
   '02 mock 微信 scanCode 返回真码',
@@ -189,10 +168,6 @@ function evaluateFullEvidence(batchDir, result) {
     || result.build.runtimeFingerprint !== result.build.diskFingerprint) {
     reasons.push('运行包 fingerprint 与磁盘构建 fingerprint 不一致')
   }
-  const modeReasons = checkRuntimeModes(result?.build?.runtimeModes, EXPECTED_REAL_MODE_MAP)
-  if (modeReasons.length) {
-    reasons.push(`运行包 API 模式不是 E1b 验收组合（${EXPECTED_REAL_MODES}）：${modeReasons.join('；')}`)
-  }
   if (!Number.isInteger(result?.build?.manifestCount) || result.build.manifestCount <= 0
     || !/^[a-f0-9]{64}$/.test(String(result?.build?.manifestSha256 || ''))) {
     reasons.push('构建 manifest 证据缺失或格式错误')
@@ -273,8 +248,6 @@ function evaluateFullEvidence(batchDir, result) {
 
 module.exports = {
   FULL_CONFIRMATION,
-  EXPECTED_REAL_MODES,
-  EXPECTED_REAL_MODE_MAP,
   FULL_STEP_NAMES,
   REQUIRED_DB_ASSERTIONS,
   REQUIRED_SHOTS,

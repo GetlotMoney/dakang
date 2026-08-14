@@ -1,10 +1,10 @@
 import type { CapabilityCode } from './account'
-import type { BusinessTime, EntityId, EvidenceMode } from './common'
+import type { BusinessTime, EntityId } from './common'
 import { ContractError } from './common'
 import { post } from './request'
 import { useAccountStore } from '@/store/account'
 
-export type MessageDomain = 'water' | 'card' | 'delivery' | 'owner' | 'system'
+export type MessageDomain = 'water' | 'card' | 'delivery' | 'owner' | 'system' | 'mall'
 export type MessageChannel = 'in-app' | 'wechat-subscribe'
 export type MessageSendStatus = 1 | 2 | 3 | 4
 
@@ -19,11 +19,9 @@ export interface MessageItem {
   sendStatus: MessageSendStatus
   sendTime?: BusinessTime
   unread: boolean
-  objectType?: 'order' | 'task' | 'device' | 'appeal' | 'service'
+  objectType?: 'order' | 'task' | 'device' | 'appeal' | 'service' | 'mallOrder' | 'mallAfterSale'
   objectId?: string
   requiredCapability?: CapabilityCode
-  /** real=真实库消息；prototype/external-snapshot 为 mock 演示态（能力撤销降级只存在于 mock）。 */
-  evidenceMode: EvidenceMode
   objectAccess?: 'allowed' | 'capability-revoked'
 }
 
@@ -51,6 +49,7 @@ export const DOMAIN_BY_VALUE: Record<number, MessageDomain> = {
   3: 'delivery',
   4: 'owner',
   5: 'system',
+  6: 'mall',
 }
 export const VALUE_BY_DOMAIN: Record<MessageDomain, number> = {
   water: 1,
@@ -58,9 +57,20 @@ export const VALUE_BY_DOMAIN: Record<MessageDomain, number> = {
   delivery: 3,
   owner: 4,
   system: 5,
+  mall: 6,
 }
 
-const OBJECT_TYPES = new Set(['order', 'task', 'device', 'appeal', 'service'])
+// 未知 objectType 只丢跳转，未知 msgDomain 会让整页 fail-closed（用户打不开消息中心）：
+// 新增业务域时这张表和字典 1312 必须同轮改
+const OBJECT_TYPES = new Set([
+  'order',
+  'task',
+  'device',
+  'appeal',
+  'service',
+  'mallOrder',
+  'mallAfterSale',
+])
 
 interface RealMessageRaw {
   messageId: unknown
@@ -113,7 +123,6 @@ export function normalizeRealMessage(raw: RealMessageRaw, accountId: EntityId): 
     objectType,
     objectId: typeof raw.objectId === 'string' && raw.objectId !== '' ? raw.objectId : undefined,
     // real 详情不做能力降级伪装（口径10）：跳转拦截交给路由守卫；降级演示保留在 mock
-    evidenceMode: 'real',
     objectAccess: 'allowed',
   }
 }

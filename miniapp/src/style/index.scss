@@ -6,12 +6,25 @@ page {
   // 六维达康品牌（B 活力水滴 为主 + A 净蓝科技 点缀），与 PC 同色值。
   // 页面统一引用这些变量，避免散落硬编码；改此处即全端主题切换、可一键回退。
   --app-color-primary: #2e7cf6; // B 活力蓝 主色
+  // 深蓝档：实色卡面/深底动作块的底。#2e7cf6 压白字只有 3.6:1，13px 小字读不出，这一档是 5.7:1。
+  --app-color-primary-deep: #1a4fa0;
+
+  // ─── 品牌插画底色 ────────────────────────────────────────────
+  // 六股水流系列插画（static/brand/card-ripples / entry-scan / entry-delivery）
+  // 各自的画面底色。插画只铺在块的右侧承载主体，左侧文案压在这三档实色上——
+  // 取值直接取自素材左缘中位色，接缝因此看不出来。
+  // **改素材必须同轮改这三个值**，否则会在块中间露出一条色差带。
+  // 白字对比：navy 20:1 / scan 15.6:1 / delivery 11.4:1，逐像素算过。
+  --art-card-navy: #010913;
+  --art-scan-blue: #011d61;
+  --art-delivery-teal: #023e5a;
   --app-color-green: #16c784; // B 健康绿 辅主色
   --app-color-water: #0ea5b7; // A 净蓝科技 强调/点缀
   --app-color-success: #16c784;
   --app-color-warning: #ff9f0a;
   --app-color-danger: #ff3b30;
   --app-bg-page: #f5f7fa;
+  --app-bg-card: #ffffff; // 卡片/浮层底色（E2E-09 商城卡片起）
   --app-text-primary: #1f2329;
   --app-text-secondary: #646a73;
 
@@ -56,6 +69,30 @@ page {
   --tint-danger: rgba(255, 59, 48, 0.1);
   --tint-water: rgba(14, 165, 183, 0.1);
 
+  // ─── 价格语义 ────────────────────────────────────────────────
+  // 价格此前借用 danger：把「这件商品多少钱」和「这笔操作不可逆」画成同一个红，
+  // 用户扫读时无法区分。价格独立成色，且只用于真实价格、合计与实付金额，
+  // 不用于按钮、状态或促销底色。
+  --app-color-price: #ff5a36;
+  --tint-price: rgba(255, 90, 54, 0.1);
+
+  // 品牌蓝的更强浅底与描边：此前各页手写 rgba(46,124,246,0.12~0.4) 与一批旧蓝
+  // rgba(93,135,255,…)（那是改版前的主色，早已不是品牌色）。收成三档。
+  --tint-primary-strong: rgba(46, 124, 246, 0.16);
+  --line-primary: rgba(46, 124, 246, 0.28);
+  // 中性浅底：卡内分区、禁用块等，替代各页手写的 rgba(100,106,115,0.06~0.12)
+  --tint-neutral: rgba(100, 106, 115, 0.08);
+  // 浮层遮罩：图片预览与底部面板共用一档，避免每处各写一个透明度
+  --mask-overlay: rgba(0, 0, 0, 0.6);
+  // 深色品牌底上的反白文字与图标。此前各页写 #fff，被批量收编时误映射成
+  // --app-bg-card（卡片底）——色值恰好相同所以看不出来，但语义是反的。
+  --app-text-inverse: #ffffff;
+  // 深色品牌块上的半透明衬底。写死 rgba 会散落在各业务组件里。
+  --tint-inverse: rgba(255, 255, 255, 0.22);
+  // 警示「文字」色：--app-color-warning(#ff9f0a) 是填充色，压在 --tint-warning
+  // 浅底上对比度不足 2:1，正文实际读不出来。文字用这一档深色。
+  --app-color-warning-text: #8a5200;
+
   // ─── 间距 ────────────────────────────────────────────────────
   // 区块节奏分三档，取代此前全端统一 12px 导致的「所有区块等权」。
   --sp-1: 4px;
@@ -75,6 +112,13 @@ page {
   --r-pill: 999px;
   --sh-card: 0 1px 2px rgba(31, 35, 41, 0.04), 0 4px 12px rgba(31, 35, 41, 0.04);
   --sh-bar: 0 -2px 12px rgba(31, 35, 41, 0.06); // 吸底动作栏专用
+  --sh-drop: 0 6px 12px rgba(46, 124, 246, 0.22); // Tabbar 活跃水滴浮标投影
+  // Tabbar 活跃水滴的实色浅蓝底：alpha 浅底(--tint-primary-strong)压在白栏上只剩 16% 存在感，
+  // 实测"浅得看不见"；这一档是不透明粉蓝，白底上清晰可辨且与品牌蓝同相。
+  --app-color-primary-soft: #d6e6fd;
+  // 登录页品牌焦点卡的双层阴影。整条作为一个 token——把 --sh-card 这种复合值
+  // 塞进 `0 2px 8px var(--sh-card)` 的位置会让整条 box-shadow 语法非法而被丢弃。
+  --sh-hero: 0 2px 8px rgba(31, 35, 41, 0.04), 0 12px 32px rgba(31, 35, 41, 0.07);
 
   // ─── 字阶 ────────────────────────────────────────────────────
   // 只约束本项目自己写的样式，不覆盖 Wot 内部的图标、Badge、辅助标记与无障碍元素。
@@ -86,6 +130,37 @@ page {
   --fs-caption: 13px;
   --fs-note: 12px;
 
+  // ─── 读数（Readout）─────────────────────────────────────────
+  // 这个产品九成屏幕是数字：按毫升计量、按分计费。所以数字有自己的一套排版，
+  // 而不是"加粗的正文"。三档，每档四个字号：主位 / 小数位 / 前缀符 / 单位。
+  //
+  // 为什么单位不能无限缩小：用户是小区居民、配送员、机主，多数不年轻，
+  // 在楼道与户外单手看屏。单位最小档钉死 12px，低于此就不是信息是装饰。
+  // 单位不按"比例好看"定，按"读得清"定：实测 24px 主位配 13px 单位时，
+  // 那个 L 小到看不清（用户原话）。单位统一比主位低一档、最小不低于 13px。
+  --rd-xl-value: var(--fs-display); // 整页唯一主读数（取水实际出水量、钱包余额）
+  --rd-xl-minor: 22px;
+  --rd-xl-unit: 20px;
+  --rd-l-value: var(--fs-metric); // 分区主读数与并列指标（余额/水量/成交额/计数）
+  --rd-l-minor: var(--fs-title);
+  --rd-l-unit: var(--fs-title);
+  --rd-m-value: var(--fs-title); // 列表行内的决策数字（订单金额、任务桶数）
+  --rd-m-minor: var(--fs-body);
+  --rd-m-unit: var(--fs-caption);
+
+  // 数值与符号/单位之间的气口。整数位与小数位必须贴死——「22 .00」是错的，
+  // 所以这里没有对应的 token，杜绝有人补一个。
+  --rd-gap-sigil: 2px; // ¥ → 整数位
+  --rd-gap-unit: 2px; // 数值 → 拉丁单位（L）
+  --rd-gap-unit-cjk: 4px; // 数值 → 中文量词（单/台/桶/件/天），全角字形自带侧边空白
+
+  // ─── 水位基线（标志性元素）──────────────────────────────────
+  // 只在存在真实分母时渲染。轨道与填充是两个实色节点 + overflow:hidden，零渐变。
+  --lv-h: 3px;
+  --lv-gap: var(--sp-2);
+  --lv-track: var(--line-2);
+  --lv-fill: var(--app-color-water);
+
   color: var(--app-text-primary);
   background: var(--app-bg-page);
   font-family:
@@ -96,8 +171,21 @@ page {
 .page-shell {
   box-sizing: border-box;
   min-height: 100vh;
-  padding: 0 16px 84px;
+
+  // 底部预留 = Tabbar 本体(50px) + 呼吸边距(12px) + 真实安全区。
+  // 旧值是死 84px（按 50+34 拍的）：带 Home 条的机型安全区恰为 34px，
+  // 最后一栏会零间隙贴死在悬浮 Tabbar 上缘。env 不可用时回退 22px，
+  // 无安全区机型合计仍是 84px，行为不变。
+  padding: 0 16px calc(62px + env(safe-area-inset-bottom, 22px));
   background: var(--app-bg-page);
+}
+
+// 用了 app-bottom-action-bar 的页面：底部占位由该组件的等高 placeholder 负责，
+// 这里必须去掉为旧「流式底栏」预留的 84px，否则两段空白叠加，列表末尾出现一大块空。
+.page-shell--with-bar {
+  // 只在吸底栏真的渲染时才挂：栏是条件渲染的页面若恒挂此类，栏不出现时
+  // 页面同时失去 84px 内边距与安全区留白，最后一条内容会贴到屏底。
+  padding-bottom: 0;
 }
 
 .page-section {
@@ -106,5 +194,214 @@ page {
 
 .muted-text {
   color: var(--app-text-secondary);
-  font-size: 13px;
+  font-size: var(--fs-caption);
+}
+
+// ─── 通用结构类 ──────────────────────────────────────────────────
+// 下面这些是全端重复出现的结构，此前每页各写一份：25 页各有一套 status-actions、
+// 11 页各有一套 card-title-row。收成 utility class 而不是 Vue 组件——它们没有行为、
+// 没有状态，包成组件只会多一层 props 转发，改一次样式仍要改二十几处调用点。
+
+// 白色内容面：全端卡片的唯一底座。
+.surface-card {
+  padding: var(--sp-4);
+  background: var(--app-bg-card);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-card);
+}
+
+// 卡片标题行：左标题右操作/说明。
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+
+  .section-title {
+    font-size: var(--fs-title);
+    font-weight: 600;
+  }
+}
+
+// 状态位下方的动作组（空态/错误态的重试、返回等）。
+.status-actions {
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: center;
+}
+
+// 数字统一等宽：金额与计数在列表里逐行对齐，跳动的数字读起来像在闪。
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+// 金额：等宽 + 价格语义色。
+//
+// **只给「要付出去的钱」**：商品售价、单价、小计、合计、应付、实付、订单成交金额。
+// 余额、可用水量、分润净额、经营成交额是**资产与经营指标，不是价格**，一律用主文色——
+// 把「我有多少钱」和「我要付多少钱」画成同一个红，用户扫读时分不出这一屏在要钱还是在报账。
+.money {
+  color: var(--app-color-price);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+// ─── 读数（Readout）：本产品的排版主体 ────────────────────────────
+// 病根：formatFen()/formatMl() 返回的是粘死的字符串（'¥22.00'、'490L'），
+// value 与 unit 在同一个文本节点里，任何 CSS 都拆不开——所以「单位与数字同字号同字重
+// 挤在一起」不是没人想改，是改不了。utils/format.ts 的 fenParts/mlParts/countParts
+// 负责拆，这里负责排。
+//
+// 结构全部是行内 <text>，靠行内文本天然共基线，**不用 flex**：
+// 底对齐会让小号单位挂到数字下沿之下（两者行盒高度不同），基线才是「数字和单位是一句话」
+// 的正确关系；而基线对齐本就不需要 flex，Skyline 下 text 的 flex 行为也不保证。
+//
+//   <text class="readout readout--l">
+//     <text class="readout__sigil">¥</text><text class="readout__value">22</text><text
+//     class="readout__minor">.00</text>
+//   </text>
+//
+// 纵向对齐不依赖 tabular-nums：部分安卓 webview 对 font-variant-numeric 无效。
+// 真正兜底的是布局——同列数字一律等宽列 + text-align:right，tnum 只是让逐行不跳动的加分项。
+.readout {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+  white-space: nowrap;
+
+  &__sigil {
+    margin-right: var(--rd-gap-sigil);
+    font-weight: 600;
+    opacity: 0.75;
+  }
+
+  // 小数位只降字号，不降颜色也不降字重：¥0.50 与 ¥0.05 必须一眼分得开，降色就是丢信息。
+  &__value,
+  &__minor {
+    font-weight: 700;
+  }
+
+  &__unit {
+    margin-left: var(--rd-gap-unit);
+    font-weight: 600;
+    opacity: 0.8;
+
+    // 中文量词（单/台/桶/件/天）自带侧边空白，气口要略大
+    &--cjk {
+      margin-left: var(--rd-gap-unit-cjk);
+    }
+
+    // 水量的 L 是水青：这是水青在全端唯一的常驻落点，让「这是水」不靠文字说明
+    &--water {
+      color: var(--app-color-water);
+      opacity: 1;
+    }
+  }
+
+  &--xl {
+    font-size: var(--rd-xl-value);
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+
+    .readout__sigil,
+    .readout__minor {
+      font-size: var(--rd-xl-minor);
+    }
+
+    .readout__unit {
+      font-size: var(--rd-xl-unit);
+    }
+  }
+
+  &--l {
+    font-size: var(--rd-l-value);
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+
+    .readout__sigil,
+    .readout__minor {
+      font-size: var(--rd-l-minor);
+    }
+
+    .readout__unit {
+      font-size: var(--rd-l-unit);
+    }
+  }
+
+  &--m {
+    font-size: var(--rd-m-value);
+    line-height: 1.2;
+
+    .readout__sigil,
+    .readout__minor {
+      font-size: var(--rd-m-minor);
+    }
+
+    .readout__unit {
+      font-size: var(--rd-m-unit);
+    }
+  }
+}
+
+// 读数下方的说明标签。恒定一档，让并列读数的标签落在同一水平线。
+.readout-label {
+  display: block;
+  margin-top: var(--sp-1);
+  color: var(--app-text-tertiary);
+  font-size: var(--fs-caption);
+}
+
+// ─── 水位基线：全端唯一的标志性元素 ──────────────────────────────
+// 水站的本体是计量。这条线量的是一个**真实存在分母**的比例，删掉它会丢信息——
+// 这是它与「给卡片加个水滴图标」这类表面功夫的分界。
+//
+// 三条定义它的规则，缺一条它就退化成装饰：
+//   1. **没有真实分母就不渲染**。不画满格假线，也不画一条纯中性的「刻度感」线。
+//   2. **方端**：border-radius 0 是全端唯一的 0（其余是 8/12/16/999）。
+//      AI 生成的界面里进度条 100% 是胶囊形——刻度是刻度，不是药丸。
+//      这条同时锁死：全端出现第二处 border-radius:0 即视为违规。
+//   3. **它在计量块内部、宽度跟着数字组走**，不贴任何容器的边——所以它不是彩色卡边。
+//
+// 已点名的真实分子/分母（不虚构）：
+//   water/confirm 本次取水量 / maxAllowedMl；今日已用 / dayLimitMl
+//   water/progress actualMl / planMl
+//   order 列表与详情 actualMl / planMl（仅当两者不等）
+//   home-face-owner、owner/device onlineCount / deviceCount
+// 配送面不设——「进行中/(待接+进行中)」那个分母没有业务含义，宁可少一处也不编。
+//
+// 宽度走内联 style，是长度不是颜色，不触发色值闸。轨道与填充两个实色节点，零渐变。
+.level-rule {
+  overflow: hidden;
+  height: var(--lv-h);
+  margin-top: var(--lv-gap);
+  border-radius: 0;
+  background: var(--lv-track);
+
+  &__fill {
+    height: 100%;
+    min-width: 2px; // 1% 也要看得见，否则用户以为坏了
+    border-radius: 0;
+    background: var(--lv-fill);
+  }
+
+  // 超额（实取 > 计划）：满格 + 转警示，不允许画到轨道外
+  &--over &__fill {
+    background: var(--app-color-warning);
+  }
+}
+
+// 失效/不可用内容：降饱和但仍可读——把失效商品藏起来，用户就不知道为什么少了一行。
+.app-is-disabled {
+  color: var(--app-text-disabled);
+  opacity: 0.7;
+}
+
+// 可点击卡片的按压反馈：小程序没有 hover，按下无反馈会让人以为没点上。
+.pressable {
+  transition: transform 0.12s ease, opacity 0.12s ease;
+
+  &:active {
+    transform: scale(0.985);
+    opacity: 0.9;
+  }
 }

@@ -13,13 +13,8 @@ function isUserCancel(errMsg?: string): boolean {
 }
 
 /**
- * 真实扫码：调起微信扫一扫。
- *
- * <p>onlyFromCamera=false 允许从相册选图——真机现场没有实体码时可先把码存成图片再扫；
- * 微信开发者工具点击后弹出工具自带的模拟扫码窗口，可直接粘贴码值联调。</p>
- *
- * <p>取消与失败必须分开：取消是正常动线（用户点返回），失败要让用户看见
- * （未授权相机、平台不支持等）。二者都静默返回 null，按钮就表现为「点了没反应」。</p>
+ * 真实扫码：调起微信扫一扫。onlyFromCamera=false 允许从相册选图（真机没有实体码时可扫码图）。
+ * 取消与失败必须分开：取消是正常动线静默返回，失败要让用户看见，否则按钮表现为「点了没反应」。
  */
 function scanRealCode(): Promise<ScanOutcome> {
   return new Promise((resolve, reject) => {
@@ -51,8 +46,7 @@ function scanRealCode(): Promise<ScanOutcome> {
  * 成功返回短期扫码会话，页面凭 scanSessionId 进入 U04。
  */
 export async function scanWaterCode(): Promise<ScanSession | null> {
-  // 恒走真实扫码（mock 样例选择器已随 Mock 期结束退役）：
-  // 微信开发者工具会弹自带的模拟扫码窗，可直接粘贴种子码值联调；真机扫测试码图片。
+  // 恒走真实扫码；微信开发者工具会弹自带的模拟扫码窗，可粘贴码值联调
   const rawCode = await scanRealCode()
   if (rawCode === USER_CANCELED) {
     return null

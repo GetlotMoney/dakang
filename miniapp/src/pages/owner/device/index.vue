@@ -5,6 +5,7 @@ import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import {
   ONLINE_STATUS_LABELS,
   ONLINE_STATUS_TONES,
@@ -96,20 +97,18 @@ async function refresh() {
   <view class="page-shell">
     <AppNavbar title="机主设备" back-to="O01" />
 
-    <view v-if="loading" class="page-section muted-text">
-      加载中…
+    <view v-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="errorMessage" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain size="small" @click="backOr('O01')">
-              返回
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain size="small" @click="backOr('O01')">
+            返回
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else>
@@ -127,11 +126,11 @@ async function refresh() {
       </view>
 
       <view v-if="!devices.length" class="page-section">
-        <wd-status-tip image="content" tip="暂无设备" />
+        <AppPageState state="empty" message="暂无设备" />
       </view>
 
       <view v-else-if="!filteredDevices.length" class="page-section">
-        <wd-status-tip image="search" tip="当前筛选条件下暂无设备" />
+        <AppPageState state="empty" message="当前筛选条件下暂无设备" />
       </view>
 
       <template v-else>
@@ -173,13 +172,6 @@ async function refresh() {
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  width: 100%;
-}
-
 .filter-note {
   margin-top: 8px;
   padding: 0 4px;
@@ -189,7 +181,7 @@ async function refresh() {
 .device-card {
   padding: 14px 16px;
   border-radius: 12px;
-  background: #fff;
+  background: var(--app-bg-card);
 }
 
 .device-card-head {

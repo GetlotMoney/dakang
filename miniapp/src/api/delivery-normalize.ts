@@ -12,15 +12,9 @@ import type { CourierAppealEvidence, DeliveryAppeal } from './order'
 import { addSecondsToBusinessTime, ContractError } from './common'
 
 /**
- * 配送域真实响应归一化与页面阻断判定的中立模块（E2E-03 包B）。
- *
- * - 归一化：后端 Long 序列化为字符串（number|十进制串双收，拒小数/前导零/越界，
- *   strictNumber 手法与 order.ts 同口径）；关键字段缺失/畸形 fail-closed 抛
- *   DELIVERY_CONTRACT_BROKEN，绝不拼残缺数据渲染。
- * - 阻断判定：页面对 接单/推进/签收/异常/申诉 的可用性判断全部走本模块纯函数，
- *   语义与包A 服务端拒因一致——页面不写第二份状态规则，服务端仍是最终裁决。
- * - 依赖关系：delivery.ts 与 order.ts 都只单向依赖本模块（延续 delivery-link.ts
- *   的中立模块手法），避免两域适配器互相 import 形成运行时循环。
+ * 配送域真实响应归一化与页面阻断判定的中立模块（E2E-03 包B）：strictNumber 手法与 order.ts 同口径，
+ * 关键字段缺失/畸形 fail-closed 抛 DELIVERY_CONTRACT_BROKEN；阻断判定语义与包A 服务端拒因一致，
+ * 服务端仍是最终裁决；delivery.ts 与 order.ts 只单向依赖本模块，避免适配器互相 import 形成循环。
  */
 
 // ==================== strictNumber 手法 ====================
@@ -69,11 +63,7 @@ function optionalText(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-/**
- * field 只用于定位，<b>不进 message</b>——message 会被页面直接 toast 给用户，
- * 而「价格快照总额 缺失或不合法」对用户是一份后端字段体检报告，他既看不懂也做不了什么。
- * 排障线索在错误码 DELIVERY_CONTRACT_BROKEN 与抛出点代码里。
- */
+/** field 只用于定位，不进 message——message 会被页面直接 toast 给用户。 */
 function broken(field: string): ContractError {
   void field
   return new ContractError('DELIVERY_CONTRACT_BROKEN', '配送数据异常，请稍后重试')
@@ -217,7 +207,7 @@ function normalizeStringArray(value: unknown): string[] {
 
 /**
  * 签收单照归一化：type/mediaKey/time 任一畸形即丢弃该条（与后端"宁可不展示不拼残缺证据"
- * 同口径）；真实数据 evidenceMode 固定 'real'，recordRef 即受控媒体键。
+ * 同口径）；recordRef 即受控媒体键。
  */
 function normalizeSignPhoto(raw: SignPhotoRaw): SignPhoto | undefined {
   const type = strictInt(raw.type)
@@ -234,7 +224,6 @@ function normalizeSignPhoto(raw: SignPhotoRaw): SignPhoto | undefined {
     time,
     latitude: typeof raw.latitude === 'number' ? raw.latitude : undefined,
     longitude: typeof raw.longitude === 'number' ? raw.longitude : undefined,
-    evidenceMode: 'real',
   }
 }
 

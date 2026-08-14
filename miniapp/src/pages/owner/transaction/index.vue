@@ -5,6 +5,7 @@ import { computed, ref, watch } from 'vue'
 import { ContractError } from '@/api/common'
 import { deviceApi, ownerTransactionPeriodQuery } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import {
   formatBizTimeShort,
   formatFen,
@@ -122,15 +123,13 @@ async function loadTransactions() {
     <AppNavbar title="交易快照" back-to="O01" />
 
     <view v-if="errorMessage" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain size="small" @click="backOr('O01')">
-              返回
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain size="small" @click="backOr('O01')">
+            返回
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else>
@@ -152,8 +151,8 @@ async function loadTransactions() {
         </view>
       </view>
 
-      <view v-if="loading" class="page-section muted-text">
-        加载中…
+      <view v-if="loading" class="page-section">
+        <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
       </view>
 
       <template v-else>
@@ -167,7 +166,7 @@ async function loadTransactions() {
         </view>
 
         <view v-if="!items.length" class="page-section">
-          <wd-status-tip image="content" tip="当前条件下暂无交易快照" />
+          <AppPageState state="empty" message="当前条件下暂无交易快照" />
         </view>
 
         <template v-else>
@@ -219,13 +218,6 @@ async function loadTransactions() {
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  width: 100%;
-}
-
 .filter-note {
   margin-top: 8px;
   padding: 0 4px;
@@ -235,7 +227,7 @@ async function loadTransactions() {
 .summary-card {
   padding: 14px 16px;
   border-radius: 12px;
-  background: #fff;
+  background: var(--app-bg-card);
 }
 
 .summary-line {
@@ -246,7 +238,7 @@ async function loadTransactions() {
 .txn-card {
   padding: 14px 16px;
   border-radius: 12px;
-  background: #fff;
+  background: var(--app-bg-card);
 }
 
 .txn-head {

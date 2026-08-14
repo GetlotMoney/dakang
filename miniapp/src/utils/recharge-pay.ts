@@ -4,10 +4,8 @@ import { rechargeApi } from '@/api/recharge'
 import { formatBizTime, formatFen } from '@/utils/format'
 
 /**
- * 充值付款与到账确认的**唯一实现**。
- *
- * 充值页（U05）与订单详情页（U06 继续支付）共用这里；复制第二份的代价是两个入口迟早
- * 在「什么算到账」上分叉——一个认服务端状态码、另一个认接口 200，然后其中一个会骗用户。
+ * 充值付款与到账确认的唯一实现：充值页（U05）与订单详情页（U06 继续支付）共用，
+ * 防止「什么算到账」口径分叉。
  */
 
 /** 由页面注入的交互回调：模块只决定「问什么、说什么」，不关心用哪个组件弹。 */
@@ -27,14 +25,8 @@ export interface ContinuePayGate {
 }
 
 /**
- * 「还能不能付」的展示层判定——**纯函数，只读服务端 pay-status**。
- *
- * 页面不得自行推导任何其他业务规则：能否支付的最终判定在服务端（Pay-Sim 的前置守卫），
- * 这里只是不把一个必然被拒的按钮摆在用户面前。
- *
- * 只有服务端明确判为 `WAITING_PAYMENT`（即精确的 payment 1/order 1）才可能显示按钮；
- * 其余状态码一律不显示——包括 MISMATCH，因为数据不自洽时更不该引导用户再付一次。
- *
+ * 「还能不能付」的展示层判定——纯函数，只读服务端 pay-status；最终判定在服务端（Pay-Sim 前置守卫）。
+ * 只有服务端明确判为 `WAITING_PAYMENT` 才可能显示按钮，其余状态码（含 MISMATCH）一律不显示。
  * @param status 服务端 pay-status 结论；缺失表示未取到，一律不显示按钮
  * @param now 业务时区当前时间 yyyyMMddHHmmss（由调用方给出，便于测试）
  */
@@ -61,10 +53,8 @@ export function continuePayGate(
 }
 
 /**
- * 业务时区（Asia/Shanghai，固定 +08:00）当前时间。
- *
- * 只用于决定按钮显隐：设备时钟不可信，所以哪怕这里算偏了，服务端仍会按不可变
- * `PAY_EXPIRE_TIME` 拒绝——本函数绝不能被当成付款资格的判据。
+ * 业务时区（Asia/Shanghai，固定 +08:00）当前时间。只用于按钮显隐：设备时钟不可信，
+ * 服务端仍按不可变 PAY_EXPIRE_TIME 拒绝——本函数绝不能当付款资格判据。
  */
 export function nowBusinessTime(): BusinessTime {
   const shifted = new Date(Date.now() + 8 * 60 * 60 * 1000)
@@ -76,12 +66,8 @@ export function nowBusinessTime(): BusinessTime {
 }
 
 /**
- * 接真链路的付款与到账确认。
- *
- * 到账与否<b>只认服务端 pay-status 的结构化状态码</b>：模拟支付接口返回 200 只代表
- * 「支付事实收到了」，不代表权益已入账。把这两件事混为一谈，就会在入账失败时
- * 给用户弹一个"充值成功"，而卡里其实一分钱没多。
- *
+ * 接真链路的付款与到账确认。到账与否只认服务端 pay-status 的结构化状态码——支付接口返回 200
+ * 只代表支付事实收到了，不代表权益已入账。
  * @returns 用户取消确认时返回 null；否则返回最后一次读到的服务端状态
  */
 export async function payAndSettle(

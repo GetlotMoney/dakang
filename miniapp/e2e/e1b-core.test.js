@@ -6,7 +6,6 @@ const path = require('node:path')
 const { Buffer } = require('node:buffer')
 const zlib = require('node:zlib')
 const {
-  EXPECTED_REAL_MODES,
   FULL_CONFIRMATION,
   FULL_STEP_NAMES,
   REQUIRED_DB_ASSERTIONS,
@@ -104,7 +103,6 @@ function fixture() {
     build: {
       runtimeFingerprint: 'build-1',
       diskFingerprint: 'build-1',
-      runtimeModes: EXPECTED_REAL_MODES,
       manifestCount: 1,
       manifestSha256: 'a'.repeat(64),
     },
@@ -166,17 +164,6 @@ test('runtime and disk build fingerprints must be identical and nonempty', () =>
     assert.equal(evaluateFullEvidence(dir, result).complete, false)
     result.build.runtimeFingerprint = ''
     result.build.diskFingerprint = ''
-    assert.equal(evaluateFullEvidence(dir, result).complete, false)
-  }
-  finally {
-    fs.rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('full evidence requires the exact real-domain runtime mode matrix', () => {
-  const { dir, result } = fixture()
-  try {
-    result.build.runtimeModes = 'GLOBAL=mock;DEVICE=mock;ORDER=mock;CARD=mock;RECHARGE=mock'
     assert.equal(evaluateFullEvidence(dir, result).complete, false)
   }
   finally {

@@ -47,7 +47,6 @@ export function isRechargeSettled(orderStatus: OrderStatus, block?: RechargeDeta
 /** 按订单真实状态生成说明；完成/退款历史快照绝不复用待支付文案。 */
 export function rechargeNotice(
   orderStatus: OrderStatus,
-  isRealRecharge: boolean,
   settled: boolean,
 ): RechargeNotice | null {
   switch (orderStatus) {
@@ -67,10 +66,11 @@ export function rechargeNotice(
         text: '订单状态异常，请联系客服核对。',
       }
     case 4:
+      // 钱已收、权益没落实——这是 danger，不是 warning
       return settled
         ? null
         : {
-            tone: isRealRecharge ? 'danger' : 'warning',
+            tone: 'danger',
             text: '到账结果待核实，请联系客服核对。',
           }
     case 5:
@@ -89,7 +89,6 @@ export function rechargeNotice(
 export function rechargePaySourceLabel(
   paySource: number | undefined,
   payWay: PayWay,
-  isRealRecharge: boolean,
 ): string {
   if (paySource === 1) {
     return '微信支付'
@@ -103,7 +102,8 @@ export function rechargePaySourceLabel(
   if (payWay === 3) {
     return '水卡水量'
   }
-  return isRealRecharge ? '支付来源待核对' : '微信支付'
+  // 兜底不猜：来源不明的支付不得写成「微信支付」，用户拿去对账单会对不上
+  return '支付来源待核对'
 }
 
 const PROCESSING_STATUS_LABELS: Record<string, string> = {

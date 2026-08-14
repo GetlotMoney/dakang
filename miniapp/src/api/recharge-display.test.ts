@@ -243,32 +243,41 @@ describe('充值展示归一化', () => {
   })
 
   it.each([
-    [1, false, '付款截止时间'],
-    [1, true, '付款截止时间'],
-    [2, true, '权益处理中'],
-    [4, false, '请联系客服核对'],
-    [4, true, '请联系客服核对'],
-    [6, true, '权益待人工处理'],
-  ] as const)('状态%s在real=%s时使用准确文案', (status, isReal, text) => {
-    expect(rechargeNotice(status, isReal, false)?.text).toContain(text)
+    [1, '付款截止时间'],
+    [2, '权益处理中'],
+    [4, '请联系客服核对'],
+    [6, '权益待人工处理'],
+  ] as const)('状态%s使用准确文案', (status, text) => {
+    expect(rechargeNotice(status, false)?.text).toContain(text)
   })
 
   it('有完整证据的完成单不再显示提示', () => {
-    expect(rechargeNotice(4, true, true)).toBeNull()
-    expect(rechargeNotice(4, false, true)).toBeNull()
+    expect(rechargeNotice(4, true)).toBeNull()
   })
 
   // 取消/退款/部分退款：订单状态本身已说明结果，不再叠加提示条
   it.each([[5], [7], [8]] as const)('状态%s不显示额外提示', (status) => {
-    expect(rechargeNotice(status, true, false)).toBeNull()
-    expect(rechargeNotice(status, false, false)).toBeNull()
+    expect(rechargeNotice(status, false)).toBeNull()
+  })
+
+  // 钱收了、权益没落实是资金差错，必须按 danger 呈现。
+  // 这一维原本挂在 isRealRecharge 上（非 real 时降级 warning），随 mock 退役一并去掉：
+  // 参数没了，但「这一格必须是 danger」的判据得留着，否则改回 warning 不会有任何测试变红。
+  it('完成态但未落实权益：语义色必须是 danger', () => {
+    expect(rechargeNotice(4, false)?.tone).toBe('danger')
   })
 
   it('支付来源与事实处理态按本单证据展示', () => {
-    expect(rechargePaySourceLabel(1, 1, true)).toBe('微信支付')
-    expect(rechargePaySourceLabel(2, 1, true)).toBe('模拟支付')
-    expect(rechargePaySourceLabel(undefined, 1, true)).toBe('支付来源待核对')
+    expect(rechargePaySourceLabel(1, 1)).toBe('微信支付')
+    expect(rechargePaySourceLabel(2, 1)).toBe('模拟支付')
     expect(rechargeProcessingStatusLabel('PROCESSED')).toBe('已处理')
     expect(rechargeProcessingStatusLabel('RECONCILIATION_REQUIRED')).toBe('待人工对账')
+  })
+
+  // 来源不明时不许替后端猜一个具体渠道：旧代码在非 real 构建下写死「微信支付」，
+  // 用户拿这句去对微信账单会对不上，而页面看起来毫无异常。
+  it('来源缺失且非卡支付：只说待核对，不猜渠道', () => {
+    expect(rechargePaySourceLabel(undefined, 1)).toBe('支付来源待核对')
+    expect(rechargePaySourceLabel(undefined, 1)).not.toBe('微信支付')
   })
 })

@@ -1,9 +1,8 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAccountStore } from '@/store/account'
-import { authApi, parseTestLoginAccounts, readPhoneAuthorization } from './auth'
+import { authApi, readPhoneAuthorization } from './auth'
 import * as request from './request'
-import { resolveApiMode } from './runtime'
 
 // 请求层整体打桩：拦截 post 与会话写入，聚焦 auth 编排与会话管理，不触真实 HTTP/storage。
 vi.mock('./request', () => ({
@@ -274,55 +273,5 @@ describe('会话失效与退出（handleUnauthorized）', () => {
     // 未调用 selectMockAccount，上下文仍为空——不存在“掉线自动登原型账号”的旁路。
     expect(store.context).toBeNull()
     expect(store.errorMessage).toBeNull()
-  })
-})
-
-describe('构建门禁：auth 域模式解析', () => {
-  it('默认 Demo 构建：auth 域回退全局 mock（走 C01 原型入口）', () => {
-    expect(resolveApiMode('auth', { globalMode: 'mock' })).toBe('mock')
-    expect(resolveApiMode('auth', {})).toBe('mock')
-  })
-
-  it('auth 与 recharge 互不牵连：各自只认自己那一维的显式覆盖', () => {
-    // 硬锁解除后仍要保证两域解耦——L2-T 真机档正是「auth=mock 但 recharge=real」这种组合，
-    // 一旦谁牵连谁，要么真机登不进去，要么原型账号被放进真实充值链。
-    expect(resolveApiMode('auth', { globalMode: 'mock', authMode: 'real', rechargeMode: 'mock' })).toBe('real')
-    expect(resolveApiMode('recharge', { globalMode: 'mock', authMode: 'real', rechargeMode: 'mock' })).toBe('mock')
-    expect(resolveApiMode('auth', { globalMode: 'mock', authMode: 'mock', rechargeMode: 'real' })).toBe('mock')
-    expect(resolveApiMode('recharge', { globalMode: 'mock', authMode: 'mock', rechargeMode: 'real' })).toBe('real')
-  })
-})
-
-describe('测试账号白名单解析（parseTestLoginAccounts）', () => {
-  it('解析「手机号:标签」清单，标签缺省回退手机号', () => {
-    const list = parseTestLoginAccounts('13900001111:演示用户,13999990002', undefined)
-    expect(list).toEqual([
-      { phone: '13900001111', label: '演示用户' },
-      { phone: '13999990002', label: '13999990002' },
-    ])
-  })
-
-  it('非法手机号一律丢弃：白名单不成为账号枚举面', () => {
-    const list = parseTestLoginAccounts('abc:坏号,1390000111:短号,239000011112:非1开头,13900001111:好号', undefined)
-    expect(list).toEqual([{ phone: '13900001111', label: '好号' }])
-  })
-
-  it('未配置清单时回退单号（旧构建行为不变）', () => {
-    expect(parseTestLoginAccounts(undefined, '13900001111'))
-      .toEqual([{ phone: '13900001111', label: '13900001111' }])
-    expect(parseTestLoginAccounts('', '13900001111'))
-      .toEqual([{ phone: '13900001111', label: '13900001111' }])
-  })
-
-  it('清单与单号都缺席时为空：不渲染任何测试入口', () => {
-    expect(parseTestLoginAccounts(undefined, undefined)).toEqual([])
-  })
-
-  it('容忍空白与空项', () => {
-    const list = parseTestLoginAccounts(' 13900001111 : 张女士 , ,13999990001 ', undefined)
-    expect(list).toEqual([
-      { phone: '13900001111', label: '张女士' },
-      { phone: '13999990001', label: '13999990001' },
-    ])
   })
 })

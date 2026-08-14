@@ -22,6 +22,17 @@ export type RouteId
     | 'U14'
     | 'U15'
     | 'U16'
+    | 'M01'
+    | 'M02'
+    | 'M03'
+    | 'M04'
+    | 'M05'
+    | 'M06'
+    | 'M07'
+    | 'M08'
+    | 'M09'
+    | 'M10'
+    | 'M11'
     | 'D01'
     | 'D02'
     | 'D03'
@@ -63,14 +74,14 @@ function optional(name: string, values?: readonly string[]): RouteParamContract 
 
 export const appRoutes = [
   { id: 'C01', path: '/pages/entry/index', title: '统一入口', group: 'common', params: [], defaultBackTo: 'U01' },
-  { id: 'C02', path: '/pages/message/index', title: '消息中心', group: 'common', requiredCapability: 'USER_BASE', params: [optional('domain', ['water', 'card', 'delivery', 'owner', 'system'])], defaultBackTo: 'U01' },
+  { id: 'C02', path: '/pages/message/index', title: '消息中心', group: 'common', requiredCapability: 'USER_BASE', params: [optional('domain', ['water', 'card', 'delivery', 'owner', 'system', 'mall'])], defaultBackTo: 'U01' },
   { id: 'C03', path: '/pages/message/detail', title: '消息详情', group: 'common', requiredCapability: 'USER_BASE', params: [required('messageId')], defaultBackTo: 'C02' },
   { id: 'U01', path: '/pages/user/home/index', title: '首页', group: 'user', tab: 'home', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U01' },
   { id: 'U02', path: '/pages/user/order/index', title: '订单', group: 'user', tab: 'order', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U01' },
   { id: 'U03', path: '/pages/user/profile/index', title: '我的', group: 'user', tab: 'profile', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U01' },
   { id: 'U04', path: '/pages/user/water/confirm', title: '取水确认', group: 'user', requiredCapability: 'USER_BASE', params: [required('scanSessionId')], defaultBackTo: 'U01' },
   { id: 'U05', path: '/pages/user/water/progress', title: '取水进度', group: 'user', requiredCapability: 'USER_BASE', params: [required('orderNo')], defaultBackTo: 'U01' },
-  { id: 'U06', path: '/pages/user/order/detail', title: '订单详情', group: 'user', requiredCapability: 'USER_BASE', params: [required('orderNo'), optional('focus', ['command', 'delivery', 'appeal']), optional('source', ['local-mock'])], defaultBackTo: 'U02' },
+  { id: 'U06', path: '/pages/user/order/detail', title: '订单详情', group: 'user', requiredCapability: 'USER_BASE', params: [required('orderNo'), optional('focus', ['command', 'delivery', 'appeal'])], defaultBackTo: 'U02' },
   { id: 'U07', path: '/pages/user/station/index', title: '附近水站', group: 'user', requiredCapability: 'USER_BASE', params: [optional('stationId'), optional('selectMode', ['delivery'])], defaultBackTo: 'U01' },
   { id: 'U08', path: '/pages/user/delivery/create', title: '配送下单', group: 'user', requiredCapability: 'USER_BASE', params: [optional('stationId'), optional('addressId')], defaultBackTo: 'U01' },
   { id: 'U09', path: '/pages/user/appeal/create', title: '配送申诉', group: 'user', requiredCapability: 'USER_BASE', params: [required('orderNo'), required('taskNo')], defaultBackTo: 'U06' },
@@ -81,6 +92,22 @@ export const appRoutes = [
   { id: 'U14', path: '/pages/user/address/index', title: '水配送地址', group: 'user', requiredCapability: 'USER_BASE', params: [optional('returnTo', ['delivery'])], defaultBackTo: 'U03' },
   { id: 'U15', path: '/pages/user/address/edit', title: '编辑水配送地址', group: 'user', requiredCapability: 'USER_BASE', params: [optional('addressId'), optional('returnTo', ['delivery'])], defaultBackTo: 'U14' },
   { id: 'U16', path: '/pages/user/delivery/auto-rules', title: '自动补货规则', group: 'user', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U03' },
+  { id: 'M01', path: '/pages/mall/index', title: '商城', group: 'user', requiredCapability: 'USER_BASE', params: [optional('categoryId')], defaultBackTo: 'U01' },
+  { id: 'M02', path: '/pages/mall/product-detail', title: '商品详情', group: 'user', requiredCapability: 'USER_BASE', params: [required('productId')], defaultBackTo: 'M01' },
+  { id: 'M03', path: '/pages/mall/cart', title: '购物车', group: 'user', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'M01' },
+  // lines 走页面参数而不是内存草稿：编码成 `skuId:数量` 逗号分隔，页面被系统回收重建后
+  // 参数仍在，用户不会回到一张空结算页；购物车与「立即购买」两条入口也因此同形。
+  { id: 'M04', path: '/pages/mall/checkout', title: '确认订单', group: 'user', requiredCapability: 'USER_BASE', params: [required('lines')], defaultBackTo: 'M03' },
+  { id: 'M05', path: '/pages/mall/orders', title: '商城订单', group: 'user', requiredCapability: 'USER_BASE', params: [optional('orderStatus', ['1', '2', '3', '4', '5', '6'])], defaultBackTo: 'M01' },
+  { id: 'M06', path: '/pages/mall/order-detail', title: '订单详情', group: 'user', requiredCapability: 'USER_BASE', params: [required('orderNo')], defaultBackTo: 'M05' },
+  // S3-B 配送端商城任务：与一期水配送任务（D01~D05）刻意分路由分页面——两条链的任务语义不同，共用页面会让 S4 售后串单
+  { id: 'M07', path: '/pages/mall/courier-tasks', title: '商城配送任务', group: 'courier', requiredCapability: 'COURIER_WORK', params: [], defaultBackTo: 'U01' },
+  { id: 'M08', path: '/pages/mall/courier-task-detail', title: '商城任务详情', group: 'courier', requiredCapability: 'COURIER_WORK', params: [required('orderNo')], defaultBackTo: 'M07' },
+  // S4 售后：申请页从订单详情进（必须带 orderNo），列表与详情自成一条可独立进入的链——
+  // 用户关心的是"我的售后到哪了"，把它挂在订单下面会让已完成订单的售后单变得找不到。
+  { id: 'M09', path: '/pages/mall/aftersale-apply', title: '申请售后', group: 'user', requiredCapability: 'USER_BASE', params: [required('orderNo')], defaultBackTo: 'M06' },
+  { id: 'M10', path: '/pages/mall/aftersale-list', title: '我的售后', group: 'user', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'M01' },
+  { id: 'M11', path: '/pages/mall/aftersale-detail', title: '售后详情', group: 'user', requiredCapability: 'USER_BASE', params: [required('afterSaleNo')], defaultBackTo: 'M10' },
   { id: 'D01', path: '/pages/courier/task/index', title: '配送任务中心', group: 'courier', requiredCapability: 'COURIER_WORK', params: [optional('view', ['available', 'active', 'history'])], defaultBackTo: 'U01' },
   { id: 'D02', path: '/pages/courier/admission/index', title: '配送准入', group: 'courier', requiredCapability: 'COURIER_APPLY', params: [], defaultBackTo: 'U03' },
   { id: 'D03', path: '/pages/courier/task/detail', title: '配送任务详情', group: 'courier', requiredCapability: 'COURIER_WORK', params: [required('taskNo'), optional('focus', ['appeal'])], defaultBackTo: 'D01' },

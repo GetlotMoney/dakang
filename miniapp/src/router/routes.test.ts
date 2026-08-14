@@ -3,11 +3,16 @@ import { evaluateRouteAccess } from './guard'
 import { appRoutes, buildRouteUrl, findRouteById } from './routes'
 
 describe('miniapp route contracts', () => {
-  it('contains 30 unique routes and exactly three fixed tab pages', () => {
-    // E2E-08 增 O06 收益钱包：28→29；S2 增 U16 自动补货规则：29→30
-    expect(appRoutes).toHaveLength(30)
-    expect(new Set(appRoutes.map(route => route.id)).size).toBe(30)
-    expect(new Set(appRoutes.map(route => route.path)).size).toBe(30)
+  it('contains 41 unique routes and exactly three fixed tab pages', () => {
+    // E2E-08 增 O06 收益钱包：28→29；S2 增 U16 自动补货规则：29→30；
+    // E2E-09 S1 增 M01 商城首页 + M02 商品详情：30→32；
+    // E2E-09 S2 增 M03 购物车 + M04 确认订单 + M05 商城订单 + M06 订单详情：32→36。
+    // E2E-09 S3-B 增 M07 商城配送任务 + M08 商城任务详情（配送端，与一期水配送任务分域）：36→38；
+    // E2E-09 S4 增 M09 申请售后 + M10 我的售后 + M11 售后详情：38→41。
+    // Tabbar 仍固定 home/order/profile 三个，商城四页全部走 navigateTo，不进底栏。
+    expect(appRoutes).toHaveLength(41)
+    expect(new Set(appRoutes.map(route => route.id)).size).toBe(41)
+    expect(new Set(appRoutes.map(route => route.path)).size).toBe(41)
 
     const tabRoutes = appRoutes.filter(route => 'tab' in route)
     expect(tabRoutes.map(route => route.tab)).toEqual(['home', 'order', 'profile'])
@@ -42,11 +47,14 @@ describe('miniapp route contracts', () => {
     expect(buildRouteUrl('U06', { orderNo: 'WO-1', focus: 'delivery' })).toBe(
       '/pages/user/order/detail?orderNo=WO-1&focus=delivery',
     )
-    expect(buildRouteUrl('U06', { orderNo: 'MR-1', source: 'local-mock' })).toBe(
-      '/pages/user/order/detail?orderNo=MR-1&source=local-mock',
-    )
-    expect(() => buildRouteUrl('U06', { orderNo: 'MR-1', source: 'unknown' })).toThrowError(
+    // source 参数随 mock 分流一并删除：白名单里没有它了，传进来即拒绝。
+    expect(() => buildRouteUrl('U06', { orderNo: 'MR-1', source: 'local-mock' })).toThrowError(
       '页面参数不合法',
+    )
+    // 结算行必须随页面参数传递：缺 lines 直接拒绝，绝不打开一张不知道在买什么的结算页
+    expect(() => buildRouteUrl('M04')).toThrowError('页面参数不完整')
+    expect(buildRouteUrl('M04', { lines: '12:2,13:1' })).toBe(
+      '/pages/mall/checkout?lines=12%3A2%2C13%3A1',
     )
   })
 

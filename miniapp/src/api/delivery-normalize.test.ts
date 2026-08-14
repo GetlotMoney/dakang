@@ -103,7 +103,7 @@ describe('normalizeDeliveryTask', () => {
     expect(() => normalizeDeliveryTask(taskRaw({ priceSnapshot: null }))).toThrow(ContractError)
   })
 
-  it('签收三照：合法项归一化为 real 证据，畸形项丢弃不拼残缺证据', () => {
+  it('签收三照：合法项归一化为受控媒体键，畸形项丢弃不拼残缺证据', () => {
     const task = normalizeDeliveryTask(taskRaw({
       taskStatus: 5,
       version: 5,
@@ -124,7 +124,6 @@ describe('normalizeDeliveryTask', () => {
       type: 1,
       label: '门牌',
       recordRef: 'DMAAA',
-      evidenceMode: 'real',
     })
     expect(task.signPhotos[1]).toMatchObject({ latitude: 30.4, longitude: 114.4 })
     expect(task.appealDeadline).toBe('20260725120000')

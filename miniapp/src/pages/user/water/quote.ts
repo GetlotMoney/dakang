@@ -2,11 +2,8 @@ import type { EntityId, VolumeMl } from '@/api/common'
 import type { CreateWaterOrderInput } from '@/api/order'
 
 /**
- * S2 扫码报价冻结的前端约束，抽成纯函数供确认页与单测共用。
- *
- * <p>抽出来的唯一目的是可被测试直接加载：这三条约束此前写在 confirm.vue 的 setup 里，
- * 而 vitest 跑在 environment:'node' 且未装 Vue SFC 装置，测试只能在自己文件里抄一份副本断言，
- * 页面改坏时不会红——那样的测试不是回归闸，是摆设。</p>
+ * S2 扫码报价冻结的前端约束，抽成纯函数供确认页与单测共用（vitest 在 node 环境无法加载 SFC，
+ * 留在页面里测试只能抄副本、改坏不会红）。
  */
 
 /** 与后端 {@code WaterBillingMath.ceilAmount} 逐字同式：ceil(毫升 × 分/升 ÷ 1000)。 */
@@ -19,10 +16,8 @@ export function estimatedAmountFen(planMl: number, unitPriceFenPerLiter: number)
 }
 
 /**
- * 下单请求体装配：字段集合就是白名单本身。
- *
- * <p>价格、金额与设备共键一律不出现——单价的权威是服务端扫码会话里的冻结值，
- * 设备/出水口由会话解引用。前端多报一个字段，服务端就多一个可被篡改的入口。</p>
+ * 下单请求体装配：字段集合就是白名单本身，价格/金额/设备共键一律不出现——
+ * 单价权威在服务端扫码会话冻结值，前端多报一个字段就多一个可被篡改的入口。
  */
 export function buildCreateWaterOrderPayload(input: {
   scanSessionId: string
@@ -41,12 +36,8 @@ export function buildCreateWaterOrderPayload(input: {
 }
 
 /**
- * 提交闸的完整判据。
- *
- * <p>{@code hasEligibility} 是本函数存在的主要理由：CARD-SCOPE 契约要求「预检卡 = 下单卡」，
- * 而预检结论只在选定某张卡之后才产生。没有这一项，任何让 card 先于 eligibility 就位的改动
- * （例如给多卡场景加一个"记住上次选卡"的默认值）都会让用户在零预检的状态下按下确认。
- * 服务端事务内仍会二次校验并整体回滚，但用户会先看到一次莫名其妙的失败。</p>
+ * 提交闸的完整判据。hasEligibility 不可省（CARD-SCOPE「预检卡=下单卡」）：
+ * 缺它则任何让 card 先于 eligibility 就位的改动都会让用户在零预检状态下按下确认。
  */
 export interface WaterSubmitState {
   quoteInvalid: boolean
@@ -74,17 +65,8 @@ export function canSubmitWater(state: WaterSubmitState): boolean {
 }
 
 /**
- * 水卡区的四态。
- *
- * <p>{@code choose} 此前在页面上不存在：整个内容区被 `context && eligibility` 门住，
- * 而多卡用户不做预检、eligibility 恒 null，于是选卡列表本身也不渲染——用户永远拿不到
- * 触发预检的入口，页面自锁。</p>
- *
- * <p><b>{@code choose} 的判据必须与模板里选卡列表的判据（{@code usableCards.length > 1}）
- * 严格同源</b>，否则会出现「叫用户去点一个页面上不存在的列表」：只有 1 张卡却没选中时
- * （预检失败），若也判成 choose，页面就会对单卡用户说"存在多张可用水卡，请先选择"，
- * 而下面一张卡都没有。这种「有卡、未选中、也选不了」的异常态单列为 {@code unresolved}，
- * 文案必须说实话并指向重扫。</p>
+ * 水卡区的四态。choose 的判据必须与模板选卡列表判据（usableCards.length > 1）严格同源，
+ * 否则会叫用户去点一个不存在的列表；「有卡、未选中、也选不了」单列为 unresolved，文案指向重扫。
  */
 export type WaterCardHint = 'none' | 'choose' | 'selected' | 'unresolved'
 

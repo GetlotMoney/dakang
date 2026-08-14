@@ -69,7 +69,7 @@ function removePhoto() {
       </view>
     </view>
     <view v-else class="photo-slot-picker" @click="choosePhoto">
-      <wd-icon name="camera" size="26px" color="#8a8f99" />
+      <wd-icon name="camera" size="26px" color="var(--app-text-tertiary)" />
       <view class="muted-text">
         选择本地照片
       </view>
@@ -80,9 +80,9 @@ function removePhoto() {
 <style scoped lang="scss">
 .photo-slot {
   padding: 12px;
-  border: 1px solid #e6e8eb;
+  border: 1px solid var(--line-2);
   border-radius: 8px;
-  background: #fff;
+  background: var(--app-bg-card);
 
   & + & {
     margin-top: 12px;
@@ -131,7 +131,7 @@ function removePhoto() {
   gap: 6px;
   height: 96px;
   margin-top: 10px;
-  border: 1px dashed #c9ced6;
+  border: 1px dashed var(--app-text-disabled);
   border-radius: 6px;
 }
 </style>

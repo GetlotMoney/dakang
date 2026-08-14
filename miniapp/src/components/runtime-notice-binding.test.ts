@@ -3,14 +3,8 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 /**
- * 页面提示文案的源码级断言（仓库无组件挂载基建，无 @vue/test-utils / jsdom）。
- *
- * <p>本文件原本钉的是「页面必须绑定 runtime-notice 的 mock/real 分流产出」。
- * 分流机制已于 2026-08-06 拆除，那条不变式随之失效——现在钉结果而非机制：
- * 每页给出确定的一句话，且任何页面都不许再冒出实现术语。</p>
- *
- * <p>与 {@code tools/check-ui-copy.py} 的分工：那道闸扫全仓、进 CI；这里覆盖几页
- * 出过实际事故的重点页面，跑在 {@code pnpm test} 里给开发即时反馈。</p>
+ * 页面提示文案的源码级断言（仓库无组件挂载基建）：钉结果而非机制——渲染文案不许出现实现术语。
+ * 与 tools/check-ui-copy.py 分工：那道闸扫全仓进 CI，这里覆盖重点页面给开发即时反馈。
  */
 function pageSource(relative: string): string {
   return readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
@@ -59,31 +53,53 @@ describe('页面提示文案', () => {
     })
   }
 
-  it('准入页（D02）：说清「自助申请不可用」，且同屏只说一遍', () => {
-    const source = pageSource('../pages/courier/admission/index.vue')
-    expect(source).toContain('暂不支持自助申请')
-    // 这句只归准入状态卡片。顶栏提示条是无条件渲染的：已启用的配送员进来看到的
-    // 第一句话会是「暂不支持自助申请」，而他早就在接单了——对每一种非「未提交」状态
-    // 都是噪音，且在「未提交」状态下与卡片里那句一字不差。整条移除。
-    expect(source).not.toContain('<AppPrototypeNotice')
-    expect(source.match(/暂不支持自助申请/g)).toHaveLength(1)
+  /**
+   * 守住「暂不支持自助申请」这条已删死路径不许回来。「不许出现」类断言必须先 renderedOnly 剥注释，
+   * 否则解释性注释里的同名字符串会让断言失真。
+   */
+  it('准入页（D02）：不留「不支持自助申请」这条死路径，也不挂顶部提示条', () => {
+    const rendered = renderedOnly(pageSource('../pages/courier/admission/index.vue'))
+    expect(rendered).not.toContain('<AppPrototypeNotice')
+    expect(rendered).not.toContain('暂不支持自助申请')
+    expect(rendered).not.toContain('selfSubmitSupported')
+    // 已启用状态要给去处而不是一句「入口在首页」
+    expect(rendered).toMatch(/goTo\('D01'\)/)
   })
 
-  it('首页（U01）：机主面写明订单额不等于可提现金额', () => {
-    const source = pageSource('../pages/user/home/index.vue')
-    expect(source).toMatch(/face\.value === 'courier'/)
-    expect(source).toContain('非可提现金额')
+  /** 钉「必须没有免责式声明、且必须有收益钱包入口」，防止两条已删提示回潮。 */
+  it('首页（U01）：不挂常驻提示条，口径差异交给标签与入口', () => {
+    const rendered = renderedOnly(pageSource('../pages/user/home/index.vue'))
+    expect(rendered).not.toContain('<AppPrototypeNotice')
+    expect(rendered).not.toContain('非可提现金额')
+    expect(rendered).not.toContain('无法撤销')
+    // 机主面必须能走到收益钱包，否则「成交额不等于到手」这件事就真的没人回答了
+    const ownerFace = pageSource('./home-face-owner.vue')
+    expect(ownerFace).toContain('收益钱包')
+    expect(ownerFace).toMatch(/goTo\('O06'\)/)
+    // 金额标签本身承担口径
+    expect(ownerFace).toContain('订单成交额')
   })
 
-  it('我的页（U03）：不挂顶部提示条，服务说明只讲会扣余额这一件事', () => {
+  it('我的页（U03）：不挂顶部提示条，隐私走平台指引而不是自撰弹窗', () => {
     const source = pageSource('../pages/user/profile/index.vue')
-    expect(source).not.toContain('<AppPrototypeNotice')
-    expect(source).toContain('扣减水卡余额')
+    // 「不许出现」类断言一律先剥注释再判：注释里写这些词是对的
+    const rendered = renderedOnly(source)
+    expect(rendered).not.toContain('<AppPrototypeNotice')
+    expect(rendered).not.toContain('扣减水卡余额')
+    expect(rendered).not.toContain('服务说明')
+    // 隐私入口保留，但指向平台《用户隐私保护指引》全文，不再弹自写的一段说明
+    expect(source).toContain('隐私与授权')
+    expect(source).toContain('openPrivacyContract')
+    expect(rendered).not.toContain('当前不获取你的位置')
   })
 
-  it('附近水站（U07）：说清距离看不到，而不是解释为什么', () => {
-    const source = pageSource('../pages/user/station/index.vue')
-    expect(source).toContain('暂不获取定位')
-    expect(source).toMatch(/<AppPrototypeNotice[^>]*:text="stationNotice"/)
+  /** 距离缺省时整格不渲染，不再挂「暂不获取定位」解释性提示；守住不回潮。 */
+  it('水站目录（U07）：没有距离就不摆空指标格，也不解释为什么', () => {
+    const rendered = renderedOnly(pageSource('../pages/user/station/index.vue'))
+    expect(rendered).not.toContain('<AppPrototypeNotice')
+    expect(rendered).not.toContain('暂不获取定位')
+    expect(rendered).not.toContain('未定位')
+    // 距离只在接口真给了米数时才渲染
+    expect(pageSource('../pages/user/station/index.vue')).toMatch(/distanceText\(station\.distanceMeters\)/)
   })
 })

@@ -80,6 +80,8 @@ export interface DeliveryAddress {
   maskedPhone: string
   region: string
   detail: string
+  /** 收货区县行政区码（6 位）。缺省=尚未补选；商城选仓完全依赖它，区县文本（region）不能替代。 */
+  districtCode?: string
   isDefault: boolean
   locationAuthorized: boolean
 }
@@ -121,6 +123,8 @@ export interface SaveDeliveryAddressInput {
   phone: string
   region: string
   detail: string
+  /** 6 位行政区码；留空表示暂不补选（服务端存 NULL），不是必填项。 */
+  districtCode?: string
   isDefault: boolean
   locationAuthorized: boolean
 }
@@ -161,9 +165,8 @@ export const cardEndpoints = {
 } as const
 
 /**
- * 后端主水卡原始返回：后端全局 Jackson 将 Long 序列化为字符串（防 JS 精度丢失），
- * 故 cardId/balanceFen/balanceMl 到达前端是数值字符串；cardType/cardStatus 为 Integer 仍是数字。
- * 字段名按 miniapp CardSummary 契约对齐（cardId/balanceFen/balanceMl）；兼容后端可能沿用的 id/balanceAmount。
+ * 后端主水卡原始返回：Long 序列化为字符串（防 JS 精度丢失），Integer 仍是数字；
+ * 兼容后端可能沿用的 id/balanceAmount 字段名。
  */
 interface CardSummaryRaw {
   cardId?: string | number | null
@@ -177,7 +180,6 @@ interface CardSummaryRaw {
   expireTime?: string | null
 }
 
-/** 后端主水卡 → 前端 CardSummary（Long→字符串的余额/水量归一化为 number；防精度丢失）。 */
 /** 后端 MiniCardMemberVo 原样结构（Long 已按字符串下发）。 */
 interface CardMemberRaw {
   memberId?: string | number
@@ -291,10 +293,8 @@ function strictNonNegativeInt(value: unknown): number | undefined {
 }
 
 /**
- * 后端可用卡 → 契约 UsableCard（CARD-MEMBER）。fail-closed 口径：
- * accessRole 只有显式 'OWNER' 才是 OWNER，未知/缺失一律按 MEMBER 降级；
- * MEMBER 卡能力位无条件钉死 false——即使后端（或被篡改的响应）声称可充值，
- * 前端也不得给成员卡开充值/管成员入口；剩余限额走 strictNumber，畸形值归一化为 undefined。
+ * 后端可用卡 → 契约 UsableCard（CARD-MEMBER）。fail-closed：accessRole 只有显式 'OWNER' 才是 OWNER，
+ * 未知/缺失按 MEMBER 降级；MEMBER 卡能力位无条件钉死 false；剩余限额畸形值归一化为 undefined。
  */
 export function normalizeUsableCard(raw: UsableCardRaw): UsableCard {
   const owner = raw.accessRole === 'OWNER'
@@ -320,14 +320,7 @@ function normalizeCardSummary(raw: CardSummaryRaw): CardSummary {
   }
 }
 
-/**
- * card 域真实适配器（L1f-MP 水卡余额真实展示，修资金误导）。
- *
- * getPrimaryCard/getCardDetail/usable-list/成员授权已接真（KH_USER 会话按登录人强制圈定，
- * CARD-MEMBER 成员接口使用 /mini/card/member/*，手机号只返回脱敏值。
- * 其余方法（家庭/地址）后端 /mini/family|address 未建，暂委托 mock，
- * 待后续切片逐个替换（不引入 realAdapterPending 以免打断已封板演示）。
- */
+/** card 域真实适配器：KH_USER 会话按登录人强制圈定，手机号只返回脱敏值。 */
 
 // ---- 家庭/地址真实契约归一化（Long ID 恒 string；电话只收服务端脱敏值） ----
 
@@ -345,8 +338,16 @@ interface DeliveryAddressRaw {
   maskedPhone?: unknown
   region?: unknown
   detail?: unknown
+  districtCode?: unknown
   isDefault?: unknown
   locationAuthorized?: unknown
+}
+
+/**
+ * 区县码归一：只认 6 位十进制数字，其余一律 undefined——半截值会让商城选仓在服务端悄悄命中不到任何仓。
+ */
+export function normalizeDistrictCode(raw: unknown): string | undefined {
+  return typeof raw === 'string' && /^\d{6}$/.test(raw) ? raw : undefined
 }
 
 function normalizeFamilyProfile(raw: FamilyProfileRaw): FamilyProfile {
@@ -359,13 +360,14 @@ function normalizeFamilyProfile(raw: FamilyProfileRaw): FamilyProfile {
   }
 }
 
-function normalizeDeliveryAddress(raw: DeliveryAddressRaw): DeliveryAddress {
+export function normalizeDeliveryAddress(raw: DeliveryAddressRaw): DeliveryAddress {
   return {
     addressId: String(raw.addressId ?? '') as EntityId,
     contactName: String(raw.contactName ?? ''),
     maskedPhone: String(raw.maskedPhone ?? ''),
     region: String(raw.region ?? ''),
     detail: String(raw.detail ?? ''),
+    districtCode: normalizeDistrictCode(raw.districtCode),
     isDefault: raw.isDefault === true,
     locationAuthorized: raw.locationAuthorized === true,
   }
@@ -468,6 +470,8 @@ const realCardApi: CardApi = {
         phone: input.phone,
         region: input.region,
         detail: input.detail,
+        // 上送前同样只放行 6 位码：把半截值送上去等于让服务端存一个永远选不到仓的地址
+        districtCode: normalizeDistrictCode(input.districtCode) ?? '',
         isDefault: input.isDefault,
         locationAuthorized: input.locationAuthorized,
       })
@@ -482,9 +486,8 @@ const realCardApi: CardApi = {
 }
 
 /**
- * U04 取水卡选择判定（CARD-MEMBER：仅一张可用卡默认选中；多张必须用户选；不再依赖
- * 「虚拟卡优先」当业务规则）。抽成纯函数的原因：这条判定决定了"钱从谁的卡里扣"，
- * 藏在页面里就没法证伪——多卡静默选第一张，成员就可能在不知情时扣了卡主的卡。
+ * U04 取水卡选择判定（CARD-MEMBER）：仅一张可用卡默认选中，多张必须用户选——
+ * 多卡静默选第一张会在成员不知情时扣了卡主的卡。
  */
 export type CardSelection
   = | { mode: 'none' }

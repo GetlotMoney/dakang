@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { CardSummary, DeliveryAddress } from '@/api/card'
+import AppPageState from '@/components/app-page-state.vue'
 import type { StationSummary, WaterType } from '@/api/catalog'
 import type { CreateDeliveryOrderInput, DeliveryPayWay, DeliveryTask } from '@/api/delivery'
 import { onLoad, onShow } from '@dcloudio/uni-app'
@@ -17,6 +18,7 @@ import {
   deliveryWaterMl,
   newDeliveryRequestId,
 } from '@/api/delivery'
+import AppBottomActionBar from '@/components/app-bottom-action-bar.vue'
 import AppNavbar from '@/components/app-navbar.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { consumeDeliveryDraft } from '@/store/delivery-draft'
@@ -34,6 +36,12 @@ type ContainerSpec = DeliveryTask['containerSpec']
 
 const toast = useToast()
 const message = useMessage()
+/**
+ * 手动填地址时软键盘会盖住 position:fixed 的吸底栏。
+ * 聚焦期间整条不渲染（placeholder 同步消失，页面不会留一段空白），失焦即恢复。
+ * 只影响这一条栏的显隐，不改任何提交守卫。
+ */
+const editingAddressField = ref(false)
 
 /** 容器规格选项直接取自契约价目表键，保证费用预览与下单快照同源（REQ-060 / api/delivery.ts）。 */
 const CONTAINER_SPECS = Object.keys(CONTAINER_WATER_PRICE_FEN) as ContainerSpec[]
@@ -73,10 +81,8 @@ const manualAddress = ref(false)
  */
 const requestId = ref(newDeliveryRequestId())
 
-// 出货三份 env 的 delivery 恒为 real，「演示数据，不会真实扣款」这条回落分支不可达；
-// 且它一旦可达就会对着一个真扣水卡余额的构建说不扣款，与 runtime-notice 拆除的
-// mock 回落是同一类事故，故不保留分支，只留唯一成立的这句。
-const noticeText = '提交后从水卡扣款，无法撤销。'
+// 只留「不可撤销」这条别处没有承载的事实；「从水卡扣款」本屏已由支付方式区块说清
+const noticeText = '提交后不可撤销。'
 
 const selectedAddress = computed(() =>
   addresses.value.find(item => item.addressId === selectedAddressId.value),
@@ -116,6 +122,19 @@ const balanceOption = computed(() => payOptions.value.find(option => option.payW
 const mlOption = computed(() => payOptions.value.find(option => option.payWay === 3)!)
 
 /** 选项说明行：可用时给余额/水量现状，禁用时给禁用原因（不足项文案与服务端拒因一致）。 */
+const noCard = computed(() => primaryCard.value === null)
+/** 两种支付方式都不可用不等于无卡：有卡但余额或水量不足时同样成立。 */
+const noPayWayAvailable = computed(() => balanceOption.value.disabled && mlOption.value.disabled)
+const payBlockedText = computed(() => {
+  if (noCard.value) {
+    return '暂无水卡'
+  }
+  if (deliveryMode.value === 'auto-refill') {
+    return balanceOption.value.reason ?? '当前支付方式不可用'
+  }
+  return mlOption.value.reason ?? balanceOption.value.reason ?? '当前支付方式不可用'
+})
+
 const balanceOptionNote = computed(() => {
   if (balanceOption.value.disabled) {
     return balanceOption.value.reason ?? ''
@@ -307,22 +326,37 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell" :class="{ 'page-shell--with-bar': !editingAddressField }">
     <AppNavbar title="配送下单" back-to="U01" />
     <wd-toast />
     <wd-message-box />
 
+    <view class="delivery-hero">
+      <image
+        class="delivery-hero__art"
+        src="/static/brand/delivery-journey.jpg"
+        mode="aspectFill"
+      />
+      <view class="delivery-hero__copy">
+        <text class="delivery-hero__title">
+          从水站到家
+        </text>
+        <text class="delivery-hero__desc">
+          选择水站、规格与配送方式
+        </text>
+      </view>
+    </view>
+
     <AppPrototypeNotice :text="noticeText" />
 
-    <view v-if="loading" class="page-section muted-text">
-      配送下单数据加载中…
+    <view v-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <template v-else>
       <view class="page-section">
         <wd-cell-group title="收货与水站" border>
-          <!-- 地址簿已接服务端（2026-08-02）：选地址传 addressId，号码由服务端解引用写快照、不经前端；
-               也可切手动填写（快照式直填，服务端校验）。 -->
+          <!-- 选地址传 addressId，号码由服务端解引用写快照、不经前端；也可切手动直填（服务端校验） -->
           <wd-cell
             v-if="!manualAddress"
             title="收货地址"
@@ -346,6 +380,8 @@ async function handleSubmit() {
               :maxlength="200"
               auto-height
               placeholder="请填写完整收水地址（小区/楼栋/门牌）"
+              @focus="editingAddressField = true"
+              @blur="editingAddressField = false"
             />
             <wd-input
               v-model="receivePhone"
@@ -354,6 +390,8 @@ async function handleSubmit() {
               type="number"
               :maxlength="11"
               placeholder="请输入 11 位手机号"
+              @focus="editingAddressField = true"
+              @blur="editingAddressField = false"
             />
           </template>
           <wd-cell
@@ -455,16 +493,25 @@ async function handleSubmit() {
             <wd-radio :value="2" :disabled="balanceOption.disabled">
               {{ PAY_WAY_LABELS[2] }}（水费+配送费均扣余额）
             </wd-radio>
-            <view class="pay-option-note muted-text" :class="{ 'pay-option-blocked': balanceOption.disabled }">
+            <view v-if="!noCard" class="pay-option-note muted-text" :class="{ 'pay-option-blocked': balanceOption.disabled }">
               {{ balanceOptionNote }}
             </view>
             <wd-radio :value="3" :disabled="mlOption.disabled">
               水量抵扣水费 + 余额付配送费
             </wd-radio>
-            <view class="pay-option-note muted-text" :class="{ 'pay-option-blocked': mlOption.disabled }">
+            <view v-if="!noCard" class="pay-option-note muted-text" :class="{ 'pay-option-blocked': mlOption.disabled }">
               {{ mlOptionNote }}
             </view>
           </wd-radio-group>
+          <!-- 无卡与余额/水量不足必须分开提示；两者虽都会禁用提交，但下一步动作不同。 -->
+          <view v-if="noPayWayAvailable" class="pay-blocked">
+            <text class="pay-blocked__text">
+              {{ payBlockedText }}
+            </text>
+            <wd-button size="small" plain @click="goTo('U10')">
+              {{ noCard ? '去购卡' : '去充值' }}
+            </wd-button>
+          </view>
           <wd-cell :title="PAY_WAY_LABELS[1]" center>
             <wd-tag plain>
               暂不支持
@@ -473,16 +520,72 @@ async function handleSubmit() {
         </wd-cell-group>
       </view>
 
-      <view class="page-section">
-        <wd-button block size="large" :loading="submitting" @click="handleSubmit">
-          {{ payWay === 3 ? '提交配送订单（水量抵扣+余额配送费）' : '提交配送订单（水卡余额支付）' }}
-        </wd-button>
-      </view>
+      <!-- 提交固定底部并常驻应扣金额：不让用户在看不见总额的情况下按下扣款按钮 -->
+      <AppBottomActionBar v-if="!editingAddressField">
+        <template #summary>
+          <text class="muted-text">
+            应扣合计
+          </text>
+          <text class="money bar-amount">
+            {{ formatFen(payWay === 3 ? deliveryFeeFen : totalAmountFen) }}
+          </text>
+        </template>
+        <template #primary>
+          <wd-button
+            size="large"
+            type="primary"
+            :loading="submitting"
+            :disabled="noPayWayAvailable"
+            @click="handleSubmit"
+          >
+            提交订单
+          </wd-button>
+        </template>
+      </AppBottomActionBar>
     </template>
   </view>
 </template>
 
 <style scoped lang="scss">
+.delivery-hero {
+  position: relative;
+  height: 150px;
+  margin-top: var(--gap-hero);
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
+
+  &__art {
+    width: 100%;
+    height: 100%;
+  }
+
+  &__copy {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    display: flex;
+    width: 38%;
+    flex-direction: column;
+    align-items: center;
+    transform: translate(-50%, -50%);
+    text-align: center;
+  }
+
+  &__title {
+    color: var(--app-text-primary);
+    font-size: var(--fs-title);
+    font-weight: 700;
+  }
+
+  &__desc {
+    margin-top: var(--sp-1);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-note);
+    line-height: 1.45;
+  }
+}
+
 .fee-row {
   display: flex;
   align-items: center;
@@ -494,6 +597,24 @@ async function handleSubmit() {
 .fee-total {
   font-size: 16px;
   font-weight: 600;
+}
+
+.pay-blocked {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.pay-blocked__text {
+  color: var(--app-color-danger);
+  font-size: var(--fs-caption);
+}
+
+.bar-amount {
+  font-size: var(--fs-title);
+  font-weight: 700;
 }
 
 .pay-option-note {

@@ -7,19 +7,19 @@ import { useToast } from 'wot-design-uni'
 import { catalogApi } from '@/api/catalog'
 import { ContractError } from '@/api/common'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import { setDraftStation } from '@/store/delivery-draft'
 import { backOr } from '@/utils/navigation'
 
 definePage({
   style: {
     navigationStyle: 'custom',
-    navigationBarTitleText: '附近水站',
+    navigationBarTitleText: '水站目录',
   },
 })
 
 const toast = useToast()
-const stationNotice = '暂不获取定位，无法显示距离。'
+const keyword = ref('')
 
 /** 水站营业状态中文口径（utils/format 暂无该映射，页面内先行冻结）。 */
 const STATION_STATUS_LABELS: Record<StationSummary['status'], string> = {
@@ -41,21 +41,39 @@ const stations = ref<StationSummary[]>([])
 const targetStationId = ref('')
 const selectMode = ref(false)
 
+/**
+ * 关键词过滤：只在已取回的列表上按水站名与地址做包含匹配，
+ * 不改 listStations 的请求参数，也不引入分页/远程搜索。
+ */
+const matchedStations = computed(() => {
+  const key = keyword.value.trim()
+  if (!key) {
+    return stations.value
+  }
+  return stations.value.filter(
+    item => item.stationName.includes(key) || item.address.includes(key),
+  )
+})
+
 /** stationId 参数存在时目标水站排首位并加“目标水站”标识。 */
 const sortedStations = computed(() => {
   if (!targetStationId.value) {
-    return stations.value
+    return matchedStations.value
   }
-  const target = stations.value.filter(item => item.id === targetStationId.value)
-  const rest = stations.value.filter(item => item.id !== targetStationId.value)
+  const target = matchedStations.value.filter(item => item.id === targetStationId.value)
+  const rest = matchedStations.value.filter(item => item.id !== targetStationId.value)
   return [...target, ...rest]
 })
 
-function formatDistance(meters?: number) {
-  if (meters === undefined) {
-    return '未定位'
-  }
-  return `${(meters / 1000).toFixed(1)}km`
+/**
+ * 距离只在接口真实给出时才渲染。
+ *
+ * <p>原实现缺省返回「未定位」，等于给每个水站摆一个恒定为空的指标格，还要在页顶
+ * 再挂一条「暂不获取定位，无法显示距离。」去解释它。没有的东西就不占位——
+ * 指标格整格不渲染，那条解释也随之不需要存在。</p>
+ */
+function distanceText(meters?: number): string {
+  return meters === undefined ? '' : `${(meters / 1000).toFixed(1)}km`
 }
 
 onLoad((query?: Record<string, string | undefined>) => {
@@ -97,188 +115,217 @@ function handleStationTap(station: StationSummary) {
 
 <template>
   <view class="page-shell">
-    <AppNavbar title="附近水站" back-to="U01" />
+    <AppNavbar title="水站目录" back-to="U01" />
     <wd-toast />
-    <AppPrototypeNotice :text="stationNotice" />
-
-    <view v-if="pageState === 'loading'" class="page-section loading-box">
-      <wd-loading />
-      <view class="muted-text">
-        正在加载水站列表…
+    <view class="station-hero">
+      <image
+        class="station-hero__art"
+        src="/static/brand/station-network.jpg"
+        mode="aspectFill"
+      />
+      <view class="station-hero__copy">
+        <text class="station-hero__title">
+          六维水站网络
+        </text>
+        <text class="station-hero__desc">
+          查看水站营业与设备状态
+        </text>
       </view>
+    </view>
+    <!-- 搜索置顶：水站名与地址就地过滤 -->
+    <view class="search">
+      <wd-search v-model="keyword" placeholder="水站名称或地址" placeholder-left hide-cancel light />
+    </view>
+
+    <view v-if="pageState === 'loading'" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, 1, { width: '70%' }]" />
     </view>
 
     <view v-else-if="pageState === 'error'" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="load">
-              重新加载
-            </wd-button>
-            <wd-button plain @click="backOr('U01')">
-              返回首页
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain @click="load">
+            重新加载
+          </wd-button>
+          <wd-button plain @click="backOr('U01')">
+            返回首页
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else>
       <view v-if="!sortedStations.length" class="page-section">
-        <wd-status-tip image="content" tip="暂无水站数据">
-          <template #bottom>
-            <view class="status-actions">
-              <wd-button plain @click="backOr('U01')">
-                返回首页
-              </wd-button>
-            </view>
+        <AppPageState state="empty" :title="keyword.trim() ? '没有匹配的水站' : '暂无水站数据'">
+          <template #actions>
+            <wd-button v-if="keyword.trim()" plain @click="keyword = ''">
+              清空搜索
+            </wd-button>
+            <wd-button v-else plain @click="backOr('U01')">
+              返回首页
+            </wd-button>
           </template>
-        </wd-status-tip>
+        </AppPageState>
       </view>
 
-      <view v-for="station in sortedStations" :key="station.id" class="page-section">
-        <wd-card custom-class="block-card">
-          <template #title>
-            <view class="card-title-row">
-              <view class="station-title">
-                <view class="station-name">
-                  {{ station.stationName }}
-                </view>
-                <wd-tag v-if="station.id === targetStationId" type="primary" plain>
-                  目标水站
-                </wd-tag>
-              </view>
-              <wd-tag :type="STATION_STATUS_TONES[station.status]" plain>
-                {{ STATION_STATUS_LABELS[station.status] }}
-              </wd-tag>
-            </view>
-          </template>
-          <view class="station-body" @click="handleStationTap(station)">
-            <view class="station-address">
-              <wd-icon name="location" size="14px" color="var(--app-text-secondary)" />
-              <view>{{ station.address }}</view>
-            </view>
-            <view class="station-metrics">
-              <view class="station-metric">
-                <view class="station-metric-value">
-                  {{ formatDistance(station.distanceMeters) }}
-                </view>
-                <view class="muted-text">
-                  距离
-                </view>
-              </view>
-              <view class="station-metric">
-                <view class="station-metric-value">
-                  {{ station.onlineDeviceCount }}
-                </view>
-                <view class="muted-text">
-                  在线设备
-                </view>
-              </view>
-              <view class="station-metric">
-                <view class="station-metric-value">
-                  {{ station.availableOutletCount }}
-                </view>
-                <view class="muted-text">
-                  可用出水口
-                </view>
-              </view>
-            </view>
-            <view v-if="selectMode" class="station-select">
-              选择该水站 <wd-icon name="arrow-right" size="14px" />
-            </view>
+      <!-- 一张连续的白底表，不是一摞阴影卡：水站名是主信息，状态与营业情况为辅。
+           选择模式下目标水站用品牌蓝浅底标出当前选中，不再只靠一枚小 tag。 -->
+      <view v-else class="station-list">
+        <view
+          v-for="station in sortedStations"
+          :key="station.id"
+          class="station-row"
+          :class="{
+            'station-row--target': station.id === targetStationId,
+            'pressable': selectMode,
+          }"
+          @click="handleStationTap(station)"
+        >
+          <view class="station-row__head">
+            <text class="station-row__name">
+              {{ station.stationName }}
+            </text>
+            <wd-tag :type="STATION_STATUS_TONES[station.status]" plain>
+              {{ STATION_STATUS_LABELS[station.status] }}
+            </wd-tag>
           </view>
-        </wd-card>
-      </view>
-
-      <view v-if="!selectMode && sortedStations.length" class="page-section muted-text browse-note">
-        设备明细请扫码查看。
+          <text class="station-row__address">
+            {{ station.address }}
+          </text>
+          <view class="station-row__meta">
+            <text class="station-row__metric">
+              在线设备 {{ station.onlineDeviceCount }}
+            </text>
+            <text class="station-row__metric">
+              可用出水口 {{ station.availableOutletCount }}
+            </text>
+            <text v-if="distanceText(station.distanceMeters)" class="station-row__metric num">
+              {{ distanceText(station.distanceMeters) }}
+            </text>
+          </view>
+          <view v-if="selectMode" class="station-row__select">
+            {{ station.id === targetStationId ? '当前选择' : '选择该水站' }}
+            <wd-icon name="arrow-right" size="14px" />
+          </view>
+        </view>
       </view>
     </template>
   </view>
 </template>
 
 <style scoped lang="scss">
-.loading-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 64px 0;
-}
-
-.status-actions {
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-  margin-top: 20px;
-}
-
-.card-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  gap: 8px;
-}
-
-.station-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.station-name {
+.station-hero {
+  position: relative;
+  height: 146px;
+  margin-top: var(--gap-hero);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
+
+  &__art {
+    width: 100%;
+    height: 100%;
+  }
+
+  &__copy {
+    position: absolute;
+    top: var(--sp-4);
+    left: var(--sp-4);
+    display: flex;
+    flex-direction: column;
+    max-width: 42%;
+  }
+
+  &__title {
+    color: var(--app-text-primary);
+    font-size: var(--fs-title);
+    font-weight: 700;
+  }
+
+  &__desc {
+    margin-top: var(--sp-1);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-note);
+    line-height: 1.45;
+  }
 }
 
-.station-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.search {
+  margin-top: var(--gap-block);
+  overflow: hidden;
+  border-radius: var(--r-sm);
 }
 
-.station-address {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--app-text-secondary);
-  font-size: 13px;
+.station-list {
+  margin-top: var(--gap-block);
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
 }
 
-.station-metrics {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 8px;
-}
+.station-row {
+  padding: var(--sp-4);
+  border-bottom: 1px solid var(--line-1);
 
-.station-metric {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
+  &:last-child {
+    border-bottom: none;
+  }
 
-.station-metric-value {
-  font-size: 17px;
-  font-weight: 600;
-}
+  // 当前选中：品牌蓝浅底承担「选中」语义，不加描边也不加投影
+  &--target {
+    background: var(--tint-primary);
+  }
 
-.station-select {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  padding: 6px 0 2px;
-  color: var(--wot-color-theme, var(--app-color-primary));
-  font-size: 14px;
-}
+  &__head {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: center;
+  }
 
-.browse-note {
-  text-align: center;
+  // 水站名是这一行的主信息，长名单行截断而不是把状态 tag 挤下去
+  &__name {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--fs-title);
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__address {
+    display: block;
+    margin-top: var(--sp-1);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-caption);
+    line-height: 1.4;
+  }
+
+  &__meta {
+    display: flex;
+    gap: var(--sp-4);
+    align-items: baseline;
+    margin-top: var(--sp-2);
+    color: var(--app-text-tertiary);
+    font-size: var(--fs-note);
+  }
+
+  &__metric {
+    flex: none;
+  }
+
+  &__select {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    margin-top: var(--sp-3);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--line-1);
+    color: var(--app-color-primary);
+    font-size: var(--fs-caption);
+    font-weight: 600;
+  }
 }
 </style>

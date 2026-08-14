@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-
 /**
  * 凭证选择（D03 举证 / D05 异常 / U09 申诉共用）：0~max 张本地图片。
  * 组件只做本地选图，上传动作由调用页在提交时执行。
@@ -20,8 +18,6 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string[]): void
 }>()
-
-const noteText = computed(() => `最多 ${props.max} 张照片。`)
 
 function firstTempPath(paths: string | string[]): string {
   return Array.isArray(paths) ? (paths[0] ?? '') : paths
@@ -56,18 +52,15 @@ function removePhoto(index: number) {
       <view v-for="(item, index) in modelValue" :key="`${index}-${item}`" class="evidence-item">
         <image :src="item" mode="aspectFill" class="evidence-image" />
         <view class="evidence-remove" @click="removePhoto(index)">
-          <wd-icon name="close" size="12px" color="#fff" />
+          <wd-icon name="close" size="12px" color="var(--app-text-inverse)" />
         </view>
       </view>
       <view v-if="modelValue.length < max" class="evidence-add" @click="addPhoto">
-        <wd-icon name="camera" size="22px" color="#8a8f99" />
+        <wd-icon name="camera" size="22px" color="var(--app-text-tertiary)" />
         <view class="muted-text">
           {{ modelValue.length }}/{{ max }}
         </view>
       </view>
-    </view>
-    <view class="muted-text evidence-note">
-      {{ noteText }}
     </view>
   </view>
 </template>
@@ -105,7 +98,7 @@ function removePhoto(index: number) {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.65);
+  background: var(--mask-overlay);
 }
 
 .evidence-add {
@@ -116,11 +109,7 @@ function removePhoto(index: number) {
   gap: 2px;
   width: 76px;
   height: 76px;
-  border: 1px dashed #c9ced6;
+  border: 1px dashed var(--app-text-disabled);
   border-radius: 6px;
-}
-
-.evidence-note {
-  margin-top: 8px;
 }
 </style>

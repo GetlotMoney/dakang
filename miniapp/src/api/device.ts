@@ -114,14 +114,8 @@ export interface OwnerOverview {
   orderCount: number
   actualVolumeMl: VolumeMl
   orderAmountFen: MoneyFen
-  /**
-   * 本期出水中由水卡水量支付的部分（毫升）。这部分水费在用户充值环节就已结算，
-   * 而充值单不归属任何机主，故它对 orderAmountFen 的贡献恒为 0——单列出来，
-   * 机主才不会把「出水多、金额少」误读成漏记。
-   */
+  /** 本期出水中由水卡水量支付的部分（毫升）：水费在充值环节已结算，对 orderAmountFen 贡献恒 0，单列防误读成漏记。 */
   prepaidVolumeMl: VolumeMl
-  /** 证据模式：real=真实库聚合（E2E-06 冻结契约变更：原仅 prototype/external-snapshot 两值） */
-  evidenceMode: 'prototype' | 'external-snapshot' | 'real'
 }
 
 export interface OwnerTransactionItem {
@@ -145,11 +139,8 @@ export interface OwnerTransactionQuery {
 }
 
 /**
- * 交易快照周期必须复用服务端概览返回的同一时钟窗口。
- *
- * 客户端自行按本地时区计算“近 7 日”会与服务端 Asia/Shanghai 的自然日边界漂移；
- * 只传起点还会把未来时间的异常订单纳入。全部档不传任何时间条件，近 7 日档则同时
- * 传入权威起止时间，保持 O01 概览与 O04 明细口径一致。
+ * 交易快照周期必须复用服务端概览返回的同一时钟窗口：客户端按本地时区自算"近 7 日"会与服务端
+ * Asia/Shanghai 自然日边界漂移，只传起点还会把未来时间的异常订单纳入。
  */
 export function ownerTransactionPeriodQuery(
   period: string,
@@ -187,8 +178,7 @@ export interface OwnerServiceRequest {
   maskedContactPhone: string
   status: OwnerServiceStatus
   createTime: BusinessTime
-  evidenceMode: 'prototype' | 'external-snapshot'
-  /** 三端贯穿的真实工单号（real 模式返回；mock 原型请求无工单） */
+  /** 三端贯穿的真实工单号 */
   workOrderNo?: string
   /** 驳回原因（已驳回时返回） */
   rejectReason?: string
@@ -227,7 +217,6 @@ export interface OwnerWallet {
   /** 最早一笔在途分润的预计解冻时间；无在途时缺省。 */
   earliestUnfreezeTime?: BusinessTime
   flows: OwnerWalletFlow[]
-  evidenceMode: 'prototype' | 'real'
 }
 
 export interface DeviceApi {
@@ -263,10 +252,6 @@ export const deviceEndpoints = {
   ownerWallet: '/mini/owner/wallet',
 } as const
 
-/**
- * eligibility 后端原始返回：后端全局 Jackson 将 Long 序列化为字符串（防 JS 精度丢失），
- * 故 maxAllowedMl/remainingDailyLimitMl 到达前端是数值字符串；其余字段与前端类型一致。
- */
 /** 机主经营后端原始返回（Long→字符串序列化：金额/水量/total 为数值字符串）。 */
 interface OwnerOverviewRaw {
   periodStart: string
@@ -280,7 +265,6 @@ interface OwnerOverviewRaw {
   actualVolumeMl?: string | number | null
   orderAmountFen?: string | number | null
   prepaidVolumeMl?: string | number | null
-  evidenceMode?: string
 }
 
 interface OwnerTransactionRaw {
@@ -303,10 +287,7 @@ interface WaterEligibilityRaw {
   cardBlock?: { code: CardBlockCode, message: string } | null
 }
 
-/**
- * 数值字段归一化（strictNumber 手法，与 order.ts 同口径）：水量是毫升整数，
- * 只判 Number() 会把 '1.5'、'1e3' 这类畸形值一路放进比较逻辑；非法值一律按缺省处理。
- */
+/** 数值归一化（与 order.ts 同口径）：只判 Number() 会放过 '1.5'、'1e3' 畸形值；非法值一律按缺省处理。 */
 function strictVolume(value: string | number | null | undefined): number | undefined {
   if (value == null) {
     return undefined
@@ -322,12 +303,8 @@ function strictVolume(value: string | number | null | undefined): number | undef
 }
 
 /**
- * device 域真实适配器。
- *
- * 取水三接口（scan/resolve、water/context、water/eligibility）E2E-01 接真；
- * 机主设备与报修（/mini/owner/device|service/*）E2E-05 接真；
- * 机主经营（/mini/owner/overview、/mini/owner/transaction/page）E2E-06 接真——
- * 订单口径毛额，数据范围由服务端按会话 OWNER_USER_ID 双轨过滤，前端不传 userId。
+ * device 域真实适配器（取水 E2E-01、机主设备/报修 E2E-05、机主经营 E2E-06）：
+ * 经营为订单口径毛额，数据范围由服务端按会话 OWNER_USER_ID 过滤，前端不传 userId。
  */
 const realDeviceApi: DeviceApi = {
   async resolveScanCode(rawCode) {
@@ -345,7 +322,6 @@ const realDeviceApi: DeviceApi = {
     return withRealSession(async () => {
       // CARD-SCOPE：cardId 随请求上送，后端只预检这张卡（预检卡=下单卡）
       const raw = await post<WaterEligibilityRaw>(deviceEndpoints.eligibility, { scanSessionId, cardId })
-      // 数值字符串按 strictNumber 手法归一化；后端 null/畸形值归一化为 undefined。
       return {
         availability: raw.availability,
         reason: raw.reason ?? undefined,
@@ -355,14 +331,12 @@ const realDeviceApi: DeviceApi = {
       }
     })
   },
-  // owner 域接真（E2E-05 包E）：数据范围由服务端按会话 OWNER_USER_ID 过滤，前端不传 userId。
   async listOwnerDevices() {
     return withRealSession(() => post<DeviceSummary[]>(deviceEndpoints.ownerList, {}))
   },
   async getOwnerDeviceDetail(deviceNo) {
     return withRealSession(() => post<DeviceDetail>(deviceEndpoints.ownerDetail, { deviceNo }))
   },
-  // 机主经营（E2E-06）：订单口径毛额只读聚合；金额/水量经全局 Long→字符串序列化，按 strictNumber 手法归一
   async getOwnerOverview() {
     return withRealSession(async () => {
       const raw = await post<OwnerOverviewRaw>(deviceEndpoints.ownerOverview, {})
@@ -378,7 +352,6 @@ const realDeviceApi: DeviceApi = {
         actualVolumeMl: strictVolume(raw.actualVolumeMl) ?? 0,
         orderAmountFen: strictVolume(raw.orderAmountFen) ?? 0,
         prepaidVolumeMl: strictVolume(raw.prepaidVolumeMl) ?? 0,
-        evidenceMode: 'real' as const,
       }
     })
   },
@@ -442,9 +415,7 @@ const realDeviceApi: DeviceApi = {
         deviceEndpoints.ownerWallet,
         {},
       )
-      // 全局 Long→字符串序列化：安全整数归一化（R1 复验 P2 整改）——只认 number 安全
-      // 整数或规范十进制整数字符串；小数/科学计数法/非法串/超安全范围一律收敛 0，
-      // 绝不把 NaN 或舍入值放进渲染层。缺省（旧后端无字段）同样收敛 0。
+      // R1 复验 P2：只认安全整数或规范十进制整数字符串，小数/科学计数法/超界/缺省一律收敛 0
       const toSafeInt = (value: unknown): number => {
         if (typeof value === 'number') {
           return Number.isSafeInteger(value) ? value : 0
@@ -475,7 +446,6 @@ const realDeviceApi: DeviceApi = {
           orderNo: typeof row.orderNo === 'string' ? row.orderNo : undefined,
           createTime: typeof row.createTime === 'string' ? row.createTime as BusinessTime : undefined,
         })),
-        evidenceMode: 'real' as const,
       }
     })
   },

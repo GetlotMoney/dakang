@@ -11,21 +11,15 @@ import {
 } from './quote'
 
 /**
- * S2 扫码报价冻结的前端约束。
- *
- * <p>钉三件事：预计金额与后端 ceilAmount 同式；下单请求体不携带价格/金额/设备共键；
- * 5410/5411 都判为报价失效。三者任一松掉，页面展示价与实际扣款价就会分叉。</p>
- *
- * <p>被断言的必须是 confirm.vue 真正调用的那一份实现（从 ./quote 导入）。
- * 早先这里在测试文件内自己抄了一份副本再断言副本，页面改坏时三条用例照样全绿——
- * 这种测试给出的是虚假的回归保护。</p>
+ * S2 扫码报价冻结的前端约束。钉三件事：预计金额与后端 ceilAmount 同式；下单请求体不携带
+ * 价格/金额/设备共键；5410/5411 都判为报价失效。被断言的必须是 confirm.vue 真正调用的
+ * ./quote 实现——抄副本断言副本会给出虚假的回归保护。
  */
 describe('s2 扫码报价前端约束', () => {
   it('预计金额与后端 ceil 公式一致', () => {
     expect(estimatedAmountFen(5000, 20)).toBe(100)
     expect(estimatedAmountFen(1000, 20)).toBe(20)
-    // 非整升与非整除场景：必须向上取整到分，不得少收。
-    // 这两条同时排除了「ceil(升) × 单价」这种在整升下等价、放开非整升即分叉的写法。
+    // 非整升与非整除场景：必须向上取整到分，排除「ceil(升) × 单价」这种放开非整升即分叉的写法
     expect(estimatedAmountFen(1500, 33)).toBe(50)
     expect(estimatedAmountFen(1, 1)).toBe(1)
     expect(estimatedAmountFen(0, 20)).toBe(0)
@@ -153,11 +147,8 @@ describe('s2-r 水卡区四态', () => {
 })
 
 /**
- * 确认页的源级门禁。
- *
- * <p>上面那些纯函数管不到模板与调用接线，而本轮修的 P1 恰恰是模板上的一个条件
- * （多卡用户整页不渲染）——没有 SFC 测试装置的前提下，只能对源码做断言。
- * 断言一律锚定到可执行构造（属性、调用），不用会命中注释的裸关键字。</p>
+ * 确认页的源级门禁：纯函数管不到模板与调用接线，无 SFC 测试装置只能对源码断言。
+ * 断言一律锚定到可执行构造（属性、调用），不用会命中注释的裸关键字。
  */
 describe('s2-r 确认页源级门禁', () => {
   const source = fs.readFileSync(
@@ -166,11 +157,7 @@ describe('s2-r 确认页源级门禁', () => {
   )
   const gates = [...source.matchAll(/v-else-if="([^"]*)"/g)].map(match => match[1])
 
-  /**
-   * 按大括号配平截出函数体。
-   * 用 indexOf('\n}\n') 截取会在函数内部出现同样形状的收尾时提前断开，
-   * 截出半截函数再做断言就会假绿或假红。
-   */
+  /** 按大括号配平截出函数体：用 indexOf('\n}\n') 会被函数内部同形收尾提前截断，半截函数断言会假绿/假红。 */
   function bodyOf(signature: string): string {
     const start = source.indexOf(signature)
     expect(start, `源码里找不到 ${signature}`).toBeGreaterThanOrEqual(0)
@@ -204,8 +191,7 @@ describe('s2-r 确认页源级门禁', () => {
   })
 
   it('applyCard 必须把失败抛给调用方，不得自己吞', () => {
-    // 加载期（单卡自动选中）失败必须落错误页——那时页面上没有可点的卡，吞掉就没有重试入口。
-    // 用大括号配平截取函数体，避免被函数内部的 "\n}\n" 提前截断。
+    // 加载期（单卡自动选中）失败必须落错误页——那时页面上没有可点的卡，吞掉就没有重试入口
     expect(bodyOf('async function applyCard')).not.toMatch(/\bcatch\b/)
     expect(source).toMatch(/if \(selection\.mode === 'auto'\) \{\s*await applyCard\(/)
   })
@@ -224,9 +210,9 @@ describe('s2-r 确认页源级门禁', () => {
     expect(source).toMatch(/v-if="cardHint === 'choose'"/)
     expect(source).toMatch(/v-else-if="cardHint === 'none'"/)
     expect(source).toMatch(/v-else-if="cardHint === 'unresolved'"/)
-    // "暂无可用水卡"只能挂在 none 门上
+    // "暂无可用水卡"只能挂在 none 门上，不许出现在 unresolved 门上
     const noneBranch = source.slice(source.indexOf(`v-else-if="cardHint === 'none'"`))
-    expect(noneBranch.slice(0, noneBranch.indexOf('</view>'))).toMatch(/当前账号暂无可用水卡/)
+    expect(noneBranch.slice(0, noneBranch.indexOf('</view>'))).toMatch(/暂无可用水卡/)
     const unresolvedBranch = source.slice(source.indexOf(`v-else-if="cardHint === 'unresolved'"`))
     expect(unresolvedBranch.slice(0, unresolvedBranch.indexOf('</view>'))).not.toMatch(/暂无可用水卡/)
   })

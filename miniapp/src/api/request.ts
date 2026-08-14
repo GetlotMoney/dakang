@@ -2,13 +2,9 @@ import type { ApiEnvelope } from './common'
 import { ContractError } from './common'
 
 /**
- * 小程序真实接口请求层（uni.request 封装）。
- *
- * - 基址读 VITE_SERVER_BASEURL（直连后端，不经代理，见 CH-6 L1a-OPS 结论）；
- * - 会话头名 dakang-token（后端 sa-token token-name）；
- * - 统一 POST + JSON；成功码 code===0 取 data；
- * - 后端整数拒绝码按映射转成小程序 ContractError 字符码；
- * - 仅承载真实 HTTP，不含任何 Mock 逻辑与业务规则。
+ * 小程序真实接口请求层（uni.request 封装）：基址读 VITE_SERVER_BASEURL 直连后端（CH-6 L1a-OPS）；
+ * 统一 POST + JSON，成功码 code===0 取 data；整数拒绝码映射为 ContractError 字符码；
+ * 仅承载真实 HTTP，不含 Mock 逻辑与业务规则。
  */
 
 /** 后端 sa-token 会话头名默认值（KH_USER token-name）；实际以登录响应返回的 tokenName 为准。 */
@@ -54,11 +50,11 @@ const REJECT_CODE_MAP: Record<number, string> = {
   5401: 'INVALID_QR_CODE',
   5402: 'QR_EXPIRED',
   5403: 'UNIVERSAL_CODE_PENDING',
-  // 5410/5411 各有独立语义，不得合并成 QR_EXPIRED：
-  // 前者是扫码会话到期（重扫即可），后者是价格/水种在确认期间被改（要告诉用户报价变了）。
-  // 此前 5410 被映射成 QR_EXPIRED，而页面按 SCAN_SESSION_EXPIRED 判断，三处契约对不上。
+  // 5410/5411 语义独立不得合并：前者扫码会话到期（重扫即可），后者报价在确认期间被改（要告知用户）
   5410: 'SCAN_SESSION_EXPIRED',
   5411: 'SCAN_QUOTE_CHANGED',
+  // 627 绑号闸：必须有独立字符码，页面据此弹绑号引导而不是一句通用 toast
+  627: 'PHONE_BIND_REQUIRED',
 }
 
 export function getToken(): string {
@@ -111,14 +107,10 @@ function rawPost<T>(path: string, data: Record<string, unknown>, sessionToken: s
 }
 
 /**
- * 统一 POST：成功(code=0)返回 data；会话失效(1401~1405)先触发全局一次性登出再抛 UNAUTHORIZED（不重试、不续用旧会话）；
- * 已登记拒绝码转对应 ContractError 字符码；其余按通用失败（携带后端 msg）。
- *
- * 会话代际判定（E2E-03 验收 P1-5）：发起时冻结本请求实际携带的 token 作为「代际」标识；
- * 收到会话失效码时，只有该 token 仍是当前会话（失败响应对应的会话未被更替）才执行全局登出。
- * 否则丢弃登出动作、仅向调用方抛错——旧页面滞留请求的 1401 在新登录建立后迟到时，
- * 不得清掉新会话（实测复现：显示新用户但数据空、token 被清、再登录才恢复）。
- * 当前会话的 1401~1405 清会话语义不变，只加这一道代际判定。
+ * 统一 POST：成功(code=0)返回 data；会话失效(1401~1405)触发全局一次性登出再抛 UNAUTHORIZED；
+ * 已登记拒绝码转对应 ContractError 字符码；其余按通用失败携带后端 msg。
+ * 会话代际判定（E2E-03 P1-5）：发起时冻结本请求携带的 token，收到失效码时仅当它仍是当前会话才登出——
+ * 旧页面滞留请求的迟到 1401 不得清掉新会话。
  */
 export async function post<T>(path: string, data: Record<string, unknown> = {}): Promise<T> {
   const sessionToken = getToken()
@@ -127,8 +119,6 @@ export async function post<T>(path: string, data: Record<string, unknown> = {}):
     return body.data
   }
   if (SESSION_INVALID_CODES.has(body.code)) {
-    // 任一会话失效码：仅当失败响应对应的会话仍是当前会话，才触发全局失效处理
-    // （清会话 + 回登录入口）；随后统一抛 UNAUTHORIZED，绝不带着失效会话继续。
     if (sessionInvalidHandler && sessionToken === getToken()) {
       sessionInvalidHandler()
     }

@@ -5,11 +5,9 @@ import { computed, ref } from 'vue'
 import { deliveryApi } from '@/api/delivery'
 import { deviceApi } from '@/api/device'
 import { messageApi } from '@/api/message'
-import { buildRuntimeModes } from '@/api/runtime'
 import HomeFaceConsumer from '@/components/home-face-consumer.vue'
 import HomeFaceCourier from '@/components/home-face-courier.vue'
 import HomeFaceOwner from '@/components/home-face-owner.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { useAccountStore } from '@/store/account'
 import {
   availableHomeFaces,
@@ -35,8 +33,6 @@ const unreadCount = ref(0)
 const face = ref<HomeFace>('life')
 const refreshTick = ref(0)
 const buildFingerprint = __DAKANG_BUILD_FINGERPRINT__
-// 统一走 buildRuntimeModes()：与入口页同一发射点，杜绝两页各写一份导致段数不一致（E1b 安全闸曾因此恒失败）。
-const runtimeContract = buildRuntimeModes()
 
 const faces = computed(() => availableHomeFaces(context.value))
 
@@ -49,21 +45,6 @@ const identityLine = computed(() => {
   const masked = maskPhone(ctx.userPhone)
   return masked ? `${ctx.userName} · ${masked}` : `${ctx.userName} · 未绑手机号`
 })
-
-/**
- * 按面提示：每面只留「用户不知道就会做错决定」的那一句，不做模式分流。
- *
- * <p>生活面没有这类事实，返回空串——模板 v-if 据此整条不渲染，不留空提示条；
- * 配送面的接单与送达是不可撤销的写操作；机主面的经营数字是订单成交总额，
- * 与可提现分润不是一个口径，不说清会被当成到手金额。</p>
- */
-const noticeText = computed(() =>
-  face.value === 'life'
-    ? ''
-    : face.value === 'courier'
-      ? '接单、送达后无法撤销。'
-      : '经营数字为订单成交总额，非可提现金额。',
-)
 
 function storageKey() {
   return `dakang-home-face:${context.value?.accountId ?? 'anonymous'}`
@@ -128,52 +109,78 @@ function selectFace(next: HomeFace) {
 
 <template>
   <view class="page-shell top-level-page" :style="{ paddingTop: safeHeader.pageTopPadding }">
+    <image class="home-watermark" src="/static/brand/page-watermark.jpg" mode="scaleToFill" />
     <wd-toast />
     <view class="e2e-build-fingerprint" aria-hidden="true">
-      BUILD={{ buildFingerprint }};{{ runtimeContract }}
+      BUILD={{ buildFingerprint }}
     </view>
+    <!-- 紧凑品牌头：品牌名在这里只做身份标识，首屏的品牌陈述由下方产品横幅承担，
+         所以这一行压到标题字阶，不与横幅争视觉权重。
+         分两行是被 320 逼出来的：微信胶囊要避让掉右侧约 1/3 宽，视角分段控件再占一段，
+         三样挤在同一行时 320 上「六维达康」自己都会折行、手机号被截成「138****1…」。
+         第一行只留品牌名与消息入口（它必须避让胶囊），第二行落在胶囊下方，
+         可用整幅宽度放身份与视角切换。 -->
     <view class="home-header">
-      <view>
-        <view class="home-title">
-          六维达康智慧水站
-        </view>
-        <view v-if="identityLine" class="muted-text">
-          {{ identityLine }}
-        </view>
+      <view class="home-title">
+        六维达康
       </view>
-      <view class="home-header-actions" :style="{ marginRight: safeHeader.capsuleAvoidWidth }">
-        <view v-if="faces.length > 1" class="face-capsule">
-          <view
-            v-for="item in faces"
-            :key="item"
-            class="face-pill"
-            :class="{ 'face-pill-active': face === item }"
-            @click="selectFace(item)"
-          >
-            {{ HOME_FACE_LABELS[item] }}
-          </view>
-        </view>
-        <view class="home-message" @click="goTo('C02')">
-          <wd-badge :model-value="unreadCount" :hidden="unreadCount === 0" :max="99">
-            <wd-icon name="notification" size="24px" />
-          </wd-badge>
+      <view class="home-message" :style="{ marginRight: safeHeader.capsuleAvoidWidth }" @click="goTo('C02')">
+        <wd-badge :model-value="unreadCount" :hidden="unreadCount === 0" :max="99">
+          <wd-icon name="notification" size="24px" />
+        </wd-badge>
+      </view>
+    </view>
+    <view v-if="identityLine || faces.length > 1" class="home-subheader">
+      <view v-if="identityLine" class="home-identity-line">
+        {{ identityLine }}
+      </view>
+      <view v-if="faces.length > 1" class="face-capsule">
+        <view
+          v-for="item in faces"
+          :key="item"
+          class="face-pill"
+          :class="{ 'face-pill-active': face === item }"
+          @click="selectFace(item)"
+        >
+          {{ HOME_FACE_LABELS[item] }}
         </view>
       </view>
     </view>
 
-    <AppPrototypeNotice v-if="noticeText" :text="noticeText" />
-
+    <!-- U01 不挂常驻提示条。原来两条都不合格：机主那条把「订单成交额」标签复述一遍再加否定句，
+         是免责声明而非事实，且首页没有提现动作可做错——真正缺的是收益钱包入口，已补进机主面导航；
+         配送那条警告的接单/离站/送达三个动作都发生在任务详情，那里各自有二次确认，
+         首页挂一条「你在这里做不了的动作」的横幅只是噪音。 -->
     <template v-if="context">
-      <HomeFaceCourier v-if="face === 'courier'" :refresh-tick="refreshTick" @switch-face="selectFace" />
-      <HomeFaceOwner v-else-if="face === 'owner'" :refresh-tick="refreshTick" @switch-face="selectFace" />
-      <HomeFaceConsumer v-else :refresh-tick="refreshTick" />
+      <HomeFaceCourier v-if="face === 'courier'" class="home-face" :refresh-tick="refreshTick" @switch-face="selectFace" />
+      <HomeFaceOwner v-else-if="face === 'owner'" class="home-face" :refresh-tick="refreshTick" @switch-face="selectFace" />
+      <HomeFaceConsumer v-else class="home-face" :refresh-tick="refreshTick" />
     </template>
   </view>
 </template>
 
 <style scoped lang="scss">
 .top-level-page {
+  position: relative;
+  overflow: hidden;
   padding-top: calc(env(safe-area-inset-top) + 20px);
+}
+
+.home-watermark {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.home-header,
+.home-subheader,
+.home-face {
+  position: relative;
+  z-index: 1;
 }
 
 .e2e-build-fingerprint {
@@ -192,38 +199,54 @@ function selectFace(next: HomeFace) {
 }
 
 .home-title {
-  font-size: 22px;
-  font-weight: 600;
+  flex: none;
+  font-size: var(--fs-title);
+  font-weight: 700;
+  letter-spacing: 1px;
+  white-space: nowrap;
 }
 
-.home-header-actions {
+.home-subheader {
   display: flex;
+  gap: var(--sp-2);
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  margin-top: var(--sp-1);
 }
 
+.home-identity-line {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--app-text-secondary);
+  font-size: var(--fs-note);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+// Pill 只用于分段选择：视角切换是三选一的分段控件，不是内容卡片。
 .face-capsule {
   display: flex;
+  flex: none;
   align-items: center;
   padding: 2px;
-  border-radius: 999px;
-  background: rgba(93, 135, 255, 0.1);
+  border-radius: var(--r-pill);
+  background: var(--tint-primary);
 }
 
 .face-pill {
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   color: var(--app-text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-note);
 }
 
 .face-pill-active {
   background: var(--app-color-primary);
-  color: #fff;
+  color: var(--app-text-inverse);
   font-weight: 600;
 }
 
 .home-message {
-  padding: 6px;
+  padding: var(--sp-1);
 }
 </style>

@@ -5,6 +5,7 @@ import { ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import {
   ONLINE_STATUS_LABELS,
   ONLINE_STATUS_TONES,
@@ -69,26 +70,36 @@ async function refresh() {
   <view class="page-shell">
     <AppNavbar title="经营概览" back-to="U01" />
 
-    <view v-if="loading" class="page-section muted-text">
-      加载中…
+    <view v-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="errorMessage" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain size="small" @click="backOr('U01')">
-              返回
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain size="small" @click="backOr('U01')">
+            返回
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else-if="overview">
-      <view class="page-section scope-line">
-        <wd-icon name="dashboard" size="16px" color="var(--app-color-primary)" />
-        <text>授权 {{ overview.stationCount }} 个水站 · {{ overview.deviceCount }} 台设备</text>
+      <view class="owner-hero">
+        <image
+          class="owner-hero__art"
+          src="/static/brand/owner-network.jpg"
+          mode="aspectFill"
+        />
+        <view class="owner-hero__copy">
+          <text class="owner-hero__title">
+            水站运营网络
+          </text>
+          <view class="owner-hero__scope">
+            <wd-icon name="dashboard" size="15px" color="var(--app-color-primary)" />
+            <text>授权 {{ overview.stationCount }} 个水站 · {{ overview.deviceCount }} 台设备</text>
+          </view>
+        </view>
       </view>
 
       <view class="page-section metric-row">
@@ -185,19 +196,43 @@ async function refresh() {
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  width: 100%;
-}
+.owner-hero {
+  position: relative;
+  height: 170px;
+  margin-top: var(--gap-hero);
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
 
-.scope-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 15px;
-  font-weight: 600;
+  &__art {
+    width: 100%;
+    height: 100%;
+  }
+
+  &__copy {
+    position: absolute;
+    top: var(--sp-4);
+    left: var(--sp-4);
+    display: flex;
+    max-width: 45%;
+    flex-direction: column;
+  }
+
+  &__title {
+    color: var(--app-text-primary);
+    font-size: var(--fs-title);
+    font-weight: 700;
+  }
+
+  &__scope {
+    display: flex;
+    gap: var(--sp-1);
+    align-items: flex-start;
+    margin-top: var(--sp-2);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-note);
+    line-height: 1.45;
+  }
 }
 
 .metric-row {
@@ -209,7 +244,7 @@ async function refresh() {
   flex: 1;
   padding: 14px 0;
   border-radius: 12px;
-  background: #fff;
+  background: var(--app-bg-card);
   text-align: center;
 }
 
@@ -223,7 +258,7 @@ async function refresh() {
 }
 
 .metric-value--warning {
-  color: var(--app-color-warning);
+  color: var(--app-color-warning-text);
 }
 
 .metric-value--danger {
@@ -248,7 +283,7 @@ async function refresh() {
   padding: 10px 0;
 
   & + & {
-    border-top: 1px solid rgba(0, 0, 0, 0.05);
+    border-top: 1px solid var(--line-1);
   }
 }
 

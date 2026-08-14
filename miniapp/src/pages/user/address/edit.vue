@@ -25,6 +25,7 @@ const model = reactive({
   contactName: '',
   phone: '',
   region: '',
+  districtCode: '',
   detail: '',
   isDefault: false,
   locationAuthorized: false,
@@ -41,6 +42,13 @@ const phonePlaceholder = computed(() =>
 
 const phoneRules = [{ required: true, pattern: /^1\d{10}$/, message: '请填写 11 位有效手机号' }]
 
+/**
+ * 区县码刻意不设 required：水配送不需要它，只有商城下单要用。
+ * 设成必填会把「只想改个电话」的老地址挡在保存之外，代价远大于收益。
+ * 填了就必须是 6 位，半截值比空值更糟——服务端会拿它去选仓且必然选不到。
+ */
+const districtRules = [{ required: false, pattern: /^$|^\d{6}$/, message: '区县编码为 6 位数字' }]
+
 onLoad(async (options?: Record<string, string>) => {
   const query = options ?? {}
   addressId.value = query.addressId ?? ''
@@ -51,6 +59,7 @@ onLoad(async (options?: Record<string, string>) => {
     const address = await cardApi.getDeliveryAddress(addressId.value)
     model.contactName = address.contactName
     model.region = address.region
+    model.districtCode = address.districtCode ?? ''
     model.detail = address.detail
     model.isDefault = address.isDefault
     model.locationAuthorized = address.locationAuthorized
@@ -76,6 +85,7 @@ async function handleSave() {
       contactName: model.contactName,
       phone: model.phone,
       region: model.region,
+      districtCode: model.districtCode,
       detail: model.detail,
       isDefault: model.isDefault,
       locationAuthorized: model.locationAuthorized,
@@ -128,6 +138,16 @@ async function handleSave() {
             clearable
             placeholder="请输入省市区，如：武汉东湖高新区"
             :rules="[{ required: true, message: '请填写地区' }]"
+          />
+          <wd-input
+            v-model="model.districtCode"
+            label="区县编码"
+            prop="districtCode"
+            clearable
+            type="text"
+            :maxlength="6"
+            placeholder="选填，6 位数字，商城下单需要"
+            :rules="districtRules"
           />
           <wd-textarea
             v-model="model.detail"

@@ -5,6 +5,7 @@ import { ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import { formatBizTimeShort, formatFen, INCOME_FLOW_TYPE_LABELS, pendingSplitLineText } from '@/utils/format'
 import { backOr } from '@/utils/navigation'
 
@@ -52,20 +53,18 @@ async function refresh() {
   <view class="page-shell">
     <AppNavbar title="收益钱包" back-to="U03" />
 
-    <view v-if="loading" class="page-section muted-text">
-      加载中…
+    <view v-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="errorMessage" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain size="small" @click="backOr('U03')">
-              返回
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain size="small" @click="backOr('U03')">
+            返回
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else-if="wallet">
@@ -124,13 +123,6 @@ async function refresh() {
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  width: 100%;
-}
-
 .balance-line {
   font-size: 26px;
   font-weight: 700;
@@ -149,7 +141,7 @@ async function refresh() {
   padding: 10px 0;
 
   & + & {
-    border-top: 1px solid rgba(0, 0, 0, 0.05);
+    border-top: 1px solid var(--line-1);
   }
 }
 

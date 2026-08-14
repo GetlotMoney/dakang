@@ -6,8 +6,9 @@ import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
 import { deliveryApi } from '@/api/delivery'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import { formatBizTimeShort } from '@/utils/format'
-import { backOr } from '@/utils/navigation'
+import { backOr, goTo } from '@/utils/navigation'
 
 definePage({
   style: {
@@ -86,24 +87,29 @@ async function act(kind: 'pause' | 'resume' | 'cancel', rule: AutoRefillRule) {
   <view class="page-shell">
     <AppNavbar title="自动补货规则" back-to="U03" />
 
-    <view v-if="loading" class="page-section muted-text">
-      加载中…
+    <view v-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="errorMessage" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain size="small" @click="backOr('U03')">
-              返回
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain size="small" @click="backOr('U03')">
+            返回
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <view v-else-if="!rules.length" class="page-section">
-      <wd-status-tip image="content" tip="暂无自动补货规则，下配送单时可选择按周期自动补货" />
+      <!-- 空态只说结论，去处用按钮给：原文把「怎么创建规则」写进了 message -->
+      <AppPageState state="empty" title="暂无自动补货规则">
+        <template #actions>
+          <wd-button plain @click="goTo('U08')">
+            去下配送单
+          </wd-button>
+        </template>
+      </AppPageState>
     </view>
 
     <template v-else>
@@ -148,13 +154,6 @@ async function act(kind: 'pause' | 'resume' | 'cancel', rule: AutoRefillRule) {
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  width: 100%;
-}
-
 .rule-title {
   display: flex;
   align-items: center;

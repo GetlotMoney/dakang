@@ -2,11 +2,13 @@
 import type { CardMember } from '@/api/card'
 import type { FormInstance, FormItemRule } from 'wot-design-uni/components/wd-form/types'
 import { onLoad } from '@dcloudio/uni-app'
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useMessage, useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { ContractError } from '@/api/common'
+import AppBottomActionBar from '@/components/app-bottom-action-bar.vue'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import { backOr } from '@/utils/navigation'
 
@@ -25,6 +27,8 @@ const memberId = ref('')
 const loading = ref(true)
 const loadError = ref('')
 const editingMember = ref<CardMember | null>(null)
+/** 编辑一个已解除的成员＝重新授权：后端保存路径本就支持整行回生效态，只是 UI 没表达。 */
+const reauthorizing = computed(() => editingMember.value?.enabled === false)
 const submitting = ref(false)
 const revoking = ref(false)
 
@@ -192,7 +196,7 @@ async function handleRevoke() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell" :class="{ 'page-shell--with-bar': !loadError && !loading }">
     <AppNavbar title="成员授权" back-to="U11" />
     <wd-toast />
     <wd-message-box />
@@ -200,19 +204,17 @@ async function handleRevoke() {
 
     <template v-if="loadError">
       <view class="page-section">
-        <wd-status-tip image="content" :tip="loadError">
-          <template #bottom>
-            <view class="status-actions">
-              <wd-button plain @click="backOr('U11')">
-                返回
-              </wd-button>
-            </view>
+        <AppPageState state="error" :message="loadError">
+          <template #actions>
+            <wd-button plain @click="backOr('U11')">
+              返回
+            </wd-button>
           </template>
-        </wd-status-tip>
+        </AppPageState>
       </view>
     </template>
-    <view v-else-if="loading" class="page-section muted-text">
-      加载中…
+    <view v-else-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
     <template v-else>
       <view v-if="editingMember" class="page-section member-summary">
@@ -222,9 +224,6 @@ async function handleRevoke() {
         <wd-tag :type="editingMember.enabled ? 'success' : 'default'" plain>
           {{ editingMember.enabled ? '生效' : '已解除' }}
         </wd-tag>
-      </view>
-      <view v-if="editingMember" class="muted-text form-hint">
-        保存修改需重新填写完整手机号。
       </view>
 
       <view class="page-section">
@@ -250,7 +249,7 @@ async function handleRevoke() {
               clearable
               type="number"
               :maxlength="11"
-              placeholder="请输入 11 位手机号"
+              :placeholder="editingMember ? '请重新输入 11 位手机号' : '请输入 11 位手机号'"
               :rules="phoneRules"
             />
             <wd-input
@@ -284,28 +283,25 @@ async function handleRevoke() {
         </wd-form>
       </view>
 
-      <view class="page-section">
-        <wd-button block size="large" :loading="submitting" @click="handleSubmit">
-          保存成员授权
-        </wd-button>
-      </view>
-      <view v-if="editingMember" class="page-section">
-        <wd-button block size="large" type="error" plain :loading="revoking" @click="handleRevoke">
-          撤销授权
-        </wd-button>
-      </view>
+      <AppBottomActionBar>
+        <!-- 已解除的成员不出「撤销授权」：后端 revokeActive 的 WHERE 带 MEMBER_STATUS=1，
+             对已解除行影响 0 行必抛错。摆一个点下去必报错的按钮，用户会以为是系统坏了。 -->
+        <template v-if="editingMember?.enabled" #secondary>
+          <wd-button type="error" plain :loading="revoking" @click="handleRevoke">
+            撤销授权
+          </wd-button>
+        </template>
+        <template #primary>
+          <wd-button size="large" type="primary" :loading="submitting" @click="handleSubmit">
+            {{ reauthorizing ? '重新授权' : '保存成员授权' }}
+          </wd-button>
+        </template>
+      </AppBottomActionBar>
     </template>
   </view>
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 20px;
-  width: 100%;
-}
-
 .member-summary {
   display: flex;
   align-items: center;
@@ -313,13 +309,12 @@ async function handleRevoke() {
 }
 
 .member-summary-name {
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.form-hint {
-  margin-top: 8px;
-  padding: 0 4px;
-  line-height: 1.6;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-title);
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 </style>

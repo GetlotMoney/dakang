@@ -12,10 +12,9 @@ import {
   canReportDeliveryException,
   canSignDeliveryTask,
 } from '@/api/delivery-normalize'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import EvidencePicker from '@/components/evidence-picker.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   APPEAL_STATUS_LABELS,
   APPEAL_STATUS_TONES,
@@ -49,9 +48,6 @@ const APPEAL_REASON_LABELS: Record<DeliveryAppeal['reason'], string> = {
 
 const toast = useToast()
 const message = useMessage()
-
-/** delivery 域接真：任务/申诉/异常来自真实接口，举证照片先上传换受控媒体键。 */
-const isDeliveryReal = currentMode('delivery') === 'real'
 
 const taskNo = ref('')
 const focusAppeal = ref(false)
@@ -195,10 +191,12 @@ async function handleAppendEvidence() {
   }
   evidenceSubmitting.value = true
   try {
-    // real：举证照片先上传换受控媒体键；mock：保持本地记录号原样
-    const evidenceRefs = isDeliveryReal
-      ? await Promise.all(evidenceModel.photos.map(photo => uploadDeliveryMedia(photo, 'appeal')))
-      : evidenceModel.photos.map((_, index) => `COURIER-EV-${index + 1}`)
+    // 举证照片先上传换受控媒体键。原本还有一条「非 real 就提交 COURIER-EV-<n> 伪造键」
+    // 的分支，而 mock 适配器早已退役、那条 payload 直接发往真实申诉接口——
+    // 伪造的举证会进到裁决依据里。已随微信链接真一并删除。
+    const evidenceRefs = await Promise.all(
+      evidenceModel.photos.map(photo => uploadDeliveryMedia(photo, 'appeal')),
+    )
     appeal.value = await deliveryApi.appendAppealEvidence({
       taskNo: current.taskNo,
       appealId: currentAppeal.appealId,
@@ -222,25 +220,19 @@ async function handleAppendEvidence() {
     <AppNavbar title="配送任务详情" back-to="D01" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice domain="delivery" />
 
     <view v-if="status === 'loading'" class="page-section state-block">
-      <wd-loading size="24px" />
-      <view class="muted-text">
-        任务详情加载中…
-      </view>
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="status === 'error'" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="backOr('D01')">
-              返回任务中心
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain @click="backOr('D01')">
+            返回任务中心
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <view v-else-if="task" class="detail-body">
@@ -258,10 +250,7 @@ async function handleAppendEvidence() {
             </view>
           </view>
           <view class="muted-text">
-            {{ task.taskNo }} · {{ task.stationName }}
-          </view>
-          <view v-if="task.isResend" class="muted-text">
-            补送单不向用户收款。
+            {{ task.stationName }}
           </view>
         </wd-card>
       </view>
@@ -283,14 +272,13 @@ async function handleAppendEvidence() {
           </template>
           <template v-if="appeal">
             <wd-cell-group border>
-              <wd-cell title="申诉编号" :value="appeal.appealId" />
               <wd-cell title="申诉状态">
                 <wd-tag :type="APPEAL_STATUS_TONES[appeal.appealStatus]" plain>
                   {{ APPEAL_STATUS_LABELS[appeal.appealStatus] }}
                 </wd-tag>
               </wd-cell>
               <wd-cell title="申诉原因" :value="APPEAL_REASON_LABELS[appeal.reason]" />
-              <wd-cell title="用户说明" :label="appeal.description" />
+              <wd-cell title="用户说明" :label="appeal.description" vertical />
               <wd-cell title="用户实收数量" :value="`${appeal.receivedCount}`" />
               <wd-cell title="用户证据" :value="`${appeal.evidenceRefs.length} 份`" />
               <wd-cell title="申诉时间" :value="formatBizTime(appeal.createTime)" />
@@ -344,9 +332,9 @@ async function handleAppendEvidence() {
 
       <view class="page-section">
         <wd-cell-group title="任务信息" border>
-          <wd-cell title="订单号" :value="task.orderNo" />
-          <wd-cell title="任务号" :value="task.taskNo" />
-          <wd-cell title="收货地址" :label="task.receiveAddress" />
+          <wd-cell title="订单号" :value="task.orderNo" ellipsis />
+          <wd-cell title="任务号" :value="task.taskNo" ellipsis />
+          <wd-cell title="收货地址" :label="task.receiveAddress" vertical />
           <wd-cell title="联系电话" center clickable @click="handleCall">
             <view class="phone-value">
               <view>{{ task.maskedPhone }}</view>
@@ -409,7 +397,7 @@ async function handleAppendEvidence() {
               class="sign-photo-image"
             />
             <view v-else class="sign-photo-placeholder">
-              <wd-icon name="picture" size="24px" color="#8a8f99" />
+              <wd-icon name="picture" size="24px" color="var(--app-text-tertiary)" />
             </view>
             <view class="sign-photo-meta">
               <view class="sign-photo-label">
@@ -495,12 +483,6 @@ async function handleAppendEvidence() {
   padding: 32px 0;
 }
 
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-}
-
 .detail-body {
   display: flex;
   flex-direction: column;
@@ -550,7 +532,7 @@ async function handleAppendEvidence() {
 
 .evidence-list-item {
   padding: 8px 0;
-  border-bottom: 1px solid #f0f1f3;
+  border-bottom: 1px solid var(--line-1);
 }
 
 .evidence-list-desc {
@@ -585,7 +567,7 @@ async function handleAppendEvidence() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f0f1f3;
+  background: var(--line-1);
 }
 
 .sign-photo-meta {
@@ -602,7 +584,7 @@ async function handleAppendEvidence() {
 
 .exception-item {
   padding: 10px 0;
-  border-bottom: 1px solid #f0f1f3;
+  border-bottom: 1px solid var(--line-1);
 
   &:last-of-type {
     border-bottom: none;

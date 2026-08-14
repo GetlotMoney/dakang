@@ -1,12 +1,14 @@
 import type { EntityId } from './common'
+import { normalizeAccountContext } from './auth'
 import { ContractError } from './common'
+import { getToken, post } from './request'
 
 /**
- * 账号上下文契约（2026-08-02 mock 基建退役后收敛版）。
+ * 账号上下文契约。
  *
- * 本文件只承载类型与最小会话恢复语义：真实会话由登录动线（authApi / test-login）建立并写入
- * accountStore；后端没有「读当前会话上下文」端点，冷启动恢复一律 fail-closed 交回登录入口，
- * 绝不伪造降级会话。原型账号库与场景重置能力已随 scenario 场景库整体退役。
+ * 本文件只承载类型与会话恢复：真实会话由正式微信登录动线（authApi）建立并写入 accountStore。
+ * 冷启动恢复走 POST /mini/auth/context（只读、不换发会话）；无 token 或 token 失效时
+ * fail-closed 交回登录入口，绝不伪造降级会话。
  */
 
 export type CapabilityCode
@@ -45,12 +47,21 @@ export interface AccountContext {
   ownerScope?: OwnerScope
 }
 
+export const accountEndpoints = {
+  context: '/mini/auth/context',
+} as const
+
 export const accountApi = {
   /**
-   * 冷启动会话恢复：无服务端读会话端点，恒 fail-closed。
-   * 调用方（App 根组件 / 页面 onShow）catch 后交由统一入口重新登录。
+   * 冷启动会话恢复：拿本地已存的 token 向服务端换回账号上下文。本地无 token 直接 fail-closed
+   * 不发请求（必然 1401，还会触发全局登出清一份不存在的会话）；token 失效由 request.ts
+   * 会话代际判定处理，本函数只把失败原样抛出。
    */
   async restoreSession(): Promise<AccountContext> {
-    throw new ContractError('SESSION_NOT_FOUND', '会话未建立，请从入口登录')
+    if (!getToken()) {
+      throw new ContractError('SESSION_NOT_FOUND', '会话未建立，请从入口登录')
+    }
+    const raw = await post<Record<string, unknown>>(accountEndpoints.context, {})
+    return normalizeAccountContext(raw as never)
   },
 }

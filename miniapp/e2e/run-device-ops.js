@@ -791,11 +791,22 @@ scenario('S16', '紧急停止：无活动链拒绝；活动链锚定订单，设
   const preview = await apiOk('/device/batch/preview', { scopeType: 1, deviceIds: [DEV1.id], cmdType: 2 }, ctx.ops)
   eq(preview.activeOrderNo, order.orderNo, '预览必须锚定服务端确认的活动订单')
   eq(preview.targetCount, 1, '紧急停止只允许单台设备')
-  const batchId = await apiOk('/device/batch/confirm', {
+  // D-423 二次验证：紧急停机属恒加闸档，预览必须提前告知，确认必须先要求安全期
+  ok(preview.requireSafe === true, '紧急停机预览必须回显需要二次认证', `requireSafe=${preview.requireSafe}`)
+  const confirmBody = {
     operationTicket: preview.operationTicket,
     targetDigest: preview.targetDigest,
     paramDigest: preview.paramDigest,
-  }, ctx.ops)
+  }
+  // ① 未开安全期：必须被拒，且拒因码可判别（前端据此就地弹口令，而不是当成普通失败）
+  const gated = await api('/device/batch/confirm', confirmBody, ctx.ops)
+  ok(gated && gated.code === 1440, '未二次认证的确认必须回 1440', `code=${gated && gated.code}`)
+  // ② 闸在凭据领取之前：被拒不得销毁 ticket，否则运营每次都得重走预览
+  const stillAlive = await api('/device/batch/confirm', confirmBody, ctx.ops)
+  ok(stillAlive && stillAlive.code === 1440, '凭据不得被未认证的确认销毁', `第二次 code=${stillAlive && stillAlive.code} msg=${stillAlive && stillAlive.msg}`)
+  // ③ 开安全期后用同一张凭据原样重放
+  await apiOk('/api/auth/openSafe', { loginPwd: OPS_PWD_CIPHER }, ctx.ops)
+  const batchId = await apiOk('/device/batch/confirm', confirmBody, ctx.ops)
   const stopCmd = await pollUntil('停止指令应成功终态', async () => {
     const row = await one('SELECT * FROM ws_command WHERE BATCH_ID = ? AND CMD_TYPE = 2', [batchId])
     return row && row.CMD_STATUS === 4 ? row : null
@@ -864,7 +875,7 @@ async function verifyEnvironment() {
 
   // 测试登录可用性 + 监控开关（S2 依赖离线扫描；扫描关闭时设备永不翻离线）
   const probe = await api('/mini/test-login/by-phone', { phone: OWNER_PHONE })
-  ok(probe && probe.code === 0, '测试登录不可用——Pay-Sim 未开或环境错误')
+  ok(probe && probe.code === 0, '测试登录不可用——mini.test-login.enabled 未开或环境错误')
   const cmdline = await new Promise((resolve, reject) => {
     execFile('ps', ['-p', recordedPid, '-o', 'command='], (error, stdout) => {
       if (error) {

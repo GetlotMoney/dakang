@@ -3,14 +3,14 @@
  *
  * 运行前提（deploy/acceptance/acc-env.sh 编排）：
  * - 独立验收 MySQL(3309)/Redis(6381)/EMQX(1884) 已按 init SQL + migrations + acc-seed.sql 重建；
- * - 验收后端已以 Pay-Sim 开启（mini.pay-sim.enabled=true）跑在 13340；
+ * - 验收后端已开启 mini.test-login.enabled 与 mini.pay-sim.enabled，跑在 13340；
  * - tools/device-sim ACC-DEV-0001 已连验收 EMQX（S7 出水指令链依赖）。
  *
  * 安全闸（fail-closed）：
  * - 必须显式 CARD_ACC_MODE=full 才执行（与 run-d4/run-e1b 同一显式模式纪律）；
  * - 后端地址端口为 13330/8081（主环境）或 DB 端口为 3306/3308（主库）时拒绝执行；
  * - 开跑前核验验收种子哨兵（ws_user 9001/9002、ws_package 9501）与测试登录路由
- *  （/mini/test-login 仅在 Pay-Sim 开关开启时注册——它同时证明被测实例开着 Pay-Sim）。
+ *  （/mini/test-login 仅在 mini.test-login.enabled=true 时注册——探它即证明被测实例是隔离验收环境）。
  *
  * 结果纪律：场景总数必须恰为 10（S1~S9 + S10 赠卡不可充值，禁止 0/0 PASS）；每场景输出 PASS/FAIL + DB 证据摘要；
  * 批次只落盘 docs/acceptance/card-lifecycle/runs/<批次>/result.json，人工摘要统一维护在
@@ -693,9 +693,9 @@ async function verifyEnvironment() {
   const pkg = await one('SELECT ID, SCOPE_JSON FROM ws_package WHERE ID = ?', [ACC_PACKAGE_ID])
   ok(owner && owner.USER_PHONE === OWNER_PHONE && member && pkg, '验收种子哨兵缺失（先跑 acc-env.sh rebuild）')
   fingerprint.seedSentinel = true
-  // 测试登录路由仅在 mini.pay-sim.enabled=true 时注册：404/白页即视为 Pay-Sim 未开
+  // 测试登录路由仅在 mini.test-login.enabled=true 时注册：404/白页即视为该开关未开
   const probe = await api('/mini/test-login/by-phone', { phone: OWNER_PHONE })
-  ok(probe && probe.code === 0, '测试登录不可用——被测实例未开启 Pay-Sim 或指向了错误环境')
+  ok(probe && probe.code === 0, '测试登录不可用——mini.test-login.enabled 未开或指向了错误环境')
   fingerprint.paySimGateOpen = true
   return fingerprint
 }

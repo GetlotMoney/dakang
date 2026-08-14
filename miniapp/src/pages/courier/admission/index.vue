@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { StationSummary } from '@/api/catalog'
+import AppPageState from '@/components/app-page-state.vue'
 import type { CourierAdmission } from '@/api/delivery'
 import { onShow } from '@dcloudio/uni-app'
 import { computed, reactive, ref } from 'vue'
@@ -9,6 +10,7 @@ import { ContractError } from '@/api/common'
 import { deliveryApi } from '@/api/delivery'
 import AppNavbar from '@/components/app-navbar.vue'
 import { useAccountStore } from '@/store/account'
+import { goTo } from '@/utils/navigation'
 import {
   ADMISSION_STATUS_LABELS,
   ADMISSION_STATUS_TONES,
@@ -47,9 +49,11 @@ const model = reactive({
  * <p>S3 起服务端提供自助提交端点（/mini/delivery/admission/submit，主体恒取会话、
  * 驳回复用原记录），real 模式表单放开；状态闸与水站合法性由服务端最终裁决。</p>
  */
-const selfSubmitSupported = true
+// S3 起自助提交端点常在，selfSubmitSupported 这个恒 true 的开关连同它守着的两条
+// v-else 分支（「暂不支持自助申请，请联系运营开通。」「重新申请请联系运营。」）一并删除——
+// 那两句在任何构建里都不可达，留着只会让人以为存在一条走不通的路径。
 const showForm = computed(
-  () => selfSubmitSupported && admission.value !== null && [0, 4].includes(admission.value.status),
+  () => admission.value !== null && [0, 4].includes(admission.value.status),
 )
 
 const stationNameById = computed(
@@ -165,14 +169,11 @@ async function handleSubmit() {
     <wd-message-box />
 
     <view v-if="status === 'loading'" class="page-section state-block">
-      <wd-loading size="24px" />
-      <view class="muted-text">
-        准入状态加载中…
-      </view>
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="status === 'error'" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage" />
+      <AppPageState state="error" :message="errorMessage" />
     </view>
 
     <template v-else-if="admission">
@@ -187,16 +188,9 @@ async function handleSubmit() {
             </view>
           </template>
 
-          <view v-if="admission.status === 0" class="muted-text">
-            <template v-if="selfSubmitSupported">
-              尚未提交申请，审核通过后才能接单。
-            </template>
-            <template v-else>
-              暂不支持自助申请，请联系运营开通。
-            </template>
-          </view>
-
-          <template v-else-if="admission.status === 1">
+          <!-- status=0 不再单独出正文：状态 tag 已经写着「未提交」，
+               而「审核通过后才能接单」是流程讲解；下方的申请表单本身就是下一步。 -->
+          <template v-if="admission.status === 1">
             <view class="admission-line">
               申请人：{{ admission.applicantName }} · {{ admission.maskedPhone }}
             </view>
@@ -212,21 +206,22 @@ async function handleSubmit() {
             <view class="admission-line">
               服务范围：{{ grantedScopeText }}
             </view>
-            <view class="muted-text">
-              配送任务入口在首页。
+            <!-- 原来这里写「配送任务入口在首页。」——用一句话回答「那我该去哪」，
+                 正确解法是把去处本身放在这里 -->
+            <view class="admission-enter">
+              <wd-button size="small" plain icon="goods" @click="goTo('D01')">
+                进入任务中心
+              </wd-button>
             </view>
           </template>
 
           <view v-else-if="admission.status === 3" class="muted-text">
-            已撤销接单资格，恢复请联系运营。
+            恢复接单资格请联系运营
           </view>
 
           <template v-else>
             <view class="admission-reject">
               驳回原因：{{ admission.rejectReason || '运营未填写原因' }}
-            </view>
-            <view v-if="!selfSubmitSupported" class="muted-text">
-              重新申请请联系运营。
             </view>
           </template>
         </wd-card>
@@ -308,8 +303,16 @@ async function handleSubmit() {
 }
 
 .admission-line {
-  margin-bottom: 6px;
-  font-size: 14px;
+  margin-bottom: var(--sp-2);
+  overflow: hidden;
+  color: var(--app-text-primary);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.admission-enter {
+  margin-top: var(--sp-3);
 }
 
 .admission-reject {

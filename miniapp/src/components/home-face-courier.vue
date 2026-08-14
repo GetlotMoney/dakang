@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { DeliveryTask } from '@/api/delivery'
+import AppPageState from '@/components/app-page-state.vue'
 import { computed, ref, watch } from 'vue'
 import { ContractError } from '@/api/common'
 import { deliveryApi } from '@/api/delivery'
 import { useAccountStore } from '@/store/account'
-import { TASK_STATUS_LABELS, TASK_STATUS_TONES } from '@/utils/format'
+import { formatBizTimeShort, TASK_STATUS_LABELS, TASK_STATUS_TONES } from '@/utils/format'
 import { goTo } from '@/utils/navigation'
 
 /** 配送工作态：U01 的配送员视角（主态自适应三张脸之一）。 */
@@ -19,6 +20,9 @@ const accountStore = useAccountStore()
  */
 const admissionScope = ref<{ stationIds: string[], serviceRegion?: string } | null>(null)
 const scope = computed(() => accountStore.context?.courierScope ?? admissionScope.value)
+const scopeLabel = computed(
+  () => `${scope.value?.serviceRegion || '服务区域待配置'} · ${scope.value?.stationIds.length ?? 0} 个水站`,
+)
 
 const loading = ref(true)
 const blockedReason = ref('')
@@ -26,7 +30,7 @@ const availableTasks = ref<DeliveryTask[]>([])
 const activeTasks = ref<DeliveryTask[]>([])
 
 /** 常驻任务条：取最接近完成的进行中任务（4 待签收 > 3 配送中 > 2 已接单），申诉中不进条。 */
-const stripTask = computed(() => {
+const currentTask = computed(() => {
   for (const status of [4, 3, 2]) {
     const task = activeTasks.value.find(item => item.taskStatus === status)
     if (task) {
@@ -36,11 +40,34 @@ const stripTask = computed(() => {
   return null
 })
 
-const STRIP_ACTIONS: Record<number, string> = {
+/** 一单只给一个下一步动作，避免工作台上出现两个同权按钮。 */
+const NEXT_ACTIONS: Record<number, string> = {
   2: '去离站',
   3: '去送达',
   4: '去签收',
 }
+
+/**
+ * 任务条第二行的时间。
+ *
+ * <p>配送任务快照上没有「预约时间」这个字段，只有履约过程中真实落下的接单/离站/到达
+ * 时间戳。按当前状态取对应的那一个并写明它是什么时间，不拿它冒充预约时段——
+ * 配送员据此决定先跑哪一单，标错比不标更糟。</p>
+ */
+const currentTaskTime = computed(() => {
+  const task = currentTask.value
+  if (!task) {
+    return ''
+  }
+  const picked
+    = task.taskStatus === 2
+      ? { label: '接单', time: task.acceptTime }
+      : task.taskStatus === 3
+        ? { label: '离站', time: task.departTime }
+        : { label: '到达', time: task.arriveTime }
+  const text = formatBizTimeShort(picked.time)
+  return text === '—' ? '' : `${picked.label} ${text}`
+})
 
 const workingCount = computed(
   () => activeTasks.value.filter(item => [2, 3, 4].includes(item.taskStatus)).length,
@@ -85,88 +112,88 @@ async function refresh() {
 
 <template>
   <view>
-    <view class="page-section">
-      <wd-card custom-class="home-card">
-        <template #title>
-          <view class="face-title-row">
-            <view>配送服务范围</view>
-            <wd-tag type="success" plain>
-              已启用
-            </wd-tag>
-          </view>
-        </template>
-        <view class="muted-text">
-          {{ scope?.serviceRegion || '服务区域待配置' }} · {{ scope?.stationIds.length ?? 0 }} 个水站
-        </view>
-        <view v-if="blockedReason" class="face-blocked">
-          {{ blockedReason }}
-        </view>
-      </wd-card>
-    </view>
-
-    <view v-if="stripTask" class="page-section">
-      <view class="task-strip" @click="goTo('D03', { taskNo: stripTask.taskNo })">
-        <view class="task-strip-main">
-          <view class="task-strip-title">
-            <wd-tag :type="TASK_STATUS_TONES[stripTask.taskStatus]">
-              {{ TASK_STATUS_LABELS[stripTask.taskStatus] }}
-            </wd-tag>
-            <view class="task-strip-no">
-              {{ stripTask.taskNo }}
-            </view>
-          </view>
-          <view class="task-strip-address">
-            {{ stripTask.receiveAddress }}
-          </view>
-        </view>
-        <view class="task-strip-action">
-          {{ STRIP_ACTIONS[stripTask.taskStatus] ?? '查看' }}
+    <!-- 工作台的第一主信息是「下一步去哪儿」：地址占最大字号，状态与履约时间第二，
+         任务号退到最弱一档。整条只给一个下一步动作。 -->
+    <view v-if="currentTask" class="current pressable" @click="goTo('D03', { taskNo: currentTask.taskNo })">
+      <view class="current__meta">
+        <wd-tag :type="TASK_STATUS_TONES[currentTask.taskStatus]">
+          {{ TASK_STATUS_LABELS[currentTask.taskStatus] }}
+        </wd-tag>
+        <text v-if="currentTaskTime" class="current__time">
+          {{ currentTaskTime }}
+        </text>
+      </view>
+      <text class="current__address">
+        {{ currentTask.receiveAddress }}
+      </text>
+      <view class="current__foot">
+        <text class="current__no">
+          {{ currentTask.taskNo }}
+        </text>
+        <view class="current__action">
+          {{ NEXT_ACTIONS[currentTask.taskStatus] ?? '查看' }}
           <wd-icon name="arrow-right" size="14px" />
         </view>
       </view>
     </view>
 
-    <view class="page-section">
-      <wd-card title="工作概览" custom-class="home-card">
-        <view class="work-metrics">
-          <view class="work-metric" @click="goTo('D01', { view: 'available' })">
-            <view class="work-metric-value">
-              {{ availableTasks.length }}
-            </view>
-            <view class="muted-text">
-              待接单
-            </view>
-          </view>
-          <view class="work-metric" @click="goTo('D01', { view: 'active' })">
-            <view class="work-metric-value">
-              {{ workingCount }}
-            </view>
-            <view class="muted-text">
-              进行中
-            </view>
-          </view>
-          <view class="work-metric" @click="goTo('D01', { view: 'active' })">
-            <view class="work-metric-value">
-              {{ appealingCount }}
-            </view>
-            <view class="muted-text">
-              申诉中
-            </view>
-          </view>
+    <!-- 工作量：三个计数分栏，用中性竖线分隔，不各包一张卡 -->
+    <view class="board">
+      <view class="board__head">
+        <text class="board__title">
+          工作概览
+        </text>
+        <wd-tag type="success" plain>
+          已启用
+        </wd-tag>
+      </view>
+      <!-- 服务范围是配送员的作业上下文，放在计数上方一行说完。
+           原来它是「准入与服务范围」那条 wd-cell 的 label，被 cell 的窄栏挤成
+           「武汉东湖高新区 · 2 个水 / 站」——断在分隔点后面，读起来像坏掉的文本。 -->
+      <text class="board__scope">
+        {{ scopeLabel }}
+      </text>
+      <!-- 取数失败时不渲染计数：清零后的 0/0/0 与「真的没有任务」长得一模一样，
+           把失败伪装成空态会让配送员以为今天没活干。失败只显示原因。 -->
+      <view v-if="!blockedReason" class="board__counts">
+        <view class="board__count pressable" @click="goTo('D01', { view: 'available' })">
+          <text class="board__value num">
+            {{ availableTasks.length }}
+          </text>
+          <text class="board__label">
+            待接单
+          </text>
         </view>
-        <view v-if="loading" class="muted-text">
-          加载中…
+        <view class="board__count pressable" @click="goTo('D01', { view: 'active' })">
+          <text class="board__value num">
+            {{ workingCount }}
+          </text>
+          <text class="board__label">
+            进行中
+          </text>
         </view>
-      </wd-card>
+        <view class="board__count pressable" @click="goTo('D01', { view: 'active' })">
+          <text class="board__value num" :class="{ 'board__value--warn': appealingCount > 0 }">
+            {{ appealingCount }}
+          </text>
+          <text class="board__label">
+            申诉中
+          </text>
+        </view>
+      </view>
+      <view v-if="blockedReason" class="board__blocked">
+        {{ blockedReason }}
+      </view>
+      <AppPageState v-else-if="loading" state="loading" :row-col="[1, { width: '60%' }]" />
     </view>
 
-    <view class="page-section">
+    <view class="enter">
       <wd-button block size="large" icon="goods" @click="goTo('D01')">
         进入任务中心
       </wd-button>
     </view>
 
-    <view class="page-section">
+    <view class="nav">
       <wd-cell-group border>
         <wd-cell
           title="准入与服务范围"
@@ -174,9 +201,10 @@ async function refresh() {
           is-link
           @click="goTo('D02')"
         />
+        <!-- 不给「生活用水服务」挂 label：那句「扫码取水 · 水卡 · 配送订水」是在解释
+             标题里装了什么，标题本身已经说清，删掉顺带消除 cell 窄栏折行。 -->
         <wd-cell
           title="生活用水服务"
-          label="扫码取水 · 水卡 · 配送订水"
           icon="user"
           is-link
           @click="emit('switchFace', 'life')"
@@ -187,77 +215,129 @@ async function refresh() {
 </template>
 
 <style scoped lang="scss">
-.face-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
+.current {
+  margin-top: var(--gap-hero);
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
+
+  &__meta {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: center;
+  }
+
+  &__time {
+    color: var(--app-text-secondary);
+    font-size: var(--fs-caption);
+  }
+
+  &__address {
+    display: block;
+    margin-top: var(--sp-2);
+    font-size: var(--fs-title);
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  &__foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: var(--sp-3);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--line-1);
+  }
+
+  &__no {
+    overflow: hidden;
+    color: var(--app-text-tertiary);
+    font-size: var(--fs-note);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__action {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    color: var(--app-color-primary);
+    font-size: var(--fs-caption);
+    font-weight: 600;
+  }
 }
 
-.face-blocked {
-  margin-top: 8px;
-  color: var(--app-color-danger);
-  font-size: 13px;
+.board {
+  margin-top: var(--gap-group);
+
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__title {
+    font-size: var(--fs-title);
+    font-weight: 600;
+  }
+
+  &__scope {
+    display: block;
+    overflow: hidden;
+    margin-top: var(--sp-1);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-caption);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__counts {
+    display: flex;
+    margin-top: var(--sp-3);
+  }
+
+  &__count {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+
+    & + & {
+      border-left: 1px solid var(--line-1);
+    }
+  }
+
+  &__value {
+    display: block;
+    font-size: var(--fs-metric);
+    font-weight: 700;
+
+    &--warn {
+      color: var(--app-color-warning-text);
+    }
+  }
+
+  &__label {
+    display: block;
+    margin-top: var(--sp-1);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-caption);
+  }
+
+  &__blocked {
+    margin-top: var(--sp-3);
+    color: var(--app-color-danger);
+    font-size: var(--fs-caption);
+  }
 }
 
-.task-strip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: rgba(93, 135, 255, 0.1);
-  border: 1px solid rgba(93, 135, 255, 0.28);
+.enter {
+  margin-top: var(--gap-group);
 }
 
-.task-strip-main {
-  min-width: 0;
-  padding-right: 12px;
-}
-
-.task-strip-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.task-strip-no {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.task-strip-address {
-  margin-top: 6px;
+.nav {
+  margin-top: var(--gap-block);
   overflow: hidden;
-  color: var(--app-text-secondary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-strip-action {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  color: var(--wot-color-theme, var(--app-color-primary));
-  font-size: 14px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.work-metrics {
-  display: flex;
-  align-items: center;
-  justify-content: space-around;
-  padding: 4px 0;
-}
-
-.work-metric {
-  text-align: center;
-}
-
-.work-metric-value {
-  font-size: 22px;
-  font-weight: 600;
+  border-radius: var(--r-md);
 }
 </style>

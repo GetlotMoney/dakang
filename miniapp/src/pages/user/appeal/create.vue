@@ -8,8 +8,8 @@ import { ContractError } from '@/api/common'
 import { uploadDeliveryMedia } from '@/api/delivery'
 import { appealDeadlineOf, appealWindowState, canCreateDeliveryAppeal } from '@/api/delivery-normalize'
 import { orderApi } from '@/api/order'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import EvidencePicker from '@/components/evidence-picker.vue'
 import { formatBizTime, formatFen, TASK_STATUS_LABELS } from '@/utils/format'
 import { backOr, redirectTo } from '@/utils/navigation'
@@ -22,9 +22,6 @@ definePage({
   },
 })
 
-/** 原型固定当前时间（Scenario now=20260716180000），页面仅作展示口径。 */
-const PROTOTYPE_NOW = '20260716180000'
-
 const REASON_OPTIONS: Array<{ value: DeliveryAppeal['reason'], label: string }> = [
   { value: 'QUANTITY', label: '数量不符' },
   { value: 'QUALITY', label: '水质问题' },
@@ -35,9 +32,6 @@ const REASON_OPTIONS: Array<{ value: DeliveryAppeal['reason'], label: string }> 
 
 const toast = useToast()
 const message = useMessage()
-
-/** delivery 域接真：申诉创建/凭证上传打真实后端；窗口提示按设备时钟，最终以服务端校验为准。 */
-const isDeliveryReal = currentMode('delivery') === 'real'
 
 const orderNo = ref('')
 const taskNo = ref('')
@@ -55,18 +49,21 @@ const model = reactive({
   photos: [] as string[],
 })
 
-/** 申诉截止：优先服务端签收事务落定的权威值（real）；Mock 数据按签收+24h 派生。 */
+/** 申诉截止：服务端签收事务落定的权威值。 */
 const appealDeadline = computed(() => {
   const currentTask = task.value
   return currentTask ? appealDeadlineOf(currentTask) ?? '' : ''
 })
-/** 超期提示：real 按设备时钟、mock 按原型固定时间；是否放行只以服务端提交校验为准。 */
+/**
+ * 超期提示按设备时钟算——它只决定这行字灰不灰，放行与否一律以服务端提交校验为准。
+ * 设备时间可被用户随意改，因此这里算出来的「没超期」不构成任何承诺。
+ */
 const deadlineExpired = computed(() => {
   const currentTask = task.value
   if (!currentTask) {
     return false
   }
-  return appealWindowState(currentTask, isDeliveryReal ? nowBusinessTime() : PROTOTYPE_NOW) === 'expired'
+  return appealWindowState(currentTask, nowBusinessTime()) === 'expired'
 })
 
 onLoad(async (query) => {
@@ -121,9 +118,10 @@ async function handleSubmit() {
     return
   }
   try {
+    // 「申诉不直接产生退款或补偿」是下游政策口径，不改变用户此刻要不要提交这个决定
     await message.confirm({
       title: '提交配送申诉',
-      msg: '申诉不直接产生退款或补偿。确认提交？',
+      msg: '确认提交申诉？',
     })
   }
   catch {
@@ -131,10 +129,12 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
-    // real：凭证照片先上传换受控媒体键；mock：保持本地记录号原样
-    const evidenceRefs = isDeliveryReal
-      ? await Promise.all(model.photos.map(photo => uploadDeliveryMedia(photo, 'appeal')))
-      : model.photos.map((_, index) => `APPEAL-EV-${index + 1}`)
+    // 凭证照片先上传换受控媒体键，再随申诉提交。
+    // 这里曾有一条回落分支直接编造 `APPEAL-EV-1` 这样的键发给后端：照片根本没上传，
+    // 而申诉单看起来带着凭证——审核方点开是空的，却已按「有证据」处理。
+    const evidenceRefs = await Promise.all(
+      model.photos.map(photo => uploadDeliveryMedia(photo, 'appeal')),
+    )
     await orderApi.createDeliveryAppeal({
       orderNo: orderNo.value,
       taskNo: currentTask.taskNo,
@@ -163,58 +163,65 @@ async function handleSubmit() {
     <wd-message-box />
 
     <view v-if="status === 'loading'" class="page-section state-block">
-      <wd-loading size="24px" />
-      <view class="muted-text">
-        订单信息加载中…
-      </view>
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="status === 'error'" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="backOr('U02')">
-              返回订单
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain @click="backOr('U02')">
+            返回订单
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <view v-else-if="status === 'blocked'" class="page-section">
-      <wd-status-tip
-        image="content"
-        :tip="`只有已签收订单可发起申诉（当前任务状态：${task ? TASK_STATUS_LABELS[task.taskStatus] : '未知'}）`"
+      <AppPageState
+        state="blocked"
+        title="暂不能发起申诉"
+        :message="`只有已签收订单可发起申诉（当前任务状态：${task ? TASK_STATUS_LABELS[task.taskStatus] : '未知'}）`"
       >
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="backOr('U02')">
-              返回订单
-            </wd-button>
-          </view>
+        <template #actions>
+          <wd-button plain @click="backOr('U02')">
+            返回订单
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
+    </view>
+
+    <!-- 已过期用 blocked，不再让表单继续可填可提交。
+         原实现里 deadlineExpired 算出来了却只用来给一枚 tag 换颜色，表单照常渲染、
+         提交按钮照常可点——用户会走完选原因、写说明、真上传三张照片（换受控媒体键），
+         最后才在提交时收到 APPEAL_WINDOW_EXPIRED。判据一字未动，只换渲染落点。 -->
+    <view v-else-if="status === 'ready' && deadlineExpired" class="page-section">
+      <AppPageState
+        state="blocked"
+        title="已超过申诉时限"
+        :message="`申诉截止 ${formatBizTime(appealDeadline)}`"
+      >
+        <template #actions>
+          <wd-button plain @click="backOr('U02')">
+            返回订单
+          </wd-button>
+        </template>
+      </AppPageState>
     </view>
 
     <template v-else-if="task && order">
       <view class="page-section">
         <wd-cell-group title="订单与签收信息" border>
-          <wd-cell title="订单号" :value="order.order.orderNo" />
-          <wd-cell title="任务号" :value="task.taskNo" />
+          <wd-cell title="订单号" :value="order.order.orderNo" ellipsis />
+          <wd-cell title="任务号" :value="task.taskNo" ellipsis />
           <wd-cell
             title="配送内容"
             :value="`${task.waterTypeName} · ${task.containerSpec}×${task.plannedDeliveryCount}`"
           />
           <wd-cell title="订单金额" :value="formatFen(order.order.orderAmountFen)" />
           <wd-cell title="签收时间" :value="formatBizTime(task.signTime)" />
-          <wd-cell title="申诉截止" center>
-            <view class="deadline-value">
-              <view>{{ formatBizTime(appealDeadline) }}</view>
-              <wd-tag :type="deadlineExpired ? 'danger' : 'success'" plain>
-                {{ deadlineExpired ? '已超 24 小时' : '窗口内' }}
-              </wd-tag>
-            </view>
-          </wd-cell>
+          <!-- 走到这里必然在窗口内（过期已被上面的 blocked 拦下），不再需要状态 tag；
+               整行展开避免日期与 tag 在 121.5px 的 value 列里互相挤断。 -->
+          <wd-cell title="申诉截止" :value="formatBizTime(appealDeadline)" vertical />
         </wd-cell-group>
       </view>
 
@@ -269,12 +276,6 @@ async function handleSubmit() {
   align-items: center;
   gap: 8px;
   padding: 32px 0;
-}
-
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
 }
 
 .deadline-value {

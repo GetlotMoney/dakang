@@ -7,6 +7,7 @@ import { useMessage, useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { ContractError } from '@/api/common'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import { formatBizTime } from '@/utils/format'
 import { backOr } from '@/utils/navigation'
 
@@ -188,19 +189,17 @@ async function handleDelete() {
 
     <template v-if="loadError">
       <view class="page-section">
-        <wd-status-tip image="content" :tip="loadError">
-          <template #bottom>
-            <view class="status-actions">
-              <wd-button plain @click="backOr('U03')">
-                返回
-              </wd-button>
-            </view>
+        <AppPageState state="error" :message="loadError">
+          <template #actions>
+            <wd-button plain @click="backOr('U03')">
+              返回
+            </wd-button>
           </template>
-        </wd-status-tip>
+        </AppPageState>
       </view>
     </template>
-    <view v-else-if="loading" class="page-section muted-text">
-      加载中…
+    <view v-else-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
     <view v-else class="page-section">
       <wd-tabs v-model="activeTab">
@@ -217,7 +216,7 @@ async function handleDelete() {
             </view>
 
             <wd-cell-group border>
-              <wd-cell title="家庭人数" label="选填，0 表示暂不填人数">
+              <wd-cell title="家庭人数" label="选填">
                 <wd-input-number
                   v-model="model.memberCount"
                   :min="0"
@@ -254,10 +253,12 @@ async function handleDelete() {
                 保存
               </wd-button>
             </view>
-            <view v-if="profile" class="panel-actions">
-              <wd-button block size="large" type="error" plain :loading="deleting" @click="handleDelete">
-                删除家庭资料
-              </wd-button>
+            <!-- 删除降到文字级危险动作：与「保存」同为整宽大按钮时两个主动作等重，
+                 一个是常规提交、一个不可逆，摆在一起容易点错。二次确认原样保留。 -->
+            <view v-if="profile" class="danger-action" @click="handleDelete">
+              <text class="danger-action__text">
+                {{ deleting ? '删除中…' : '删除家庭资料' }}
+              </text>
             </view>
           </view>
         </wd-tab>
@@ -278,11 +279,9 @@ async function handleDelete() {
                 </wd-cell>
               </wd-cell-group>
             </template>
-            <wd-status-tip v-else image="content" tip="暂无奖励规则与记录" />
-
-            <view class="muted-text boundary-note">
-              当前暂不支持领取奖励。
-            </view>
+            <!-- 不写「当前暂不支持领取奖励」：这一屏没有任何领取按钮，
+                 看不到按钮本身就是「不能领」，不需要再声明一遍。 -->
+            <AppPageState v-else state="empty" title="暂无奖励记录" />
           </view>
         </wd-tab>
       </wd-tabs>
@@ -291,13 +290,6 @@ async function handleDelete() {
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 20px;
-  width: 100%;
-}
-
 .tab-panel {
   padding: 12px 0;
 }
@@ -306,11 +298,11 @@ async function handleDelete() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: rgba(240, 136, 58, 0.1);
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--tint-warning);
 }
 
 .consent-text {
@@ -330,9 +322,14 @@ async function handleDelete() {
   margin-top: 16px;
 }
 
-.boundary-note {
-  margin-top: 16px;
-  padding: 0 4px;
-  line-height: 1.6;
+.danger-action {
+  margin-top: var(--sp-5);
+  padding: var(--sp-3);
+  text-align: center;
+
+  &__text {
+    color: var(--app-color-danger);
+    font-size: var(--fs-caption);
+  }
 }
 </style>
