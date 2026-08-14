@@ -11,16 +11,9 @@ import lombok.Data;
 import java.io.Serializable;
 
 /**
- * PC 取水异常核账入参（E2E-04 包A，售后来源 3取水异常核账）。
- *
- * <p><b>本 Bo 刻意没有任何金额、水量、目标状态或来源判别字段。</b>核账确认是「核对既有账本后
- * 推进订单终态」，判别（已退差待复核 / 未退差 / 账本断裂）与终态（零出水→7已退款、
- * 部分出水→4已完成）全部由 {@code IWaterAbnormalReconcileTxService} 在事务内按同一份规则重算，
- * 连预览接口给出的建议终态都不作数。多一个字段就多一条「前端说退多少就退多少」的旁路，
- * 而这条链上的订单本就处在账实待核的状态。</p>
- *
- * <p>{@code orderId} 同时登记 {@link IdGroup} 与 {@link Default}：预览只需订单ID
- * （走 IdGroup），确认还要求核账说明（走默认组），两个入口共用一个 Bo 而不各写一份。</p>
+ * PC 取水异常核账入参（E2E-04 包A，售后来源 3）。刻意不带金额/水量/目标状态字段：
+ * 判别与终态全部由 {@code IWaterAbnormalReconcileTxService} 在事务内重算，预览建议值也不作数。
+ * {@code orderId} 同时登记 {@link IdGroup}（预览）与 {@link Default}（确认，另需核账说明），两个入口共用一个 Bo。
  *
  * @author dakang
  * @since 2026-07-29

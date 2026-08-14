@@ -30,15 +30,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * 自动补货规则用户自助管理实现（S2）。
- *
- * <h3>最近执行结果的两条证据线</h3>
- * <p>成功证据=期次订单本身（订单号由「用户+规则+期序」确定性派生，从当前期序
- * 向前逐期反查，最多回看 {@link #RESULT_LOOKBACK_PERIODS} 期——每次都是
- * uk_order_no 主键级查询）；失败证据=生成器留下的领域事件
- * （{@code AUTO_REFILL_FAIL:<ruleId>:<period>} 幂等键，同期恒一条）。
- * 两线各取最新、再取时间较近者展示——不新建执行记录表（现有订单与事件
- * 已构成完整事实，第二套账本只会漂移）。</p>
+ * 自动补货规则用户自助管理实现（S2）。最近执行结果取两条证据线：成功=期次订单本身
+ * （订单号确定性派生逐期反查，最多回看 {@link #RESULT_LOOKBACK_PERIODS} 期）；
+ * 失败=生成器领域事件（{@code AUTO_REFILL_FAIL:<ruleId>:<period>}）。
+ * 两线各取最新、再取较近者展示，不新建执行记录表（第二套账本只会漂移）。
  */
 @Slf4j
 @Service

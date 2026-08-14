@@ -13,28 +13,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * <b>同一张表的多份 DDL 必须一致</b>——常态守卫（E2E-04）。
- *
- * <h3>这条测试是为一个已经发生过的 P0 写的</h3>
- * <p>包A 把 {@code ws_after_sale_action} 只建在 {@code deploy/mysql/migrations/} 里，
- * 忘了同步 {@code deploy/mysql/init/}。而主环境<b>从不执行 migrations</b>
- * （compose 只挂 init 到 docker-entrypoint-initdb.d，build-all.sh 里没有任何迁移步骤），
- * 与此同时 {@code WsOrderMapper.xml} 的订单中心读模型里新增了一条无条件的
- * {@code EXISTS(... ws_after_sale_action ...)}。两件事一叠加，
- * 结果是<b>已验收的订单中心整体 1146 Table doesn't exist</b>，
- * 而 800 多个单测与隔离环境冒烟全绿——因为单测自建表、验收环境跑 migrations，两侧都盖不到。</p>
- *
- * <p>那次是靠人工比对发现的。人工比对不可复制，故把它固化成测试：
- * 任何一份 DDL 单独改动而另一份没跟上，这里立刻红。</p>
- *
- * <h3>比对口径：列名集合</h3>
- * <p>只比列名而不比类型与索引，是刻意的取舍。三份 DDL 的写法本就不同
- * （测试 schema 为了跑得快放宽了 NOT NULL、用 VARCHAR(20) 装 14 位时间），
- * 强行比类型会产出大量必须逐条豁免的噪音，最终没人维护。
- * 而<b>列缺失</b>恰是那次 P0 的形状，也是最容易发生、后果最直接的一种漂移。</p>
+ * 同一张表的多份 DDL 必须一致——常态守卫（E2E-04）。
+ * 主环境只执行 init 不执行 migrations，而单测自建表、验收环境跑 migrations，
+ * DDL 漂移在两侧都盖不到，只能靠本类静态比对。
+ * 比对口径只取列名集合：类型/索引写法三轨本就不同，列缺失才是最常见且后果最直接的漂移。
  */
 class SchemaParityTest {
 
@@ -83,14 +69,7 @@ class SchemaParityTest {
         assertColumnsEqual("ws_entitlement_allocation", MIG_D, INIT_SQL);
     }
 
-    /**
-     * REQ-213 参数定义注册表：迁移与 init 必须逐列一致。
-     *
-     * <p>这两张表的迁移是<b>补写</b>的：首版只建在 init，而 init 只在空库首启执行，
-     * 既有主库永远不会再跑它。与此同时下发路径在建指令<b>之前</b>就要查 ws_device_param_def
-     * 取参数定义——实测对主库直接 1146 Table doesn't exist，参数同步与价格同步整体打不出去，
-     * 而全量测试因自建表全绿。形状与本类注释记录的那次 P0 完全一致，只是方向相反。</p>
-     */
+    /** REQ-213 参数定义注册表：迁移与 init 逐列一致（init 只在空库首启执行，只建 init 会让既有主库缺表）。 */
     @Test
     void deviceParamDefColumnsMatchBetweenMigrationAndInit() throws IOException {
         assertColumnsEqual("ws_device_param_def", MIG_PARAM, INIT_SQL);
@@ -102,29 +81,104 @@ class SchemaParityTest {
         assertColumnsEqual("ws_device_param", MIG_PARAM, INIT_SQL);
     }
 
-    /**
-     * B23 审计导出任务表：迁移与 init 必须逐列一致。
-     *
-     * <p>合规页的导出申请在此表落库前只存在于前端内存；接真后页面加载即查该表，
-     * 表缺列/缺表会让「安全与合规」整页 500——与本类注释记录的那次 P0 同形。</p>
-     */
+    /** B23 审计导出任务表：迁移与 init 逐列一致（缺表会让「安全与合规」整页 500）。 */
     @Test
     void auditExportTaskColumnsMatchBetweenMigrationAndInit() throws IOException {
         assertColumnsEqual("ws_audit_export_task", MIG_AUDIT_EXPORT, INIT_SQL);
     }
 
-    /**
-     * 分润 V2 三表（E2E-08 S1）三轨同源：迁移 ↔ init ↔ 领域源文件。
-     *
-     * <p>V2 组件表的唯一键是并发防重复的地基，三轨漂移意味着评审看到的结构
-     * 与真正上线的结构不同——与导出任务同一守卫形状。</p>
-     */
+    /** 分润 V2 三表（E2E-08 S1）三轨同源：组件表唯一键是并发防重复的地基。 */
     /**
      * V1 分账记录表（审查维度1-③补位）：领域源曾缺 uk_split_order_receiver 与 REFUND_ID——
      * 按领域源初始化的环境没有分账幂等唯一键，enqueue 的撞键幂等整个失效，重放即双倍行。
      * init 与领域源必须逐列一致，且幂等唯一键两轨都在（该表建表在 settlement-e2e08-a 迁移，
      * 唯一键由同名迁移补挂，故迁移轨按唯一键断言）。
      */
+    /** 微信发货同步 outbox 三轨同源（WX-ECO S4）：缺 uk_wxship_key 同一包裹会向微信重复上传发货。 */
+    @Test
+    void wechatShippingOutboxMatchesAcrossAllThreeTracks() throws IOException {
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-13-wechat-shipping-outbox.sql");
+        Path domain = REPO.resolve("server/sql/ws_mall.sql");
+        assertColumnsEqual("ws_wechat_shipping_outbox", mig, INIT_SQL);
+        assertColumnsEqual("ws_wechat_shipping_outbox", mig, domain);
+        for (Path sql : new Path[] { mig, INIT_SQL, domain }) {
+            assertTrue(read(sql).contains("uk_wxship_key"),
+                    display(sql) + " 缺发货同步幂等唯一键 uk_wxship_key");
+            // SKIP_REASON 是「Pay-Sim 单留痕未同步」与「真同步了」的唯一区分位
+            assertTrue(read(sql).contains("SKIP_REASON"),
+                    display(sql) + " 缺 SKIP_REASON 列");
+        }
+    }
+
+    /** 微信订阅通知 outbox 三轨同源（WX-ECO S2）：缺 uk_wx_notify_key 会重复下发并耗光订阅额度。 */
+    @Test
+    void wechatNotifyOutboxMatchesAcrossAllThreeTracks() throws IOException {
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-12-wechat-notify-outbox.sql");
+        Path domain = REPO.resolve("server/sql/ws_message.sql");
+        assertColumnsEqual("ws_wechat_notify_outbox", mig, INIT_SQL);
+        assertColumnsEqual("ws_wechat_notify_outbox", mig, domain);
+        for (Path sql : new Path[] { mig, INIT_SQL, domain }) {
+            assertTrue(read(sql).contains("uk_wx_notify_key"),
+                    display(sql) + " 缺通知幂等唯一键 uk_wx_notify_key");
+        }
+        // SKIP_REASON 是「已处理但没发出去」与「真的发出去了」的唯一区分位。
+        // 少了它，模板未配与发送成功都记成 PROCESSED，运维看到一列绿色而用户一条没收到。
+        for (Path sql : new Path[] { mig, INIT_SQL, domain }) {
+            assertTrue(read(sql).contains("SKIP_REASON"),
+                    display(sql) + " 缺 SKIP_REASON：未发送原因将无处记录");
+        }
+    }
+
+    /**
+     * 身份冲突台账三轨同源（WX-ECO S1）：缺唯一键台账被重试刷屏；
+     * 缺表则留痕被 catch 吞成日志，冲突从此无痕。
+     */
+    @Test
+    void identityConflictMatchesAcrossAllThreeTracks() throws IOException {
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-12-identity-conflict.sql");
+        Path domain = REPO.resolve("server/sql/ws_user_card.sql");
+        assertColumnsEqual("ws_identity_conflict", mig, INIT_SQL);
+        assertColumnsEqual("ws_identity_conflict", mig, domain);
+        for (Path sql : new Path[] { mig, INIT_SQL, domain }) {
+            assertTrue(read(sql).contains("uk_identity_conflict_key"),
+                    display(sql) + " 缺冲突幂等唯一键 uk_identity_conflict_key");
+        }
+    }
+
+    /**
+     * 区域服务商归属表三轨同源：缺 uk_region_agent_version 时同区域同时点并存两行，
+     * 解析器 LIMIT 1 取哪行取决于物理顺序——分润付给不确定的人。
+     */
+    @Test
+    void regionAgentMatchesAcrossAllThreeTracks() throws IOException {
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-12-region-agent.sql");
+        Path domain = REPO.resolve("server/sql/ws_trade.sql");
+        assertColumnsEqual("ws_region_agent", mig, INIT_SQL);
+        assertColumnsEqual("ws_region_agent", mig, domain);
+        for (Path sql : new Path[] { mig, INIT_SQL, domain }) {
+            assertTrue(read(sql).contains("uk_region_agent_version"),
+                    display(sql) + " 缺归属版本唯一键 uk_region_agent_version");
+        }
+    }
+
+    /** 水站三级区划码三轨同源：只加 init 漏迁移会让主库缺列，解析器 Unknown column。 */
+    @Test
+    void stationRegionCodesExistInAllThreeTracks() throws IOException {
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-12-region-agent.sql");
+        Path domain = REPO.resolve("server/sql/ws_station.sql");
+        for (String col : new String[] { "PROVINCE_CODE", "CITY_CODE", "DISTRICT_CODE" }) {
+            for (Path sql : new Path[] { mig, INIT_SQL, domain }) {
+                assertTrue(read(sql).contains(col),
+                        display(sql) + " 缺水站区划码列 " + col);
+            }
+        }
+        Set<String> initCols = columnsOf(read(INIT_SQL), "ws_station");
+        assertTrue(initCols.containsAll(Set.of("PROVINCE_CODE", "CITY_CODE", "DISTRICT_CODE")),
+                "init 的 ws_station 建表未解析出三个区划码列，判据本身失效");
+        assertEquals(initCols, columnsOf(read(domain), "ws_station"),
+                "水站表在 init 与领域源的列集合不一致");
+    }
+
     /**
      * R1 P1-3 锁锚表：三轨（迁移/init/领域源）逐列一致——配置写入串行化的地基。
      * 不走 assertColumnsEqual（其「至少 5 列」自检对单列锚表误伤），直接列集比对。
@@ -194,6 +248,268 @@ class SchemaParityTest {
         // 真库单测 schema 同步落表：执行段/Worker 的真库测试全依赖它
         assertTrue(read(TEST_SCHEMA).contains("ws_split_clawback_action"),
                 "DeliveryDbSchema 缺 ws_split_clawback_action");
+    }
+
+    /**
+     * E2E-09 S1：商城六表三轨（init↔领域源↔迁移）逐列一致 + 五把唯一键在位 +
+     * 真库单测 Schema 同步落表。商城库存的并发安全与幂等全部压在这些唯一键上，
+     * 任何一轨漂移都会让「评审通过的结构」不等于「实际上线的结构」。
+     */
+    @Test
+    void mallTablesMatchAcrossAllThreeTracks() throws IOException {
+        Path domain = REPO.resolve("server/sql/ws_mall.sql");
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-08-mall-s1.sql");
+        for (String table : new String[] { "ws_mall_category", "ws_mall_product", "ws_mall_sku",
+                "ws_mall_warehouse", "ws_mall_stock", "ws_mall_stock_flow" }) {
+            assertColumnsEqual(table, INIT_SQL, domain);
+            assertColumnsEqual(table, INIT_SQL, mig);
+        }
+        for (String uk : new String[] { "uk_mall_category_code", "uk_mall_product_no",
+                "uk_mall_sku_no", "uk_mall_warehouse_no", "uk_mall_stock_wh_sku",
+                "uk_mall_stock_flow_biz_key" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, mig }) {
+                assertTrue(read(sql).contains(uk), display(sql) + " 缺商城唯一键 " + uk);
+            }
+        }
+        // 真库单测 Schema 六表同步：商城库存/上架闸真库测试全依赖它
+        Path mallTestSchema = Path.of("src/test/java/com/jbk/serve/service/mall/impl/MallDbSchema.java");
+        String testSchema = read(mallTestSchema);
+        for (String table : new String[] { "ws_mall_category", "ws_mall_product", "ws_mall_sku",
+                "ws_mall_warehouse", "ws_mall_stock", "ws_mall_stock_flow" }) {
+            assertTrue(testSchema.contains(table), "MallDbSchema 缺 " + table);
+        }
+        // R1-P2-1 负库存库层硬闸：命名 CHECK 四轨（含测试 Schema）齐备——
+        // 缺任何一轨，"负库存库层物理不可达"就是过度表述
+        for (String check : new String[] { "chk_mall_stock_available_nonneg",
+                "chk_mall_stock_reserved_nonneg" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, mig }) {
+                assertTrue(read(sql).contains(check), display(sql) + " 缺库存 CHECK 约束 " + check);
+            }
+            assertTrue(testSchema.contains(check), "MallDbSchema 缺库存 CHECK 约束 " + check);
+        }
+    }
+
+    /**
+     * 菜单基线不得有重复 ID：INSERT IGNORE + 显式主键下撞号被静默丢弃、新菜单不出现；
+     * 号段按模块交错分配，不能用「最后一个 ID+1」推空闲号。
+     */
+    @Test
+    void demoBaselineMenuIdsAreUnique() throws IOException {
+        String baseline = read(REPO.resolve("deploy/mysql/init/03-demo-baseline.sql"));
+        java.util.Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("(?m)^\\((\\d{3,4}),'").matcher(baseline);
+        while (m.find()) {
+            counts.merge(m.group(1), 1, Integer::sum);
+        }
+        assertTrue(counts.size() > 20, "未解析到菜单行，测试与基线结构已脱节");
+        java.util.List<String> duplicated = counts.entrySet().stream()
+                .filter(e -> e.getValue() > 1).map(java.util.Map.Entry::getKey).toList();
+        assertTrue(duplicated.isEmpty(),
+                "03-demo-baseline.sql 存在重复菜单 ID（INSERT IGNORE 会静默丢弃后来者）：" + duplicated);
+    }
+
+    /**
+     * 库存流水类型字典（1391）与 MallEnum.StockFlowType 标签逐条一致：
+     * 字典是 NOT EXISTS 幂等写入，错标签上线后改源文件不会更新既有行。
+     */
+    @Test
+    void mallStockFlowDictLabelsMatchEnumDescriptions() throws IOException {
+        String enumSource = read(Path.of(
+                "src/main/java/com/jbk/tool/consts/mall/MallEnum.java"));
+        int begin = enumSource.indexOf("enum StockFlowType");
+        assertTrue(begin > 0, "未定位到 StockFlowType，测试与枚举结构脱节");
+        String block = enumSource.substring(begin, enumSource.indexOf(';', begin));
+        java.util.Map<String, String> fromEnum = new java.util.LinkedHashMap<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\\w+\\((\\d+),\\s*\"([^\"]+)\"\\)").matcher(block);
+        while (m.find()) {
+            fromEnum.put(m.group(1), m.group(2));
+        }
+        assertEquals(11, fromEnum.size(),
+                "StockFlowType 应有 11 个取值（1~4 人工，5~8 订单流转，9~11 换货补发）");
+
+        for (Path sql : new Path[] { INIT_SQL, REPO.resolve("server/sql/ws_mall.sql") }) {
+            String text = read(sql);
+            java.util.Map<String, String> fromSql = new java.util.LinkedHashMap<>();
+            java.util.regex.Matcher a = java.util.regex.Pattern.compile(
+                    "SELECT '1391' AS DICT_TYPE, \\d+ AS DICT_SORT, (\\d+) AS DICT_VALUE, '([^']+)'")
+                    .matcher(text);
+            while (a.find()) {
+                fromSql.put(a.group(1), a.group(2));
+            }
+            java.util.regex.Matcher b = java.util.regex.Pattern
+                    .compile("SELECT '1391', \\d+, (\\d+), '([^']+)'").matcher(text);
+            while (b.find()) {
+                fromSql.put(b.group(1), b.group(2));
+            }
+            assertEquals(fromEnum, fromSql,
+                    display(sql) + " 的 1391 字典标签与 MallEnum.StockFlowType 不一致");
+        }
+    }
+
+    /**
+     * E2E-09 S2 交易五表三轨一致。这五张表承载资金与库存预占，列漂移的代价是
+     * 主库上线后首写即 500 或金额恒等式失效——故列清单、唯一键、CHECK 三项逐条钉住。
+     * 唯一键刻意不含 DATA_STATUS：创单幂等锚与支付事实键都不能因误删而解锁重放。
+     */
+    @Test
+    void mallS2TradeTablesMatchAcrossAllTracks() throws IOException {
+        Path domain = REPO.resolve("server/sql/ws_mall.sql");
+        Path mig = REPO.resolve("deploy/mysql/migrations/2026-08-08-mall-s2.sql");
+        String[] tables = { "ws_mall_cart_item", "ws_mall_order", "ws_mall_order_item",
+                "ws_mall_payment", "ws_mall_payment_fact" };
+        for (String table : tables) {
+            assertColumnsEqual(table, INIT_SQL, domain);
+            if ("ws_mall_order".equals(table)) {
+                // SOURCE_AFTER_SALE_ID 由 S4 迁移 ALTER 补挂：S2 迁移轨天然没有它，这不是漂移。
+                // 空库靠 init/领域源直接建出该列，既有库靠 S4 迁移拿到；两条路径的终态
+                // 由下方 S4 段的 ADD COLUMN 与唯一键断言各自钉住。
+                Set<String> initCols = new LinkedHashSet<>(columnsOf(read(INIT_SQL), table));
+                assertTrue(initCols.remove("SOURCE_AFTER_SALE_ID"),
+                        "init 的 ws_mall_order 缺换货来源列，S4 三轨已漂移");
+                assertEquals(initCols, columnsOf(read(mig), table),
+                        "ws_mall_order 在 init 与 S2 迁移的列集合不一致（已排除 S4 补挂列）");
+                continue;
+            }
+            assertColumnsEqual(table, INIT_SQL, mig);
+        }
+        for (String uk : new String[] { "uk_mall_cart_user_sku", "uk_mall_order_no",
+                "uk_mall_order_user_request", "uk_mall_order_item_order_sku",
+                "uk_mall_payment_transaction", "uk_mall_payment_order_no",
+                "uk_mall_payment_order_id", "uk_mall_payment_fact_key" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, mig }) {
+                assertTrue(read(sql).contains(uk), display(sql) + " 缺 S2 唯一键 " + uk);
+            }
+        }
+        // 金额与数量恒等式的库层兜底：篡改任一列都写不进去
+        for (String check : new String[] { "chk_mall_cart_qty_positive",
+                "chk_mall_order_amount_nonneg", "chk_mall_order_amount_sum",
+                "chk_mall_order_item_qty_positive", "chk_mall_order_item_price_nonneg",
+                "chk_mall_order_item_amount", "chk_mall_payment_amount_nonneg" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, mig }) {
+                assertTrue(read(sql).contains(check), display(sql) + " 缺 S2 CHECK 约束 " + check);
+            }
+        }
+        Path mallTestSchema = Path.of("src/test/java/com/jbk/serve/service/mall/impl/MallDbSchema.java");
+        String testSchema = read(mallTestSchema);
+        for (String table : tables) {
+            assertTrue(testSchema.contains(table), "MallDbSchema 缺 S2 表 " + table);
+        }
+        // S3 履约三轨：列逐字一致 + 一单一任务/轨迹幂等/配送范围三把唯一键在位
+        Path migS3 = REPO.resolve("deploy/mysql/migrations/2026-08-09-mall-s3.sql");
+        for (String table : new String[] { "ws_mall_fulfillment", "ws_mall_fulfillment_trace",
+                "ws_mall_courier_scope", "ws_mall_warehouse_operator" }) {
+            assertColumnsEqual(table, INIT_SQL, domain);
+            if ("ws_mall_fulfillment".equals(table)) {
+                // FULFILL_MODE 由 L1 迁移 ALTER 补挂：S3 迁移轨天然没有它，这不是漂移
+                // （与 ws_mall_order 的 SOURCE_AFTER_SALE_ID 同一先例）。空库靠 init/领域源
+                // 直接建出该列，既有库靠 L1 迁移拿到；两条路径的终态由下方 L1 段的
+                // ADD COLUMN 断言钉住。
+                Set<String> fulfillCols = new LinkedHashSet<>(columnsOf(read(INIT_SQL), table));
+                assertTrue(fulfillCols.remove("FULFILL_MODE"),
+                        "init 的 ws_mall_fulfillment 缺履约渠道列，L1 四轨已漂移");
+                assertEquals(fulfillCols, columnsOf(read(migS3), table),
+                        "ws_mall_fulfillment 在 init 与 S3 迁移的列集合不一致（已排除 L1 补挂列）");
+            }
+            else {
+                assertColumnsEqual(table, INIT_SQL, migS3);
+            }
+            assertTrue(testSchema.contains(table), "MallDbSchema 缺 S3 表 " + table);
+        }
+        // 分配证据列：四轨缺一即配送归属核验在该环境失效
+        for (Path sql : new Path[] { INIT_SQL, domain, migS3 }) {
+            assertTrue(read(sql).contains("`SUBJECT_ID`"), display(sql) + " 缺轨迹 SUBJECT_ID 列");
+        }
+        assertTrue(testSchema.contains("SUBJECT_ID"), "MallDbSchema 缺轨迹 SUBJECT_ID 列");
+        // S4 售后四轨：五表列一致 + 幂等/资金唯一键 + 换货来源列与唯一键
+        Path migS4 = REPO.resolve("deploy/mysql/migrations/2026-08-10-mall-s4.sql");
+        for (String table : new String[] { "ws_mall_after_sale", "ws_mall_after_sale_item",
+                "ws_mall_after_sale_trace", "ws_mall_refund", "ws_mall_refund_fact" }) {
+            assertColumnsEqual(table, INIT_SQL, domain);
+            assertColumnsEqual(table, INIT_SQL, migS4);
+            assertTrue(testSchema.contains(table), "MallDbSchema 缺 S4 表 " + table);
+        }
+        assertTrue(read(migS4).contains("ADD COLUMN `SOURCE_AFTER_SALE_ID`"),
+                "S4 迁移缺换货来源列的幂等 ALTER——既有库拿不到该列，换货补发整链不可达");
+        assertTrue(read(migS4).contains("ADD UNIQUE KEY `uk_mall_order_source_after_sale`"),
+                "S4 迁移缺换货来源唯一键——一张售后单能补发多次");
+        for (String uk : new String[] { "uk_mall_as_no", "uk_mall_as_user_request",
+                "uk_mall_as_item", "uk_mall_as_trace_key", "uk_mall_refund_no",
+                "uk_mall_refund_after_sale", "uk_mall_refund_transaction",
+                "uk_mall_refund_fact_key", "uk_mall_order_source_after_sale" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, migS4 }) {
+                assertTrue(read(sql).contains(uk), display(sql) + " 缺 S4 唯一键 " + uk);
+            }
+            assertTrue(testSchema.contains(uk), "MallDbSchema 缺 S4 唯一键 " + uk);
+        }
+        for (String check : new String[] { "chk_mall_as_refund_nonneg",
+                "chk_mall_as_item_qty_positive", "chk_mall_as_item_amount",
+                "chk_mall_refund_amount_positive" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, migS4 }) {
+                assertTrue(read(sql).contains(check), display(sql) + " 缺 S4 CHECK 约束 " + check);
+            }
+            assertTrue(testSchema.contains(check), "MallDbSchema 缺 S4 CHECK 约束 " + check);
+        }
+        for (String uk : new String[] { "uk_mall_fulfill_order", "uk_mall_ftrace_key",
+                "uk_mall_courier_scope", "uk_mall_wh_operator" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, migS3 }) {
+                assertTrue(read(sql).contains(uk), display(sql) + " 缺 S3 唯一键 " + uk);
+            }
+            assertTrue(testSchema.contains(uk), "MallDbSchema 缺 S3 唯一键 " + uk);
+        }
+        assertTrue(testSchema.contains("chk_mall_order_amount_sum"),
+                "MallDbSchema 缺订单金额恒等式 CHECK——测试轨挡不住的缺陷会在主库首现");
+
+        // L1 多渠道物流四轨：四表列一致 + 六把唯一键 + 补挂列 + 历史回填幂等
+        Path migL1 = REPO.resolve("deploy/mysql/migrations/2026-08-11-mall-l1-logistics.sql");
+        for (String table : new String[] { "ws_mall_shipment", "ws_mall_shipment_item",
+                "ws_mall_logistics_event", "ws_mall_logistics_outbox" }) {
+            assertColumnsEqual(table, INIT_SQL, domain);
+            assertColumnsEqual(table, INIT_SQL, migL1);
+            assertTrue(testSchema.contains(table), "MallDbSchema 缺 L1 表 " + table);
+        }
+        for (String uk : new String[] { "uk_mall_ship_key", "uk_mall_ship_seq",
+                "uk_mall_ship_waybill", "uk_mall_ship_item",
+                "uk_mall_logi_event_key", "uk_mall_logi_outbox_key" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, migL1 }) {
+                assertTrue(read(sql).contains(uk), display(sql) + " 缺 L1 唯一键 " + uk);
+            }
+            assertTrue(testSchema.contains(uk), "MallDbSchema 缺 L1 唯一键 " + uk);
+        }
+        assertTrue(read(migL1).contains("ADD COLUMN `FULFILL_MODE`"),
+                "L1 迁移缺履约渠道列的幂等 ALTER——既有库拿不到该列，多渠道整链不可达");
+        for (Path sql : new Path[] { INIT_SQL, domain }) {
+            assertTrue(read(sql).contains("`FULFILL_MODE`"),
+                    display(sql) + " 缺 ws_mall_fulfillment.FULFILL_MODE");
+        }
+        assertTrue(testSchema.contains("FULFILL_MODE"), "MallDbSchema 缺 FULFILL_MODE 列");
+        // 回填必须确定性且可重复：靠幂等键 NOT EXISTS，不靠「跑一次就别再跑」
+        String l1 = read(migL1);
+        assertTrue(l1.contains("CONCAT('MSHIP:', f.`ORDER_NO`, ':1:1')"),
+                "L1 迁移的历史回填必须用确定性幂等键派生，不得用自增或时间戳");
+        assertTrue(l1.contains("WHERE NOT EXISTS"),
+                "L1 迁移的历史回填缺 NOT EXISTS 守卫，重复执行会造出重复包裹");
+        assertFalse(l1.contains("NOW()") || l1.contains("SYSDATE()"),
+                "回填时间必须来自履约任务自己的时间列，取当前时间等于给历史包裹编造一个发生时刻");
+        // 渠道中立标签：三轨的 1396 值 4 都必须是新文案，留着「待取货」会让第三方运单显示成等配送员来取
+        for (Path sql : new Path[] { INIT_SQL, domain }) {
+            assertTrue(read(sql).contains("'待承运方揽收'"),
+                    display(sql) + " 的字典 1396 仍是自营专用文案");
+        }
+        assertTrue(l1.contains("'待承运方揽收'"), "L1 迁移缺 1396 标签的渠道中立化 UPDATE");
+        for (String dict : new String[] { "'1404'", "'1405'", "'1406'", "'1407'", "'1408'", "'1409'" }) {
+            for (Path sql : new Path[] { INIT_SQL, domain, migL1 }) {
+                assertTrue(read(sql).contains(dict), display(sql) + " 缺 L1 字典 " + dict);
+            }
+        }
+        // 地址区县码：init 建表带列、迁移带幂等 ALTER、测试轨同置（可空是刻意的，存量地址不猜测回填）
+        assertTrue(read(INIT_SQL).contains("`DISTRICT_CODE`       varchar(6)   NULL"),
+                "init 的 ws_user_address 缺 DISTRICT_CODE 列");
+        assertTrue(read(mig).contains("ADD COLUMN `DISTRICT_CODE`"),
+                "S2 迁移缺 ws_user_address 的 DISTRICT_CODE 加列语句");
+        assertTrue(testSchema.contains("DISTRICT_CODE VARCHAR(6) NULL"),
+                "MallDbSchema 的 ws_user_address 缺 DISTRICT_CODE 列");
     }
 
     /**
@@ -327,35 +643,13 @@ class SchemaParityTest {
     }
 
     /**
-     * 字典写入不得使用 {@code INSERT IGNORE}——这条规则只有测试能守住。
-     *
-     * <h3>为什么必须有这道守卫</h3>
-     * <p>{@code api_dict_type} 与 {@code api_dict_data} 除 {@code PRIMARY KEY(ID)} 外没有任何
-     * 唯一索引，而字典 INSERT 一律不写 ID（走自增）。于是 {@code IGNORE} <b>无键可撞、
-     * 等同普通 INSERT</b>：init 在空库灌一套、迁移在既有库再灌一套，字典就翻倍；
-     * 而字典查询是 {@code selectJoinOne}，遇重复行直接 TooManyResults，
-     * {@code /api/dict/listByType} 对该编号整个返回 500。</p>
-     *
-     * <p>本项目已经踩过<b>两次</b>：E2E-08 的 1376~1381、B23 的 1382。两次都是照着当时
-     * AGENTS.md 那句"【强制】必须使用 INSERT IGNORE"写的——文档已按约束事实改写，
-     * 但只改文档挡不住第三次，故固化成测试。</p>
-     *
-     * <p>菜单与角色绑定不在此列：它们的 INSERT 显式写主键 ID，撞主键即被忽略，
-     * {@code IGNORE} 对它们是有效的。</p>
+     * 字典写入不得使用 INSERT IGNORE：字典表无唯一索引且不写 ID，IGNORE 无键可撞
+     * 等同普通 INSERT，init+迁移各灌一套即翻倍，selectJoinOne 遇重复行 500。
+     * 菜单与角色绑定显式写主键，IGNORE 对它们有效，不在此列。
      */
     /**
-     * 破坏性 DDL 的作用域边界：迁移绝不删表，领域源文件必须自带「仅限空库」横幅。
-     *
-     * <p>补的是一处工作流层面的踩雷点：{@code server/sql/} 下 9 份 {@code ws_*.sql}
-     * <b>全部</b>以 {@code DROP TABLE IF EXISTS} 开头（{@code ws_device} 与
-     * {@code ws_delivery} 各删 6 张表），而 AGENTS.md 曾指示把
-     * {@code server/sql/<模块>.sql} 直接管道给主库。照字面执行一次，该域数据全没，
-     * MySQL 不会给任何警告。工作流已改为「空库走 init／既有库走 migrations」，
-     * 这道闸看住两侧不再漂回去。</p>
-     *
-     * <p>只扫 {@code .sql}：同目录的 {@code verify-*.sh} 确有 {@code DROP DATABASE}，
-     * 但它们作用于按 PID 命名的一次性容器（{@code dakang-l2db-test-$$}），
-     * 是隔离验证手段，不是对既有库的操作。</p>
+     * 破坏性 DDL 边界：迁移绝不删表；server/sql 的 ws_*.sql 以 DROP TABLE 开头，
+     * 必须自带「仅限空库」横幅。只扫 .sql——verify-*.sh 的 DROP DATABASE 作用于一次性容器。
      */
     @Test
     void migrationsCarryNoDestructiveDdl() throws IOException {
@@ -410,9 +704,7 @@ class SchemaParityTest {
 
     @Test
     void dictionaryInsertsNeverUseInsertIgnore() throws IOException {
-        // 只扫「能对非空库重复执行」的两类文件。
-        // init/*.sql 不在其列：它们由 docker-entrypoint-initdb.d 仅在空数据卷首启执行一次，
-        // 跑一次不会翻倍；把它们一并纳入会逼着改写整个底座 SQL，收益与风险不成比例。
+        // 只扫「能对非空库重复执行」的文件；init/*.sql 仅空数据卷首启执行一次，不在其列
         List<Path> sqlFiles = new java.util.ArrayList<>();
         for (String dir : new String[] { "deploy/mysql/migrations", "server/sql" }) {
             Path root = REPO.resolve(dir);
@@ -445,14 +737,8 @@ class SchemaParityTest {
     }
 
     /**
-     * 存量欠账：这些文件早于本守卫，且多数已在主库执行过，改写它们需要配套去重脚本与独立授权，
-     * 故先登记不清零——守卫的目的是<b>不再新增</b>第三次，而不是一次性重构历史 SQL。
-     *
-     * <p>其中 {@code 2026-07-31-settlement-e2e08-a.sql} 是已确认正在造成实际故障的一处
-     * （字典 1376~1381 在验收库实测各 2 行，对应编号的字典接口 500），已登记为 R-206。
-     * 清理该项时必须连带主库去重，不能只改 SQL 文件。</p>
-     *
-     * <p><b>本清单只减不增</b>：新增文件一律走 NOT EXISTS。</p>
+     * 存量欠账登记不清零，本清单只减不增（新增文件一律走 NOT EXISTS）。
+     * settlement-e2e08-a 已确认造成字典重复（R-206），清理时必须连带主库去重。
      */
     private static final Set<String> GRANDFATHERED_DICT_IGNORE = Set.of(
             "2026-07-20-closure-repair.sql",
@@ -588,12 +874,8 @@ class SchemaParityTest {
     }
 
     /**
-     * 从 SQL 文本里取某张表 CREATE TABLE 语句的列名集合。
-     *
-     * <p>三份 DDL 的排版差异不小：生产 DDL 每列一行且带反引号，真库单测 schema
-     * 为了紧凑把多列写在同一行且不带反引号，收尾的 {@code )} 缩进也不同。
-     * 因此不按行解析，而是<b>按括号深度为 0 的逗号切分</b>——
-     * 这样 {@code VARCHAR(20)} 与 {@code KEY idx_x (A, B)} 内部的逗号都不会切错。</p>
+     * 取 CREATE TABLE 的列名集合：三份 DDL 排版不同，故不按行解析，
+     * 按括号深度为 0 的逗号切分——VARCHAR(20)/KEY(A,B) 内部逗号不会切错。
      */
     private Set<String> columnsOf(String sql, String table) {
         Matcher block = Pattern.compile(
@@ -625,12 +907,8 @@ class SchemaParityTest {
     }
 
     /**
-     * 片段形如「`NAME` type ...」或「NAME type ...」；索引/约束子句一律丢弃。
-     *
-     * <p>字符类必须含数字：最初写的是 {@code [A-Z_]+}，于是 RAW_BODY_SHA256 这类
-     * 带数字的列<b>在两侧都被漏掉</b>——两边同时漏掉的列，比对时当然一致，
-     * 守卫对它形同虚设。这个盲区是靠「删掉该列后测试仍绿」的注入验证发现的，
-     * 单看测试全绿完全看不出来。</p>
+     * 片段形如「`NAME` type ...」；索引/约束子句丢弃。字符类必须含数字：
+     * 否则 RAW_BODY_SHA256 这类列在两侧同时被漏掉，比对恒一致、守卫形同虚设。
      */
     private void addColumn(Set<String> cols, String fragment) {
         Matcher col = Pattern.compile("^\\s*`?([A-Z0-9_]+)`?\\s+[a-zA-Z]").matcher(fragment.replace("\n", " "));

@@ -15,9 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 分润 V2 的运行边界护栏（E2E-08 S1 测试矩阵 15 + 任务书第八节）。
  *
- * <p>S1 只交付计算内核，<b>不接线</b>。这组源级断言看住三件事：
- * 开关在两份环境配置里都显式 false；订单完成路径不引用 V2 计算器；
- * 生产种子里没有任何生效计划。任何一条被破坏，"本轮不得启用新分润规则"就成了空话。</p>
+ * <p>S2（D-428）起 V2 已接线，但接线的形态本身就是护栏：分流只存在于
+ * SplitServiceImpl 单入口，三个完成事务类仍不得引用计算器；开关必须两环境
+ * 显式同值；种子文件永远不得插计划（比例只能经管理端整版发布）；公式仍唯一。</p>
  */
 class SplitV2GuardrailTest {
 
@@ -40,23 +40,35 @@ class SplitV2GuardrailTest {
         return new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
     }
 
-    /** 矩阵 15a：两环境开关都显式 false——缺省继承或漏配都不接受。 */
+    /**
+     * 矩阵 15a（D-428 改判据）：开关必须在两份环境配置里<b>显式声明且同值</b>——
+     * 缺省继承、漏配、或 dev/prod 分叉（同一份代码两处分账口径不同且无告警）都不接受。
+     */
     @Test
-    void switchExplicitlyOffInBothEnvironments() throws IOException {
-        Pattern off = Pattern.compile("split-v2:\\s*\\n\\s*enabled:\\s*false");
+    void switchExplicitlyDeclaredAndConsistentAcrossEnvironments() throws IOException {
+        Pattern declared = Pattern.compile("split-v2:\\s*\\n\\s*enabled:\\s*(true|false)");
+        String devValue = null;
+        String prodValue = null;
         for (String yml : new String[] {
                 "server/src/main/resources/application-dev.yml",
                 "server/src/main/resources/application-prod.yml" }) {
-            Matcher m = off.matcher(read(yml));
-            assertTrue(m.find(), yml + " 缺少显式的 settlement.split-v2.enabled: false");
+            Matcher m = declared.matcher(read(yml));
+            assertTrue(m.find(), yml + " 缺少显式的 settlement.split-v2.enabled 声明");
+            if (yml.contains("dev")) {
+                devValue = m.group(1);
+            }
+            else {
+                prodValue = m.group(1);
+            }
         }
+        assertTrue(devValue != null && devValue.equals(prodValue),
+                "settlement.split-v2.enabled 在 dev/prod 分叉：dev=" + devValue + " prod=" + prodValue);
     }
 
     /**
-     * 矩阵 15b：订单完成路径不调用 V2 计算器。
-     *
-     * <p>三个完成事务类是既有分账的全部挂点（S1-0 现状盘点核实）。它们连 import
-     * 都不许出现——「引用了但开关挡住」和「根本没引用」在演示与审计里是两种可信度。</p>
+     * 矩阵 15b（S2 后语义收紧为单入口原则）：三个完成事务类永远不得直接引用 V2
+     * 计算器/组件——V2 分流只存在于 SplitServiceImpl 一处，挂点类对 V1/V2 无感知。
+     * 挂点类里出现第二个入口，开关与回落语义就会散成多处、各自漂移。</p>
      */
     @Test
     void orderCompletionPathsDoNotTouchV2Calculator() throws IOException {
@@ -70,6 +82,38 @@ class SplitV2GuardrailTest {
         }
     }
 
+    /**
+     * D-406：区域服务商领地登记表<b>不得</b>成为分润归属的来源。
+     *
+     * <p>归属按推荐血缘冻结、不按地缘重算，{@code SplitCalcInput.regionChain} 直接收用户 ID，
+     * 计算器根本不接收行政区字段。{@code ws_region_agent} / {@code RegionAgentResolver}
+     * 只是 D-407 人工分配用的领地台账。</p>
+     *
+     * <p><b>这条护栏拦的是一个真实发生过的错误</b>：2026-08-12 建该表时，作者看到
+     * {@code RegionLevel.PROVINCE/CITY/COUNTY} 就默认它按行政区划匹配，把解析器写成
+     * "给定水站区划码 → 谁是服务商 → 分润入账走他的收益账户"，直到复查 decisions 才发现
+     * 那正是 D-406 排除的路径。错误本身不会报错、不会有测试变红——它只会在某天让
+     * 一笔钱付给"这个区现在的服务商"，而不是当初把这个机主招进来的人。</p>
+     */
+    @Test
+    void regionAgentResolverStaysOutOfSplitCalculation() throws IOException {
+        for (String path : new String[] {
+                "server/src/main/java/com/jbk/serve/service/settlement/split/SplitPlanCalculator.java",
+                "server/src/main/java/com/jbk/serve/service/settlement/split/SplitCalcInput.java",
+                "server/src/main/java/com/jbk/serve/service/settlement/split/SplitPlanSnapshot.java" }) {
+            String src = read(path);
+            assertFalse(src.contains("RegionAgentResolver") || src.contains("WsRegionAgent"),
+                    path + " 引用了区域领地登记——D-406 明令归属不按地缘重算，"
+                            + "计算器不得拿到任何行政区来源的服务商");
+        }
+        // 反向自检：护栏要有意义，被查的文件必须真的是计算链本身。
+        // 若哪天 SplitCalcInput 改名而这里没同步，上面三条 assertFalse 会对着不存在的
+        // 内容恒真——read() 已断言文件存在，这里再钉住"它确实是那条链"。
+        assertTrue(read("server/src/main/java/com/jbk/serve/service/settlement/split/SplitCalcInput.java")
+                        .contains("regionChain"),
+                "SplitCalcInput 不再含 regionChain，本护栏的前提已变，需重新评审 D-406 落码方式");
+    }
+
     /** 任务书 5.1：正式比例未确认前，任何种子文件不得插入计划行。 */
     @Test
     void noSeedPlanAnywhere() throws IOException {
@@ -81,6 +125,30 @@ class SplitV2GuardrailTest {
             assertFalse(body.contains("INSERT INTO `WS_SPLIT_PLAN")
                             || body.contains("INSERT IGNORE INTO `WS_SPLIT_PLAN"),
                     sql + " 出现计划种子——会议中的比例全部是讨论示例，正式参数待甲方书面确认");
+        }
+    }
+
+    /**
+     * 回溯边界源级钉（D-428）：三个完成挂点调用分账 enqueue 时必须传
+     * {@code order.getCreateTime()}。这里是全仓最容易一字改错且没有任何测试会变红的
+     * 地方——改传 now() 后，一次迟到的核账确认就会按新比例重算旧单。
+     */
+    @Test
+    void enqueueHooksPinOrderCreateTimeAsVersionAnchor() throws IOException {
+        for (String path : new String[] {
+                "server/src/main/java/com/jbk/serve/service/delivery/impl/DeliveryTaskTxServiceImpl.java",
+                "server/src/main/java/com/jbk/serve/service/trade/impl/TradeOrderTxServiceImpl.java",
+                "server/src/main/java/com/jbk/serve/service/aftersale/impl/WaterAbnormalReconcileTxServiceImpl.java" }) {
+            String src = read(path);
+            Matcher call = Pattern.compile(
+                    "splitService\\.enqueueFor\\w*\\(([^;]*?)\\);", Pattern.DOTALL).matcher(src);
+            boolean found = false;
+            while (call.find()) {
+                found = true;
+                assertTrue(call.group(1).contains("order.getCreateTime()"),
+                        path + " 的分账挂点没有传 order.getCreateTime() 作为版本锚：" + call.group(1));
+            }
+            assertTrue(found, path + " 找不到分账挂点调用，本护栏的前提已变");
         }
     }
 

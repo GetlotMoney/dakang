@@ -242,7 +242,7 @@
     showExpand: true,
     defaultExpanded: false,
     buttonLeftLimit: 2,
-    showReset: true,
+    showReset: false,
     showSearch: true,
     autoSearch: false,
     autoSearchDelay: 350,

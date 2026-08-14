@@ -9,12 +9,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-/**
- * @ClassName RedisUtil
- * @Author xs
- * @Date 2024/6/7 11:48
- * @Version 1.0
- */
 public class RedisUtils {
     // =============================common============================
 
@@ -24,7 +18,6 @@ public class RedisUtils {
      *
      * @param key  键
      * @param time 时间(秒)
-     * @return
      */
     public static <T> boolean expire(RedisTemplate<String, T> redis, String key, long time) {
         if (time > 0) {
@@ -75,9 +68,6 @@ public class RedisUtils {
 
     /**
      * 模糊删除key
-     *
-     * @param redis
-     * @param prefix
      */
     public static <T> void deleteByPrefix(RedisTemplate<String, T> redis, String prefix) {
         Set<String> keys = redis.keys(prefix + "*");
@@ -160,7 +150,6 @@ public class RedisUtils {
      *
      * @param key   键
      * @param delta 要增加几(大于0)
-     * @return
      */
 
     public static <T> long incr(RedisTemplate<String, T> redis, String key, long delta) {
@@ -175,7 +164,6 @@ public class RedisUtils {
      *
      * @param key   键
      * @param delta 要减少几(小于0)
-     * @return
      */
 
     public static <T> long decr(RedisTemplate<String, T> redis, String key, long delta) {
@@ -302,7 +290,6 @@ public class RedisUtils {
      * @param key  键
      * @param item 项
      * @param by   要增加几
-     * @return
      */
 
     public static double hincr(RedisTemplate<String, Object> redis, String key, String item, double by) {
@@ -315,7 +302,6 @@ public class RedisUtils {
      * @param key  键
      * @param item 项
      * @param by   要减少记
-     * @return
      */
 
     public static double hdecr(RedisTemplate<String, Object> redis, String key, String item, double by) {
@@ -328,7 +314,6 @@ public class RedisUtils {
      * 根据key获取Set中的所有值
      *
      * @param key 键
-     * @return
      */
 
     public static Set<Object> sGet(RedisTemplate<String, Object> redis, String key) {
@@ -380,7 +365,6 @@ public class RedisUtils {
      * 获取set缓存的长度
      *
      * @param key 键
-     * @return
      */
 
     public static long sGetSetSize(RedisTemplate<String, Object> redis, String key) {
@@ -408,7 +392,6 @@ public class RedisUtils {
      * @param key   键
      * @param start 开始
      * @param end   结束 0 到 -1代表所有值
-     * @return
      */
 
     public static List<Object> lGet(RedisTemplate<String, Object> redis, String key, long start, long end) {
@@ -417,9 +400,6 @@ public class RedisUtils {
 
     /**
      * 模糊查询key
-     *
-     * @param redis
-     * @param prefix
      */
 
     public static Set<String> getKeysByPrefix(RedisTemplate<String, Object> redis, String prefix) {
@@ -430,7 +410,6 @@ public class RedisUtils {
      * 获取list缓存的长度
      *
      * @param key 键
-     * @return
      */
 
     public static long lGetListSize(RedisTemplate<String, Object> redis, String key) {
@@ -442,7 +421,6 @@ public class RedisUtils {
      *
      * @param key   键
      * @param index 索引 index>=0时， 0 表头，1 第二个元素，依次类推；index<0时，-1，表尾，-2倒数第二个元素，依次类推
-     * @return
      */
 
     public static Object lGetIndex(RedisTemplate<String, Object> redis, String key, long index) {
@@ -454,7 +432,6 @@ public class RedisUtils {
      *
      * @param key   键
      * @param value 值
-     * @return
      */
 
     public static boolean lSet(RedisTemplate<String, Object> redis, String key, Object value) {
@@ -467,7 +444,6 @@ public class RedisUtils {
      *
      * @param key   键
      * @param value 值
-     * @return
      */
 
     public static boolean lLeftSet(RedisTemplate<String, Object> redis, String key, Object value) {
@@ -481,7 +457,6 @@ public class RedisUtils {
      * @param key   键
      * @param value 值
      * @param time  时间(秒)
-     * @return
      */
 
     public static boolean lSet(RedisTemplate<String, Object> redis, String key, Object value, long time) {
@@ -497,7 +472,6 @@ public class RedisUtils {
      *
      * @param key   键
      * @param value 值
-     * @return
      */
 
     public static boolean lSet(RedisTemplate<String, Object> redis, String key, List<Object> value) {
@@ -511,7 +485,6 @@ public class RedisUtils {
      * @param key   键
      * @param value 值
      * @param time  时间(秒)
-     * @return
      */
 
     public static boolean lSet(RedisTemplate<String, Object> redis, String key, List<Object> value, long time) {
@@ -529,7 +502,6 @@ public class RedisUtils {
      * @param key   键
      * @param index 索引
      * @param value 值
-     * @return
      */
 
     public static boolean lUpdateIndex(RedisTemplate<String, Object> redis, String key, long index, Object value) {

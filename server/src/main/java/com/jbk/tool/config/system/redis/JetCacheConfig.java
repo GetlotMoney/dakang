@@ -19,12 +19,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-/**
- * @ClassName JetCacheConfig
- * @Author xs
- * @Date 2024/6/7 11:47
- * @Version 1.0
- */
 @Configuration
 @EnableMethodCache(basePackages = "com.xinyu")
 //@EnableCreateCacheAnnotation // deprecated in jetcache 2.7-, 如果不用@CreateCache注解可以删除

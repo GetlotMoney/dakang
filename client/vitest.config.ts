@@ -1,6 +1,12 @@
 import { defineConfig } from 'vitest/config'
+import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url))
+    }
+  },
   test: {
     include: ['src/**/*.test.ts'],
     // after-sale-permission.test.ts 是 node:test 写法的存量文件（无 vitest suite），

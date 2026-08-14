@@ -47,7 +47,6 @@ public interface IWsAlarmService extends IService<WsAlarm> {
      */
     boolean linkWorkOrder(Long alarmId, Long workOrderId, Long operatorId, String now);
 
-    /** 自动恢复指定类型的待处理告警（如设备心跳恢复时恢复离线告警），返回是否有告警被恢复 */
     /**
      * 自动恢复：按活动键精确恢复（状态转 4自动恢复 + 清空活动键，同一条 UPDATE）。
      *

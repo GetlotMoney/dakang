@@ -8,19 +8,11 @@ import com.jbk.tool.data.trade.po.WsOrder;
 import com.jbk.tool.exception.JbkException;
 
 /**
- * 权益批次写入——<b>单一出处</b>（E2E-04 包D，REQ-061）。
+ * 权益批次写入——<b>单一出处</b>（E2E-04 包D，REQ-061）。首次购卡与已有卡充值两个入账点
+ * 必须共用这一份：批次是退款折算的唯一基准，两份定义漂移会让同样的充值退出不同的钱。
  *
- * <h3>为什么两个入账点必须共用这一份</h3>
- * <p>建批次的地方有两处：首次购卡（{@code RechargeIssueTxImpl}）与已有卡充值
- * （{@code RechargeCreditTxImpl}）。两处各写一遍，就有两份「批次该长什么样」的定义——
- * 而批次是退款折算的<b>唯一基准</b>，两份定义一旦漂移（比如一处记了赠送、另一处没记），
- * 同样的充值经不同路径进来会退出不同的钱，且两条路都「看起来正常」。</p>
- *
- * <h3>本类是静态工具而非 Service</h3>
- * <p>它必须在入账事务<b>内部</b>被调用（批次与卡权益必须同生共死：卡加了权益而批次没建，
- * 那笔充值就永远退不了；批次建了而卡没加，退款会退出根本没发放的权益）。
- * 做成 Service 注入会诱导有人给它加 {@code @Transactional}，
- * 那时传播级别一旦写成 REQUIRES_NEW，同生共死就断了。静态方法没有这个入口。</p>
+ * <p>静态工具而非 Service：必须在入账事务内部调用（批次与卡权益同生共死），
+ * Service 形态会诱导加 {@code @Transactional}/REQUIRES_NEW 打断同生共死。</p>
  *
  * @author dakang
  * @since 2026-07-29
@@ -58,8 +50,7 @@ public final class EntitlementBatchWriter {
         }
         if (sourceType != EntitlementBatchOrder.SourceType.FIRST_PURCHASE
                 && sourceType != EntitlementBatchOrder.SourceType.RECHARGE) {
-            // 历史聚合批次只能由回填脚本产生，绝不由入账路径建出：
-            // 它是「无法归属」的标记，而入账路径恰恰知道归属。
+            // 历史聚合批次只能由回填脚本产生：它是「无法归属」的标记，而入账路径恰恰知道归属
             throw new JbkException("入账路径只能建立首次购卡或充值来源的批次，实际 " + sourceType);
         }
         requireNonNegative(payAmountFen, "实付金额");
@@ -70,7 +61,7 @@ public final class EntitlementBatchWriter {
             throw new JbkException("赠送金额 " + bonusFen + " 超过发放余额 " + grantFen + "，批次数据自相矛盾");
         }
         if (grantFen == 0 && grantMl == 0) {
-            // 零权益批次没有业务含义，且会让「每笔充值恰好一个批次」的对账多出一堆空行
+            // 零权益批次会让「每笔充值恰好一个批次」的对账多出空行
             throw new JbkException("本次充值未发放任何权益，拒绝建立空批次");
         }
 
@@ -122,7 +113,7 @@ public final class EntitlementBatchWriter {
             throw new JbkException("赠卡批次入参缺失");
         }
         if (StrUtil.isBlank(expireTime)) {
-            // D-213：赠卡必带有效期。编号留在代码里，消息只说事实。
+            // D-213：赠卡必带有效期
             throw new JbkException("赠卡批次必须带有效期");
         }
         requireNonNegative(grantFen, "发放余额");

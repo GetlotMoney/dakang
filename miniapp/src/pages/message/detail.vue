@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { MessageItem } from '@/api/message'
+import AppPageState from '@/components/app-page-state.vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { useToast } from 'wot-design-uni'
@@ -33,6 +34,8 @@ const OBJECT_TYPE_LABELS: Record<NonNullable<MessageItem['objectType']>, string>
   device: '设备',
   appeal: '配送申诉',
   service: '服务请求',
+  mallOrder: '商城订单',
+  mallAfterSale: '商城售后',
 }
 
 const toast = useToast()
@@ -95,6 +98,12 @@ async function openRelatedObject() {
       case 'service':
         goTo('O05', { requestId: current.objectId })
         break
+      case 'mallOrder':
+        goTo('M06', { orderNo: current.objectId })
+        break
+      case 'mallAfterSale':
+        goTo('M11', { afterSaleNo: current.objectId })
+        break
       case 'appeal': {
         // 申诉消息只携带 appealId：先经本人申诉契约换取 orderNo，再落到订单申诉区。
         const appeal = await orderApi.getMyDeliveryAppeal(current.objectId)
@@ -122,8 +131,8 @@ function handleBack() {
     <view class="page-shell">
       <wd-toast />
 
-      <view v-if="loading" class="muted-text detail-placeholder">
-        加载中…
+      <view v-if="loading" class="page-section">
+        <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
       </view>
 
       <template v-else-if="message">
@@ -177,8 +186,11 @@ function handleBack() {
       </template>
 
       <view v-else class="detail-error">
-        <wd-status-tip image="content" :tip="errorMessage || '消息不存在或无权访问'" />
+        <AppPageState state="error" :message="errorMessage || '消息不存在或无权访问'" />
         <view class="detail-error-action">
+          <wd-button v-if="messageId" plain @click="refresh">
+            重新加载
+          </wd-button>
           <wd-button plain @click="handleBack">
             返回消息中心
           </wd-button>
@@ -189,15 +201,10 @@ function handleBack() {
 </template>
 
 <style scoped lang="scss">
-.detail-placeholder {
-  padding: 32px 0;
-  text-align: center;
-}
-
 .detail-card {
   padding: 16px;
   border-radius: 12px;
-  background: #fff;
+  background: var(--app-bg-card);
 }
 
 .detail-title {
@@ -227,6 +234,7 @@ function handleBack() {
 
 .detail-error-action {
   display: flex;
+  gap: var(--sp-2);
   justify-content: center;
   margin-top: 16px;
 }

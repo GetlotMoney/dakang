@@ -32,13 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RefundSourceAdapterWiringTest {
 
     /**
-     * <b>扫描生产类本身</b>，而不是在测试里复制一份 @ConditionalOnProperty。
-     *
-     * <p>最初这里是两个 @Bean 方法各自标注一份条件注解——那是假绿：验的是测试里的副本，
-     * 把生产类上的 havingValue 改坏（例如两个都改成 true）测试照样全通过，
-     * 而那恰恰是「两个适配器并存、注入点随机取一个」的事故形状。
-     * 改为扫描真实包后，条件注解由 Spring 在扫描期对<b>生产类</b>求值，
-     * 结论才真正来自被测代码。</p>
+     * 扫描生产类本身而非在测试里复制条件注解：复制版验的是副本，
+     * 生产类 havingValue 改坏照样全绿。
      */
     @Configuration(proxyBeanMethods = false)
     @ComponentScan(

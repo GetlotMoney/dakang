@@ -11,12 +11,6 @@ import org.springframework.data.redis.connection.lettuce.LettucePoolingClientCon
 
 import java.time.Duration;
 
-/**
- *@ClassName RedisConnectionConfig
- *@Author xs
- *@Date 2025/10/17 10:40
- *@Version 1.0
- */
 @Configuration
 public class RedisConnectionConfig {
 

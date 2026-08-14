@@ -1,0 +1,402 @@
+package com.jbk.serve.service.mall.impl;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+
+/**
+ * 商城域真库单测 Schema（E2E-09 S1）：列清单与 deploy/mysql/init/02-ws-business.sql、
+ * server/sql/ws_mall.sql、2026-08-08-mall-s1.sql 三轨同源（SchemaParityTest 看守）。
+ * 审计列的 NOT NULL 与生产保持一致：否则 PO 漏掉 FieldFill 时测试会全绿、部署后首写即 500。
+ */
+public final class MallDbSchema {
+
+    private MallDbSchema() {
+    }
+
+    public static void createAll(JdbcTemplate jdbc) {
+        // 通知 outbox 是部署契约的一部分，表缺失会让事务内登记的业务动作整体失败；
+        // DDL 不复制，直接执行真实迁移文件防抄本漂移
+        com.jbk.serve.service.mini.notify.WechatNotifyTestSchema.create(jdbc);
+        com.jbk.serve.service.mini.wxship.WechatShippingTestSchema.create(jdbc);
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_category (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  CATEGORY_CODE VARCHAR(50) NOT NULL, CATEGORY_NAME VARCHAR(50) NOT NULL,
+                  CATEGORY_SORT INT NOT NULL DEFAULT 0, CATEGORY_STATUS TINYINT NOT NULL,
+                  UNIQUE KEY uk_mall_category_code (CATEGORY_CODE)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_product (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  PRODUCT_NO VARCHAR(50) NOT NULL, CATEGORY_ID BIGINT NOT NULL,
+                  PRODUCT_NAME VARCHAR(100) NOT NULL, PRODUCT_SUBTITLE VARCHAR(200) NULL,
+                  COVER_URL VARCHAR(500) NULL, PRODUCT_DESC TEXT NULL,
+                  PRODUCT_STATUS TINYINT NOT NULL, VERSION INT NOT NULL DEFAULT 1,
+                  UNIQUE KEY uk_mall_product_no (PRODUCT_NO)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_sku (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  SKU_NO VARCHAR(50) NOT NULL, PRODUCT_ID BIGINT NOT NULL,
+                  SKU_NAME VARCHAR(100) NOT NULL, SPEC_SNAP VARCHAR(500) NOT NULL,
+                  SALE_PRICE BIGINT NOT NULL, MARKET_PRICE BIGINT NULL,
+                  WEIGHT_GRAM BIGINT NOT NULL DEFAULT 0, SKU_STATUS TINYINT NOT NULL,
+                  VERSION INT NOT NULL DEFAULT 1,
+                  UNIQUE KEY uk_mall_sku_no (SKU_NO)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_warehouse (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  WAREHOUSE_NO VARCHAR(50) NOT NULL, WAREHOUSE_NAME VARCHAR(100) NOT NULL,
+                  CONTACT_NAME VARCHAR(50) NOT NULL, CONTACT_PHONE VARCHAR(20) NOT NULL,
+                  PROVINCE_CODE VARCHAR(6) NOT NULL, CITY_CODE VARCHAR(6) NOT NULL,
+                  DISTRICT_CODE VARCHAR(6) NOT NULL, WAREHOUSE_ADDRESS VARCHAR(200) NOT NULL,
+                  LONGITUDE VARCHAR(20) NULL, LATITUDE VARCHAR(20) NULL,
+                  SERVICE_SCOPE_JSON VARCHAR(1000) NOT NULL, WAREHOUSE_STATUS TINYINT NOT NULL,
+                  VERSION INT NOT NULL DEFAULT 1,
+                  UNIQUE KEY uk_mall_warehouse_no (WAREHOUSE_NO)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_stock (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  WAREHOUSE_ID BIGINT NOT NULL, SKU_ID BIGINT NOT NULL,
+                  AVAILABLE_QTY BIGINT NOT NULL DEFAULT 0, RESERVED_QTY BIGINT NOT NULL DEFAULT 0,
+                  VERSION INT NOT NULL DEFAULT 1,
+                  UNIQUE KEY uk_mall_stock_wh_sku (WAREHOUSE_ID, SKU_ID),
+                  CONSTRAINT chk_mall_stock_available_nonneg CHECK (AVAILABLE_QTY >= 0),
+                  CONSTRAINT chk_mall_stock_reserved_nonneg CHECK (RESERVED_QTY >= 0)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_stock_flow (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  BIZ_IDEMPOTENCY_KEY VARCHAR(64) NOT NULL, WAREHOUSE_ID BIGINT NOT NULL,
+                  SKU_ID BIGINT NOT NULL, FLOW_TYPE TINYINT NOT NULL,
+                  AVAILABLE_CHANGE BIGINT NOT NULL, RESERVED_CHANGE BIGINT NOT NULL,
+                  AVAILABLE_AFTER BIGINT NOT NULL, RESERVED_AFTER BIGINT NOT NULL,
+                  FLOW_REASON VARCHAR(200) NOT NULL, OPERATOR_ID BIGINT NOT NULL,
+                  UNIQUE KEY uk_mall_stock_flow_biz_key (BIZ_IDEMPOTENCY_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        // ===== S2 交易五表 + 用户地址簿（选仓与归属校验的权威来源）=====
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_cart_item (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  USER_ID BIGINT NOT NULL, SKU_ID BIGINT NOT NULL, QUANTITY INT NOT NULL,
+                  UNIQUE KEY uk_mall_cart_user_sku (USER_ID, SKU_ID),
+                  CONSTRAINT chk_mall_cart_qty_positive CHECK (QUANTITY > 0 AND QUANTITY <= 999)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_order (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  ORDER_NO VARCHAR(32) NOT NULL, USER_ID BIGINT NOT NULL, WAREHOUSE_ID BIGINT NOT NULL,
+                  REQUEST_ID VARCHAR(36) NOT NULL, ADDRESS_ID BIGINT NOT NULL,
+                  PRODUCT_AMOUNT_FEN BIGINT NOT NULL, DELIVERY_FEE_FEN BIGINT NOT NULL DEFAULT 0,
+                  ORDER_AMOUNT_FEN BIGINT NOT NULL, ORDER_STATUS TINYINT NOT NULL,
+                  PAY_EXPIRE_TIME VARCHAR(14) NOT NULL,
+                  RECEIVER_NAME VARCHAR(30) NOT NULL, RECEIVER_PHONE VARCHAR(11) NOT NULL,
+                  RECEIVER_REGION VARCHAR(100) NOT NULL, RECEIVER_ADDRESS VARCHAR(200) NOT NULL,
+                  RECEIVER_DISTRICT_CODE VARCHAR(6) NOT NULL,
+                  CANCEL_TIME VARCHAR(14) NULL, CANCEL_REASON VARCHAR(200) NULL,
+                  SOURCE_AFTER_SALE_ID BIGINT NULL,
+                  VERSION INT NOT NULL DEFAULT 1,
+                  UNIQUE KEY uk_mall_order_no (ORDER_NO),
+                  UNIQUE KEY uk_mall_order_user_request (USER_ID, REQUEST_ID),
+                  UNIQUE KEY uk_mall_order_source_after_sale (SOURCE_AFTER_SALE_ID),
+                  CONSTRAINT chk_mall_order_amount_nonneg CHECK (PRODUCT_AMOUNT_FEN >= 0 AND DELIVERY_FEE_FEN >= 0),
+                  CONSTRAINT chk_mall_order_amount_sum CHECK (ORDER_AMOUNT_FEN = PRODUCT_AMOUNT_FEN + DELIVERY_FEE_FEN)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_order_item (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  ORDER_ID BIGINT NOT NULL, PRODUCT_ID BIGINT NOT NULL, SKU_ID BIGINT NOT NULL,
+                  PRODUCT_NAME VARCHAR(100) NOT NULL, SKU_NAME VARCHAR(100) NOT NULL,
+                  SPEC_SNAP VARCHAR(500) NOT NULL, UNIT_PRICE_FEN BIGINT NOT NULL,
+                  QUANTITY INT NOT NULL, ITEM_AMOUNT_FEN BIGINT NOT NULL, WEIGHT_GRAM BIGINT NOT NULL,
+                  UNIQUE KEY uk_mall_order_item_order_sku (ORDER_ID, SKU_ID),
+                  CONSTRAINT chk_mall_order_item_qty_positive CHECK (QUANTITY > 0 AND QUANTITY <= 999),
+                  CONSTRAINT chk_mall_order_item_price_nonneg CHECK (UNIT_PRICE_FEN >= 0),
+                  CONSTRAINT chk_mall_order_item_amount CHECK (ITEM_AMOUNT_FEN = UNIT_PRICE_FEN * QUANTITY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_payment (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  ORDER_ID BIGINT NOT NULL, ORDER_NO VARCHAR(32) NOT NULL,
+                  TRANSACTION_ID VARCHAR(64) NULL, PAY_AMOUNT_FEN BIGINT NOT NULL,
+                  PAY_STATUS TINYINT NOT NULL, PAY_SOURCE TINYINT NOT NULL,
+                  CURRENCY VARCHAR(16) NOT NULL DEFAULT 'CNY', PAY_EXPIRE_TIME VARCHAR(14) NOT NULL,
+                  PAY_SUCCESS_TIME VARCHAR(14) NULL, CLOSE_TIME VARCHAR(14) NULL,
+                  UNIQUE KEY uk_mall_payment_transaction (TRANSACTION_ID),
+                  UNIQUE KEY uk_mall_payment_order_no (ORDER_NO),
+                  UNIQUE KEY uk_mall_payment_order_id (ORDER_ID),
+                  CONSTRAINT chk_mall_payment_amount_nonneg CHECK (PAY_AMOUNT_FEN >= 0)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_payment_fact (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  PAY_SOURCE TINYINT NOT NULL, FACT_CHANNEL TINYINT NOT NULL,
+                  PROVIDER_EVENT_KEY VARCHAR(100) NOT NULL,
+                  PAYMENT_ID BIGINT NULL, ORDER_ID BIGINT NULL, ORDER_NO VARCHAR(32) NOT NULL,
+                  TRADE_STATE VARCHAR(32) NOT NULL, TRANSACTION_ID VARCHAR(64) NULL,
+                  PAY_AMOUNT_FEN BIGINT NULL, CURRENCY VARCHAR(16) NULL, PAY_SUCCESS_TIME VARCHAR(14) NULL,
+                  RAW_BODY MEDIUMTEXT NULL, RAW_BODY_SHA256 CHAR(64) NOT NULL, VERIFY_METHOD TINYINT NOT NULL,
+                  PROCESSING_STATUS TINYINT NOT NULL, RETRY_COUNT INT NOT NULL DEFAULT 0,
+                  NEXT_RETRY_TIME VARCHAR(14) NULL, CLAIM_TIME VARCHAR(14) NULL, LEASE_UNTIL VARCHAR(14) NULL,
+                  LAST_ERROR VARCHAR(500) NULL, RECEIVED_TIME VARCHAR(14) NOT NULL, PROCESSED_TIME VARCHAR(14) NULL,
+                  UNIQUE KEY uk_mall_payment_fact_key (PAY_SOURCE, FACT_CHANNEL, PROVIDER_EVENT_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_user_address (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  USER_ID BIGINT NOT NULL, CONTACT_NAME VARCHAR(30) NOT NULL, CONTACT_PHONE VARCHAR(11) NOT NULL,
+                  REGION VARCHAR(100) NOT NULL, DISTRICT_CODE VARCHAR(6) NULL,
+                  ADDRESS_DETAIL VARCHAR(200) NOT NULL,
+                  IS_DEFAULT TINYINT NOT NULL DEFAULT 0, LOCATION_AUTHORIZED TINYINT NOT NULL DEFAULT 0
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_fulfillment (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  ORDER_ID BIGINT NOT NULL, ORDER_NO VARCHAR(32) NOT NULL,
+                  USER_ID BIGINT NOT NULL, WAREHOUSE_ID BIGINT NOT NULL, COURIER_ID BIGINT NULL,
+                  FULFILL_STATUS TINYINT NOT NULL, FULFILL_MODE TINYINT NOT NULL DEFAULT 0, VERSION INT NOT NULL,
+                  RECEIVER_NAME VARCHAR(30) NOT NULL, RECEIVER_PHONE VARCHAR(11) NOT NULL,
+                  RECEIVER_REGION VARCHAR(100) NOT NULL, RECEIVER_ADDRESS VARCHAR(200) NOT NULL,
+                  RECEIVER_DISTRICT_CODE VARCHAR(6) NOT NULL,
+                  PICK_TIME VARCHAR(14) NULL, PACK_TIME VARCHAR(14) NULL, ASSIGN_TIME VARCHAR(14) NULL,
+                  FETCH_TIME VARCHAR(14) NULL, ARRIVE_TIME VARCHAR(14) NULL, SIGN_TIME VARCHAR(14) NULL,
+                  SIGN_METHOD TINYINT NULL, SIGN_REMARK VARCHAR(200) NULL, FULFILL_REMARK VARCHAR(500) NULL,
+                  UNIQUE KEY uk_mall_fulfill_order (ORDER_ID)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_fulfillment_trace (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  FULFILL_ID BIGINT NOT NULL, ORDER_NO VARCHAR(32) NOT NULL,
+                  TRACE_NODE TINYINT NOT NULL, ACTOR_TYPE TINYINT NOT NULL, ACTOR_ID BIGINT NOT NULL,
+                  SUBJECT_ID BIGINT NULL,
+                  TRACE_TIME VARCHAR(14) NOT NULL, TRACE_TEXT VARCHAR(200) NOT NULL,
+                  BIZ_IDEMPOTENCY_KEY VARCHAR(64) NOT NULL,
+                  UNIQUE KEY uk_mall_ftrace_key (BIZ_IDEMPOTENCY_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_courier_scope (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  WAREHOUSE_ID BIGINT NOT NULL, COURIER_ID BIGINT NOT NULL,
+                  UNIQUE KEY uk_mall_courier_scope (WAREHOUSE_ID, COURIER_ID)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_warehouse_operator (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  WAREHOUSE_ID BIGINT NOT NULL, OPERATOR_ID BIGINT NOT NULL,
+                  UNIQUE KEY uk_mall_wh_operator (WAREHOUSE_ID, OPERATOR_ID)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_courier (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  USER_ID BIGINT NOT NULL, COURIER_NAME VARCHAR(50) NOT NULL,
+                  COURIER_PHONE VARCHAR(20) NOT NULL, ID_CARD_NO VARCHAR(30) NULL,
+                  STATION_IDS VARCHAR(200) NULL, SERVICE_REGION VARCHAR(100) NULL,
+                  COURIER_STATUS TINYINT NOT NULL, AUDIT_REMARK VARCHAR(200) NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_after_sale (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  AFTER_SALE_NO VARCHAR(32) NOT NULL, USER_ID BIGINT NOT NULL, REQUEST_ID VARCHAR(36) NOT NULL,
+                  ORDER_ID BIGINT NOT NULL, ORDER_NO VARCHAR(32) NOT NULL, WAREHOUSE_ID BIGINT NOT NULL,
+                  AFTER_SALE_TYPE TINYINT NOT NULL, AFTER_SALE_STATUS TINYINT NOT NULL, VERSION INT NOT NULL,
+                  APPLY_REASON VARCHAR(200) NOT NULL, REFUND_AMOUNT_FEN BIGINT NOT NULL,
+                  APPLY_TIME VARCHAR(14) NOT NULL,
+                  AUDIT_BY BIGINT NULL, AUDIT_TIME VARCHAR(14) NULL, AUDIT_REMARK VARCHAR(200) NULL,
+                  RECEIVE_BY BIGINT NULL, RECEIVE_TIME VARCHAR(14) NULL,
+                  INSPECT_BY BIGINT NULL, INSPECT_TIME VARCHAR(14) NULL,
+                  INSPECT_RESULT TINYINT NULL, INSPECT_REMARK VARCHAR(200) NULL,
+                  FINISH_TIME VARCHAR(14) NULL, REJECT_REASON VARCHAR(200) NULL,
+                  UNIQUE KEY uk_mall_as_no (AFTER_SALE_NO),
+                  UNIQUE KEY uk_mall_as_user_request (USER_ID, REQUEST_ID),
+                  CONSTRAINT chk_mall_as_refund_nonneg CHECK (REFUND_AMOUNT_FEN >= 0)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_after_sale_item (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  AFTER_SALE_ID BIGINT NOT NULL, ORDER_ITEM_ID BIGINT NOT NULL, SKU_ID BIGINT NOT NULL,
+                  PRODUCT_NAME VARCHAR(100) NOT NULL, SKU_NAME VARCHAR(100) NOT NULL,
+                  UNIT_PRICE_FEN BIGINT NOT NULL, QUANTITY INT NOT NULL, ITEM_AMOUNT_FEN BIGINT NOT NULL,
+                  UNIQUE KEY uk_mall_as_item (AFTER_SALE_ID, ORDER_ITEM_ID),
+                  CONSTRAINT chk_mall_as_item_qty_positive CHECK (QUANTITY > 0),
+                  CONSTRAINT chk_mall_as_item_amount CHECK (ITEM_AMOUNT_FEN = UNIT_PRICE_FEN * QUANTITY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_after_sale_trace (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  AFTER_SALE_ID BIGINT NOT NULL, AFTER_SALE_NO VARCHAR(32) NOT NULL,
+                  TRACE_NODE TINYINT NOT NULL, ACTOR_TYPE TINYINT NOT NULL, ACTOR_ID BIGINT NOT NULL,
+                  SUBJECT_ID BIGINT NULL, TRACE_TIME VARCHAR(14) NOT NULL, TRACE_TEXT VARCHAR(200) NOT NULL,
+                  BIZ_IDEMPOTENCY_KEY VARCHAR(64) NOT NULL,
+                  UNIQUE KEY uk_mall_as_trace_key (BIZ_IDEMPOTENCY_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_refund (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  REFUND_NO VARCHAR(32) NOT NULL, AFTER_SALE_ID BIGINT NOT NULL, AFTER_SALE_NO VARCHAR(32) NOT NULL,
+                  ORDER_ID BIGINT NOT NULL, ORDER_NO VARCHAR(32) NOT NULL, PAYMENT_ID BIGINT NOT NULL,
+                  USER_ID BIGINT NOT NULL, REFUND_AMOUNT_FEN BIGINT NOT NULL, CURRENCY VARCHAR(16) NOT NULL,
+                  REFUND_STATUS TINYINT NOT NULL, REFUND_SOURCE TINYINT NOT NULL,
+                  REFUND_TRANSACTION_ID VARCHAR(64) NULL, REFUND_SUCCESS_TIME VARCHAR(14) NULL,
+                  UNIQUE KEY uk_mall_refund_no (REFUND_NO),
+                  UNIQUE KEY uk_mall_refund_after_sale (AFTER_SALE_ID),
+                  UNIQUE KEY uk_mall_refund_transaction (REFUND_TRANSACTION_ID),
+                  CONSTRAINT chk_mall_refund_amount_positive CHECK (REFUND_AMOUNT_FEN > 0)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_refund_fact (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  REFUND_SOURCE TINYINT NOT NULL, FACT_CHANNEL TINYINT NOT NULL,
+                  PROVIDER_EVENT_KEY VARCHAR(100) NOT NULL,
+                  REFUND_ID BIGINT NULL, AFTER_SALE_ID BIGINT NULL,
+                  ORDER_NO VARCHAR(32) NOT NULL, REFUND_NO VARCHAR(32) NOT NULL,
+                  REFUND_STATE VARCHAR(32) NOT NULL, REFUND_TRANSACTION_ID VARCHAR(64) NULL,
+                  REFUND_AMOUNT_FEN BIGINT NULL, CURRENCY VARCHAR(16) NULL, REFUND_SUCCESS_TIME VARCHAR(14) NULL,
+                  RAW_BODY MEDIUMTEXT NULL, RAW_BODY_SHA256 CHAR(64) NOT NULL, VERIFY_METHOD TINYINT NOT NULL,
+                  PROCESSING_STATUS TINYINT NOT NULL, RETRY_COUNT INT NOT NULL DEFAULT 0,
+                  NEXT_RETRY_TIME VARCHAR(14) NULL, CLAIM_TIME VARCHAR(14) NULL, LEASE_UNTIL VARCHAR(14) NULL,
+                  LAST_ERROR VARCHAR(500) NULL, RECEIVED_TIME VARCHAR(14) NOT NULL, PROCESSED_TIME VARCHAR(14) NULL,
+                  UNIQUE KEY uk_mall_refund_fact_key (REFUND_SOURCE, FACT_CHANNEL, PROVIDER_EVENT_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_message (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  USER_ID BIGINT NOT NULL, MSG_DOMAIN TINYINT NOT NULL,
+                  MSG_TITLE VARCHAR(100) NOT NULL, MSG_CONTENT VARCHAR(500) NOT NULL,
+                  OBJECT_TYPE VARCHAR(32) NULL, OBJECT_ID VARCHAR(64) NULL,
+                  SEND_TIME VARCHAR(14) NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_shipment (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  FULFILL_ID BIGINT NOT NULL, ORDER_ID BIGINT NOT NULL, ORDER_NO VARCHAR(32) NOT NULL,
+                  SOURCE_AFTER_SALE_ID BIGINT NULL,
+                  DIRECTION TINYINT NOT NULL, SHIPMENT_SEQ INT NOT NULL DEFAULT 1,
+                  FULFILL_MODE TINYINT NOT NULL,
+                  PROVIDER_CODE VARCHAR(32) NULL, SERVICE_CODE VARCHAR(32) NULL,
+                  PROVIDER_ORDER_NO VARCHAR(64) NULL, WAYBILL_NO VARCHAR(64) NULL,
+                  SHIPMENT_STATUS TINYINT NOT NULL, VERSION INT NOT NULL DEFAULT 1,
+                  CREATE_SHIP_TIME VARCHAR(14) NULL, PICKUP_TIME VARCHAR(14) NULL,
+                  DELIVER_TIME VARCHAR(14) NULL, CANCEL_TIME VARCHAR(14) NULL,
+                  BIZ_IDEMPOTENCY_KEY VARCHAR(80) NOT NULL,
+                  UNIQUE KEY uk_mall_ship_key (BIZ_IDEMPOTENCY_KEY),
+                  UNIQUE KEY uk_mall_ship_seq (FULFILL_ID, DIRECTION, SHIPMENT_SEQ),
+                  UNIQUE KEY uk_mall_ship_waybill (PROVIDER_CODE, WAYBILL_NO)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_shipment_item (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  SHIPMENT_ID BIGINT NOT NULL, ORDER_ITEM_ID BIGINT NOT NULL,
+                  AFTER_SALE_ITEM_ID BIGINT NOT NULL DEFAULT 0,
+                  SKU_ID BIGINT NOT NULL, QUANTITY INT NOT NULL,
+                  UNIQUE KEY uk_mall_ship_item (SHIPMENT_ID, ORDER_ITEM_ID, AFTER_SALE_ITEM_ID),
+                  CONSTRAINT chk_mall_ship_item_qty CHECK (QUANTITY > 0)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_logistics_event (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  PROVIDER_CODE VARCHAR(32) NOT NULL, FACT_CHANNEL TINYINT NOT NULL,
+                  PROVIDER_EVENT_KEY VARCHAR(128) NOT NULL,
+                  SHIPMENT_ID BIGINT NULL, WAYBILL_NO VARCHAR(64) NOT NULL,
+                  EVENT_STATE VARCHAR(32) NOT NULL, EVENT_TIME VARCHAR(14) NOT NULL,
+                  EVENT_DESC VARCHAR(200) NULL,
+                  RAW_BODY TEXT NULL, RAW_BODY_SHA256 CHAR(64) NOT NULL, VERIFY_METHOD TINYINT NOT NULL,
+                  PROCESSING_STATUS TINYINT NOT NULL, RETRY_COUNT INT NOT NULL DEFAULT 0,
+                  RECEIVED_TIME VARCHAR(14) NOT NULL, PROCESSED_TIME VARCHAR(14) NULL,
+                  CLAIM_TIME VARCHAR(14) NULL, LEASE_UNTIL VARCHAR(14) NULL, LAST_ERROR VARCHAR(500) NULL,
+                  UNIQUE KEY uk_mall_logi_event_key (PROVIDER_CODE, FACT_CHANNEL, PROVIDER_EVENT_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_mall_logistics_outbox (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT NOT NULL DEFAULT 0, CREATE_BY BIGINT NOT NULL, CREATE_TIME VARCHAR(14) NOT NULL,
+                  UPDATE_BY BIGINT NOT NULL, UPDATE_TIME VARCHAR(14) NOT NULL,
+                  SHIPMENT_ID BIGINT NOT NULL, ACTION_TYPE TINYINT NOT NULL,
+                  BIZ_ACTION_KEY VARCHAR(80) NOT NULL, REQUEST_SNAP TEXT NOT NULL,
+                  PROCESSING_STATUS TINYINT NOT NULL, RETRY_COUNT INT NOT NULL DEFAULT 0,
+                  NEXT_RETRY_TIME VARCHAR(14) NULL, CLAIM_TIME VARCHAR(14) NULL,
+                  LEASE_UNTIL VARCHAR(14) NULL, LAST_ERROR VARCHAR(500) NULL,
+                  UNIQUE KEY uk_mall_logi_outbox_key (BIZ_ACTION_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS ws_domain_event (
+                  ID BIGINT PRIMARY KEY AUTO_INCREMENT,
+                  DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),
+                  UPDATE_BY BIGINT, UPDATE_TIME VARCHAR(20),
+                  EVENT_TYPE TINYINT, EVENT_KEY VARCHAR(64), EVENT_PAYLOAD TEXT,
+                  ACTOR_ID BIGINT NULL, ACTOR_PORTAL TINYINT, ACTOR_ROLE VARCHAR(20),
+                  WHITELIST_FLAG TINYINT, CONSUMED_FLAG TINYINT,
+                  BIZ_IDEMPOTENCY_KEY VARCHAR(64) NULL,
+                  UNIQUE KEY uk_domain_event_biz_key (BIZ_IDEMPOTENCY_KEY)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
+    }
+
+    public static void truncateAll(JdbcTemplate jdbc) {
+        for (String table : new String[]{
+                "ws_wechat_notify_outbox", "ws_wechat_shipping_outbox",
+                "ws_mall_logistics_outbox", "ws_mall_logistics_event",
+                "ws_mall_shipment_item", "ws_mall_shipment",
+                "ws_mall_refund_fact", "ws_mall_refund", "ws_mall_after_sale_trace",
+                "ws_mall_after_sale_item", "ws_mall_after_sale",
+                "ws_mall_fulfillment_trace", "ws_mall_fulfillment", "ws_mall_courier_scope", "ws_mall_warehouse_operator", "ws_message",
+                "ws_courier",
+                "ws_mall_payment_fact", "ws_mall_payment", "ws_mall_order_item", "ws_mall_order",
+                "ws_mall_cart_item", "ws_user_address",
+                "ws_mall_stock_flow", "ws_mall_stock", "ws_mall_sku", "ws_mall_product",
+                "ws_mall_warehouse", "ws_mall_category", "ws_domain_event"}) {
+            jdbc.execute("TRUNCATE TABLE " + table);
+        }
+    }
+}

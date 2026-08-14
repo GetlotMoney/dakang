@@ -12,5 +12,4 @@ public interface IWsUserService extends IService<WsUser> {
 
     WsUserVo getData(Long id);
 
-    WsUserVo updateData(WsUserBo wsUserBo);
 }

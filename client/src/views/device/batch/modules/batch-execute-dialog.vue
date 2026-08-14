@@ -72,14 +72,7 @@
         <div v-if="form.cmdType === 2" class="form-hint text-error">
           紧急停止仅支持单台正在出水的设备。
         </div>
-        <!--
-          原本这里对「价格同步」单独挂一句「暂未对接厂商设备」。两个问题：
-          一是它只对 8 说，而实际上厂家 MQTT 协议 V-01~V-11 全部待确认，锁机/解锁/重启/
-          参数同步同样到不了真机，单独标注 8 会让运维以为其余指令已经能落到设备上；
-          二是真机接入就在眼前，接上那天这句立刻变成假话，而假话方向恰好最危险——
-          运维会以为价格同步是空操作，实则真改真机价格。
-          设备侧到底通没通，看的是设备在线状态与指令回执，不靠这里的静态标注。
-        -->
+        <!-- 设备侧是否连通看在线状态与指令回执，不做「暂未对接」类静态标注（接真后即成假话） -->
       </ElFormItem>
       <ElFormItem v-if="needPayload" label="参数报文" required>
         <ElInput
@@ -120,6 +113,10 @@
         <ElDescriptionsItem v-if="preview.activeOrderNo" label="活动订单">
           {{ preview.activeOrderNo }}
         </ElDescriptionsItem>
+        <!-- 提前告知：口令框在点下「确认下发」之后才出现，不预告的话它看起来像一次故障 -->
+        <ElDescriptionsItem v-if="preview.requireSafe" label="安全校验">
+          <ElTag type="danger">本次操作需二级认证，确认时将要求输入登录密码</ElTag>
+        </ElDescriptionsItem>
       </ElDescriptions>
     </div>
 
@@ -146,6 +143,7 @@
     type DeviceItem
   } from '@/api/device'
   import { fetchStationList, type StationItem } from '@/api/station'
+  import { withSafeAuth } from '@/utils/safe-auth'
 
   defineOptions({ name: 'BatchExecuteDialog' })
 
@@ -239,18 +237,25 @@
 
   async function doConfirm() {
     if (!preview.value) return
+    const frozen = preview.value
     confirming.value = true
     try {
-      const batchId = await fetchBatchConfirm({
-        operationTicket: preview.value.operationTicket,
-        targetDigest: preview.value.targetDigest,
-        paramDigest: preview.value.paramDigest
-      })
+      // 二次验证走懒开窗：先照常确认，被 1440 拒绝时才弹口令、开安全期、原样重放。
+      // 服务端的闸落在凭据领取之前，所以这次被拒不会销毁 ticket，重放用的还是同一张。
+      const batchId = await withSafeAuth(
+        () =>
+          fetchBatchConfirm({
+            operationTicket: frozen.operationTicket,
+            targetDigest: frozen.targetDigest,
+            paramDigest: frozen.paramDigest
+          }),
+        '高风险指令二次验证'
+      )
       ElMessage.success(`批量任务已创建（批次 ${batchId}）`)
       visible.value = false
       emit('executed')
     } catch {
-      // 凭据被拒（过期/重复/换人/参数变化）：回到第一步重新预览
+      // 凭据被拒（过期/重复/换人/参数变化）或用户取消了二次验证：回到第一步重新预览
       preview.value = null
       step.value = 0
     } finally {

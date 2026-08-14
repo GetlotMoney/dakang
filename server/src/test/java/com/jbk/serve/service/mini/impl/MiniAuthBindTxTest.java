@@ -2,6 +2,9 @@ package com.jbk.serve.service.mini.impl;
 
 import com.jbk.serve.mapper.user.WsUserIdentityMapper;
 import com.jbk.serve.service.mini.auth.BoundUser;
+import com.jbk.serve.service.mini.auth.MiniIdentityConflictRecorder;
+import com.jbk.tool.consts.mini.MiniIdentityConflictEnum.Scene;
+import com.jbk.tool.consts.mini.MiniIdentityConflictEnum.Type;
 import com.jbk.tool.data.user.po.WsUser;
 import com.jbk.tool.exception.JbkException;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +34,7 @@ import static org.mockito.Mockito.when;
 class MiniAuthBindTxTest {
 
     private WsUserIdentityMapper identityMapper;
+    private MiniIdentityConflictRecorder conflictRecorder;
     private MiniAuthBindTxImpl bindTx;
 
     private static final String OPENID = "oABC-123";
@@ -40,7 +44,8 @@ class MiniAuthBindTxTest {
     @BeforeEach
     void setup() {
         identityMapper = Mockito.mock(WsUserIdentityMapper.class);
-        bindTx = new MiniAuthBindTxImpl(identityMapper);
+        conflictRecorder = Mockito.mock(MiniIdentityConflictRecorder.class);
+        bindTx = new MiniAuthBindTxImpl(identityMapper, conflictRecorder);
         when(identityMapper.selectByOpenidIncludingDeleted(anyString())).thenReturn(new ArrayList<>());
         when(identityMapper.selectByPhoneIncludingDeleted(anyString())).thenReturn(new ArrayList<>());
     }
@@ -70,7 +75,7 @@ class MiniAuthBindTxTest {
         verify(identityMapper, never()).insertIdentityUser(any());
     }
 
-    // openid 已绑定其他手机号 → 拒绝
+    // openid 已绑定其他手机号 → 拒绝，且必须留下可处置的台账
     @Test
     void openidBoundToAnotherPhoneRejected() {
         when(identityMapper.selectByOpenidIncludingDeleted(OPENID))
@@ -78,6 +83,27 @@ class MiniAuthBindTxTest {
 
         assertThrows(JbkException.class, () -> bindTx.bind(OPENID, PHONE));
         verify(identityMapper, never()).insertIdentityUser(any());
+        // 拒绝之外还必须留痕：否则客服接到电话时手上没有任何信息
+        //（任务书 S1「冲突必须 fail-closed，并进入可审计的人工处理状态」）。
+        // 持有方是命中的账号 9；发起方此刻还没有账号，故传 null（落库记 0 哨兵）。
+        verify(conflictRecorder).record(eq(Type.OPENID_BOUND_OTHER_PHONE), eq(Scene.LOGIN_BIND),
+                eq(9L), eq(null), eq(PHONE));
+    }
+
+    /**
+     * 幂等命中不是冲突：同 openid 同手机号重复提交必须<b>不</b>留台账。
+     *
+     * <p>没有这条反向断言，把 record 无脑挂在方法开头也会让其余几条冲突断言全绿——
+     * 而那样运营的待办会被正常重复提交淹掉，真正的冲突反而看不见。</p>
+     */
+    @Test
+    void idempotentRebindRecordsNoConflict() {
+        when(identityMapper.selectByOpenidIncludingDeleted(OPENID))
+                .thenReturn(List.of(user(9L, OPENID, PHONE, 0, 1, 1)));
+
+        bindTx.bind(OPENID, PHONE);
+
+        verify(conflictRecorder, never()).record(any(), any(), any(), any(), anyString());
     }
 
     // openid 命中逻辑删除账号 → fail-closed（不建户）
@@ -99,7 +125,7 @@ class MiniAuthBindTxTest {
         assertThrows(JbkException.class, () -> bindTx.bind(OPENID, PHONE));
     }
 
-    // 手机号已绑定其他 openid → 拒绝，不做 CAS
+    // 手机号已绑定其他 openid → 拒绝，不做 CAS，且留台账
     @Test
     void phoneBoundToAnotherOpenidRejected() {
         when(identityMapper.selectByPhoneIncludingDeleted(PHONE))
@@ -107,6 +133,8 @@ class MiniAuthBindTxTest {
 
         assertThrows(JbkException.class, () -> bindTx.bind(OPENID, PHONE));
         verify(identityMapper, never()).bindOpenidToUsablePhoneUser(anyLong(), anyString(), anyString(), anyLong(), anyString());
+        verify(conflictRecorder).record(eq(Type.PHONE_BOUND_OTHER_WECHAT), eq(Scene.LOGIN_BIND),
+                eq(7L), eq(null), eq(PHONE));
     }
 
     // 手机号命中禁用账号 → fail-closed

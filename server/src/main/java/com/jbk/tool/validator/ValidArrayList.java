@@ -7,12 +7,6 @@ import lombok.Data;
 import jakarta.validation.Valid;
 import java.util.*;
 
-/**
- * @ClassName ValidArrayList
- * @Author xs
- * @Date 2023/11/30 16:44
- * @Version 1.0
- */
 @Data
 public class ValidArrayList<E> implements List<E> {
     @Valid

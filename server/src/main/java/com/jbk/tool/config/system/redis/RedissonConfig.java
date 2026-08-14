@@ -10,12 +10,6 @@ import org.springframework.context.annotation.Primary;
 
 import java.io.IOException;
 
-/**
- * @ClassName RedissonConfig
- * @Author xs
- * @Date 2024/6/7 11:47
- * @Version 1.0
- */
 @Configuration
 public class RedissonConfig {
     @Value("${spring.redis.host}")

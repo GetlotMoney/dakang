@@ -6,12 +6,6 @@ import com.jbk.tool.exception.JbkException;
 
 import java.util.Optional;
 
-/**
- * @ClassName OptionalUtils
- * @Author xs
- * @Date 2025/3/6 14:34
- * @Version 1.0
- */
 public class OptionalUtils {
     public static void trueToElseThrow(boolean bool, String msg) {
         if (bool) {

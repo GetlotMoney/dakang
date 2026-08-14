@@ -8,17 +8,18 @@ import { DOMAIN_BY_VALUE, normalizeRealMessage, VALUE_BY_DOMAIN } from './messag
  * 域 Tab 筛选就会把消息挂错类目。
  */
 describe('message dictionary parity (1312)', () => {
-  it('双向映射互逆且覆盖全部五域', () => {
-    expect(Object.keys(VALUE_BY_DOMAIN)).toHaveLength(5)
+  it('双向映射互逆且覆盖全部六域', () => {
+    expect(Object.keys(VALUE_BY_DOMAIN)).toHaveLength(6)
     for (const [domain, value] of Object.entries(VALUE_BY_DOMAIN)) {
       expect(DOMAIN_BY_VALUE[value]).toBe(domain)
     }
-    // 与 02-ws-business.sql 字典 1312 逐值同源：1取水 2卡券 3配送 4机主 5系统
+    // 与 02-ws-business.sql 字典 1312 逐值同源：1取水 2卡券 3配送 4机主 5系统 6商城
     expect(DOMAIN_BY_VALUE[1]).toBe('water')
     expect(DOMAIN_BY_VALUE[2]).toBe('card')
     expect(DOMAIN_BY_VALUE[3]).toBe('delivery')
     expect(DOMAIN_BY_VALUE[4]).toBe('owner')
     expect(DOMAIN_BY_VALUE[5]).toBe('system')
+    expect(DOMAIN_BY_VALUE[6]).toBe('mall')
   })
 })
 
@@ -37,12 +38,11 @@ describe('normalizeRealMessage', () => {
     objectId: 'REQ-ACC-1',
   }
 
-  it('合法行归一：域/渠道/未读/证据模式全对齐 real 口径', () => {
+  it('合法行归一：域/渠道/未读全对齐 real 口径', () => {
     const item = normalizeRealMessage(base, 'acc-9001')
     expect(item.domain).toBe('owner')
     expect(item.channel).toBe('in-app')
     expect(item.unread).toBe(true)
-    expect(item.evidenceMode).toBe('real')
     expect(item.objectAccess).toBe('allowed')
     expect(item.accountId).toBe('acc-9001')
     expect(item.objectType).toBe('service')
@@ -59,7 +59,10 @@ describe('normalizeRealMessage', () => {
   })
 
   it('未知域 / 非法发送状态 / 缺标题：契约不符直接拒绝，不产出残缺行', () => {
-    expect(() => normalizeRealMessage({ ...base, msgDomain: 6 }, '')).toThrow(ContractError)
+    // 6=商城（字典 1312 同源）。这条曾经断言「域 6 必须抛」——把当时的缺陷当成了契约：
+    // 服务端一开始发商城站内信，消息中心就对所有收到过它的用户整页 fail-closed。
+    expect(normalizeRealMessage({ ...base, msgDomain: 6 }, '').domain).toBe('mall')
+    expect(() => normalizeRealMessage({ ...base, msgDomain: 7 }, '')).toThrow(ContractError)
     expect(() => normalizeRealMessage({ ...base, sendStatus: 5 }, '')).toThrow(ContractError)
     expect(() => normalizeRealMessage({ ...base, msgTitle: undefined }, '')).toThrow(ContractError)
   })

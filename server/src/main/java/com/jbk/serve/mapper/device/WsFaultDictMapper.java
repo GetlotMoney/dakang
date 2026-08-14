@@ -18,17 +18,9 @@ import java.util.List;
 public interface WsFaultDictMapper extends BaseMapper<WsFaultDict> {
 
     /**
-     * 按故障码当前读字典行（{@code LOCK IN SHARE MODE}）。
+     * 按故障码当前读字典行（LOCK IN SHARE MODE）：快照读会沿用旧 BLOCK_ORDER_FLAG；共享锁避免把同码设备的下单串行化。
+     * 绝不加 LIMIT 1：FAULT_CODE 非唯一索引，同码多条的配置污染必须全部返回、由判定侧 fail-closed。
      *
-     * <p>事务权威判定不能沿用一致性快照里的旧 {@code BLOCK_ORDER_FLAG}——快照定格在事务首次
-     * 普通读，之后运维把某码改成阻断，本事务仍会照旧放行。字典是只读参照数据，用共享锁而非
-     * 排他锁：同一故障码可能挂在很多台设备上，排他锁会把这些设备的下单串成一条队。</p>
-     *
-     * <p><b>绝不加 LIMIT 1</b>：{@code FAULT_CODE} 目前只是普通索引，不是唯一索引，同码多条是可能的。
-     * 取第一条会把「一条阻断、一条不阻断」这种配置污染静默压平成任选其一——运维改了半天
-     * 也不知道为什么设备还在放行。全部返回，由判定侧对多行 fail-closed。</p>
-     *
-     * @param faultCode 设备上报的故障码
      * @return 该码全部未删除的字典行；未登记返回空列表（判定侧据此 fail-closed）
      */
     @Select("SELECT * FROM ws_fault_dict WHERE FAULT_CODE = #{faultCode} AND DATA_STATUS = 0 "

@@ -17,24 +17,9 @@ import org.apache.ibatis.annotations.Select;
 public interface WsAuditExportTaskMapper extends BaseMapper<WsAuditExportTask> {
 
     /**
-     * 取当天已用的<b>最大</b>任务号序号；无记录返回 0。
-     *
-     * <p>手写 SQL 而非 Wrapper，是为了同时越过两个坑：</p>
-     * <ol>
-     *   <li><b>逻辑删除</b>：PO 继承 {@code BaseEntity}，{@code DATA_STATUS} 带
-     *       {@code @TableLogic}，MyBatis-Plus 会往它<i>自己生成</i>的每条查询里注入
-     *       {@code AND DATA_STATUS = 0}。这个注入与调用方给的条件是 AND 关系，
-     *       写 {@code .and(w -> eq(0).or().eq(1))} 也<b>绕不开</b>——结果仍等价于只看未删行。
-     *       而唯一键 {@code uk_audit_export_task_no} 不区分逻辑删除：当天只要有一行被逻辑删除，
-     *       算出的序号就会落在一个物理上仍被占用的值上，此后当天每次申请都撞键，
-     *       重试三次也全是同一个号，属确定性故障。手写 {@code @Select} 不经过该注入器，
-     *       口径与唯一键一致。</li>
-     *   <li><b>字符串序</b>：先前按 {@code ORDER BY TASK_NO DESC} 取最大值。序号定宽 3 位时字典序
-     *       等于数值序，但一旦越过 999 就断裂——{@code '...-999' > '...-1000'}，
-     *       于是永远算出 1000 并永久撞键。{@code CAST(... AS UNSIGNED)} 按数值比较，与位宽无关。</li>
-     * </ol>
-     *
-     * <p>非数字后缀 CAST 后为 0，不会污染最大值。</p>
+     * 取当天已用的最大任务号序号；无记录返回 0。手写 SQL 避开两个坑：
+     * ① @TableLogic 会给 Wrapper 查询强注 DATA_STATUS=0，而 uk_audit_export_task_no 不区分逻辑删除——被删行占号会导致当天永久撞键；
+     * ② 字符串序在序号越过 999 后断裂（'...-999' > '...-1000'），CAST AS UNSIGNED 按数值比较；非数字后缀 CAST 为 0 不污染最大值。
      *
      * @param prefix 形如 {@code AUD-EXP-20260806-}
      */

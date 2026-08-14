@@ -1,11 +1,6 @@
 package com.jbk.tool.config.system.redis.consts;
 
-/**
- * @ClassName RedisExpire
- * @Author xs
- * @Date 2024/6/7 11:52
- * @Version 1.0
- */
+/** Redis 过期时长常量（秒）。 */
 public class RedisExpire {
     /**
      * 2秒钟

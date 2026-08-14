@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { maskPhone, pendingSplitLineText } from './format'
+import { mallOrderAmountLabel, maskPhone, pendingSplitLineText } from './format'
 
 describe('maskPhone', () => {
   it('11 位号码保留前 3 后 4', () => {
@@ -38,5 +38,20 @@ describe('pendingSplitLineText', () => {
     expect(pendingSplitLineText(700)).toBe('在途分润 ¥7.00')
     expect(pendingSplitLineText(700, '')).toBe('在途分润 ¥7.00')
     expect(pendingSplitLineText(700, '2026-08-08')).toBe('在途分润 ¥7.00')
+  })
+})
+
+describe('mallOrderAmountLabel', () => {
+  it('待支付订单显示应付', () => {
+    expect(mallOrderAmountLabel(1, 1)).toBe('应付')
+  })
+
+  it('支付成功后显示实付', () => {
+    expect(mallOrderAmountLabel(2, 2)).toBe('实付')
+    expect(mallOrderAmountLabel(4, 2)).toBe('实付')
+  })
+
+  it('未付款取消单只显示订单金额，不冒充实付', () => {
+    expect(mallOrderAmountLabel(5, 4)).toBe('订单金额')
   })
 })

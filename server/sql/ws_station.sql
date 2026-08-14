@@ -33,17 +33,23 @@ CREATE TABLE `ws_station` (
   `OWNER_USER_ID`    bigint       COMMENT '机主用户ID（ws_user.ID，机主端数据范围过滤依据）',
   `CHANNEL_USER_ID`  bigint       COMMENT '渠道用户ID（一期仅归属预留，不做渠道端）',
   `STATION_REMARK`   varchar(500) COMMENT '备注(max500)',
+  `PROVINCE_CODE`    varchar(6)   COMMENT '省级行政区划码(GB/T 2260)；区域服务商匹配用，STATION_REGION 仅作展示',
+  `CITY_CODE`        varchar(6)   COMMENT '市级行政区划码(GB/T 2260)',
+  `DISTRICT_CODE`    varchar(6)   COMMENT '区县级行政区划码(GB/T 2260)；对应 SplitV2Enum.RegionLevel.COUNTY，映射见 RegionAgentResolver.codeOf',
   PRIMARY KEY (`ID`),
   INDEX `idx_station_region` (`STATION_REGION`),
-  INDEX `idx_station_owner` (`OWNER_USER_ID`)
+  INDEX `idx_station_owner` (`OWNER_USER_ID`),
+  INDEX `idx_station_district` (`DISTRICT_CODE`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='水站表';
 
 -- ----------------------------
 -- 测试数据（贴近联调场景：两个水站，一个绑机主一个未绑）
 -- ----------------------------
-INSERT IGNORE INTO `ws_station` (`ID`, `DATA_STATUS`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `STATION_NAME`, `STATION_CODE`, `STATION_REGION`, `STATION_ADDRESS`, `STATION_LNG`, `STATION_LAT`, `STATION_STATUS`, `OWNER_USER_ID`, `CHANNEL_USER_ID`, `STATION_REMARK`) VALUES
-(1, 0, 1, '20260710120000', 1, '20260710120000', '光谷软件园水站', 'WS-WH-001', '武汉东湖高新区', '光谷软件园 A1 栋一楼大厅', '114.4276', '30.4586', 1, NULL, NULL, '光谷片区主力水站'),
-(2, 0, 1, '20260710120000', 1, '20260710120000', '南湖社区水站', 'WS-WH-002', '武汉洪山区', '南湖佰港城北门', '114.3355', '30.4899', 1, NULL, NULL, '第二水站，验证跨站授权范围拦截');
+INSERT IGNORE INTO `ws_station` (`ID`, `DATA_STATUS`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `STATION_NAME`, `STATION_CODE`, `STATION_REGION`, `STATION_ADDRESS`, `STATION_LNG`, `STATION_LAT`, `STATION_STATUS`, `OWNER_USER_ID`, `CHANNEL_USER_ID`, `STATION_REMARK`, `PROVINCE_CODE`, `CITY_CODE`, `DISTRICT_CODE`) VALUES
+-- 两站都在武汉洪山区(420111)：光谷软件园与南湖佰港城实地同属该区，不为凑用例改地理。
+-- 因此种子只覆盖「同一区县服务商同时服务两站」；跨区县各归各家的级差场景由真库测试构造。
+(1, 0, 1, '20260710120000', 1, '20260710120000', '光谷软件园水站', 'WS-WH-001', '武汉东湖高新区', '光谷软件园 A1 栋一楼大厅', '114.4276', '30.4586', 1, NULL, NULL, '光谷片区主力水站', '420000', '420100', '420111'),
+(2, 0, 1, '20260710120000', 1, '20260710120000', '南湖社区水站', 'WS-WH-002', '武汉洪山区', '南湖佰港城北门', '114.3355', '30.4899', 1, NULL, NULL, '第二水站，验证跨站授权范围拦截', '420000', '420100', '420111');
 
 -- ----------------------------
 

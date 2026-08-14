@@ -3,11 +3,8 @@ package com.jbk.tool.consts.aftersale;
 import com.jbk.tool.exception.JbkException;
 
 /**
- * 退款域枚举（E2E-04 包B）——退款来源、退款单状态、退款事实状态与处理状态的<b>单一出处</b>。
- *
- * <p>与 {@link AfterSaleEnum} 分文件：售后动作说的是「给用户补什么」，
- * 退款说的是「向支付机构要回多少」，两者的状态机、封顶锚点、失败语义都不同，
- * 混在一个枚举类里迟早会出现「用售后状态判退款」这种串台。</p>
+ * 退款域枚举（E2E-04 包B）——退款来源/单状态/事实状态/处理状态的单一出处。
+ * 与 {@link AfterSaleEnum} 分文件：售后=给用户补什么，退款=向支付机构要回多少，状态机与失败语义不同。
  *
  * @author dakang
  * @since 2026-07-29
@@ -116,10 +113,7 @@ public interface RefundEnum {
 
     /**
      * 规范化退款事实状态：{@code ws_refund_event.REFUND_STATE}。
-     *
-     * <p>字符串而非 tinyint：这是<b>外部世界</b>的状态，取值集合由支付机构决定，
-     * 未来接入真实微信时还会出现我们今天不知道的值。用字符串可以原样留痕后再判定，
-     * 用数字则必须在解析期强行映射，映射不上的只能丢弃——而丢弃的恰是最该人工看的那条。</p>
+     * 字符串而非 tinyint：取值集合由支付机构决定，字符串可原样留痕后再判定，数字映射不上只能丢弃。
      */
     interface FactState {
         /** 退款成功。唯一能把退款单推到 SUCCESS 的事实状态。 */
@@ -135,9 +129,7 @@ public interface RefundEnum {
     }
 
     /**
-     * 事实处理状态：{@code ws_refund_event.PROCESSING_STATUS}。
-     * 取值与 {@code ws_payment_event} 逐一对齐——两套收件箱共用同一套 Worker 语义，
-     * 状态码若不同，恢复逻辑就得写两遍，而写错任何一遍都是资金事故。
+     * 事实处理状态：{@code ws_refund_event.PROCESSING_STATUS}。取值与 {@code ws_payment_event} 逐一对齐，两套收件箱共用同一套 Worker 语义。
      */
     interface ProcessingStatus {
         int PENDING = 1;

@@ -6,9 +6,8 @@ import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
 import { deliveryApi, uploadDeliveryMedia } from '@/api/delivery'
 import { canSignDeliveryTask } from '@/api/delivery-normalize'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
-import AppPrototypeNotice from '@/components/prototype-notice.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import SignPhotoSlot from '@/components/sign-photo-slot.vue'
 import { TASK_STATUS_LABELS } from '@/utils/format'
 import { backOr } from '@/utils/navigation'
@@ -20,10 +19,6 @@ definePage({
   },
 })
 
-// 权威照片时间不由页面提供：提交签收时由原型契约统一记录动作时间（第五轮审计整改）。
-/** 确定性原型定位快照：光谷软件园水站种子坐标（30.4586, 114.4276），随三照一并记录。 */
-const SIGN_LOCATION_SNAPSHOT = { latitude: 30.4586, longitude: 114.4276 }
-
 const PHOTO_SLOTS: Array<{ type: SignPhotoType, label: SignPhoto['label'] }> = [
   { type: 1, label: '门牌' },
   { type: 2, label: '水品' },
@@ -32,9 +27,6 @@ const PHOTO_SLOTS: Array<{ type: SignPhotoType, label: SignPhoto['label'] }> = [
 
 const toast = useToast()
 const message = useMessage()
-
-/** delivery 域接真：三照先上传换受控媒体键再签收；定位不做虚假声明。 */
-const isDeliveryReal = currentMode('delivery') === 'real'
 
 const taskNo = ref('')
 const status = ref<'loading' | 'ready' | 'blocked' | 'error'>('loading')
@@ -112,33 +104,26 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
-    // real：三照先上传换受控媒体键（recordRef=mediaKey），签收事务内原子占用；
-    //       定位未接真实采集，按「未记录」提交，绝不用固定坐标冒充真实定位。
-    // mock：保持原样——本地记录号 + 确定性原型定位快照。
-    const photos = isDeliveryReal
-      ? await Promise.all(PHOTO_SLOTS.map(async slot => ({
-          type: slot.type,
-          label: slot.label,
-          recordRef: await uploadDeliveryMedia(draft.photos[slot.type], 'sign'),
-          previewUrl: draft.photos[slot.type],
-          evidenceMode: 'real' as const,
-        })))
-      : PHOTO_SLOTS.map(slot => ({
-          type: slot.type,
-          label: slot.label,
-          recordRef: `LOCAL-${current.taskNo}-${slot.type}`,
-          previewUrl: draft.photos[slot.type],
-          latitude: SIGN_LOCATION_SNAPSHOT.latitude,
-          longitude: SIGN_LOCATION_SNAPSHOT.longitude,
-          evidenceMode: 'prototype' as const,
-        }))
+    // 三照先上传换受控媒体键（recordRef=mediaKey），签收事务内原子占用。
+    // 定位未接真实采集，按「未记录」提交——绝不用固定坐标冒充真实定位。
+    //
+    // 这里原本还有一条「非 real 就提交 LOCAL-<taskNo>-<slot> 伪造记录号 + 写死坐标
+    // 30.4586,114.4276」的分支。mock 适配器早已退役，那条分支的 payload 是直接发往
+    // 真实 /mini/delivery/task/sign 的——它不是演示回落，而是把编造的签收证据写进
+    // 真实履约链，而签收是订单完成与结算分润的触发点。已随微信链接真一并删除。
+    const photos = await Promise.all(PHOTO_SLOTS.map(async slot => ({
+      type: slot.type,
+      label: slot.label,
+      recordRef: await uploadDeliveryMedia(draft.photos[slot.type], 'sign'),
+      previewUrl: draft.photos[slot.type],
+    })))
     await deliveryApi.signTask({
       taskNo: current.taskNo,
       expectedVersion: current.version,
       actualDeliveryCount: draft.actualDeliveryCount,
       actualReturnCount: draft.actualReturnCount,
       photos,
-      locationStatus: isDeliveryReal ? 'unrecorded' : 'prototype-snapshot',
+      locationStatus: 'unrecorded',
     })
     // 签收结果由 D03 状态与三照证据承载，不用 Toast 宣布关键结果。
     uni.navigateBack()
@@ -163,54 +148,48 @@ async function handleSubmit() {
     <AppNavbar title="三照签收" back-to="D03" />
     <wd-toast />
     <wd-message-box />
-    <AppPrototypeNotice text="签收提交后无法撤销。" />
 
     <view v-if="status === 'loading'" class="page-section state-block">
-      <wd-loading size="24px" />
-      <view class="muted-text">
-        任务信息加载中…
-      </view>
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="status === 'error'" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="backOr('D01')">
-              返回任务中心
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain @click="backOr('D01')">
+            返回任务中心
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <view v-else-if="status === 'blocked'" class="page-section">
-      <wd-status-tip
-        image="content"
-        :tip="`当前状态不能签收：${task ? TASK_STATUS_LABELS[task.taskStatus] : '未知'}`"
+      <AppPageState
+        state="blocked"
+        title="暂不能签收"
+        :message="`当前状态不能签收：${task ? TASK_STATUS_LABELS[task.taskStatus] : '未知'}`"
       >
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="backOr('D01')">
-              返回
-            </wd-button>
-          </view>
+        <template #actions>
+          <wd-button plain @click="backOr('D01')">
+            返回
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else-if="task">
       <view class="page-section">
         <wd-cell-group title="任务摘要" border>
-          <wd-cell title="任务号" :value="task.taskNo" />
-          <wd-cell title="收货地址" :label="task.receiveAddress" />
-          <wd-cell title="计划配送 / 预计回收" :value="`${task.plannedDeliveryCount} / ${task.plannedReturnCount}`" />
+          <wd-cell title="任务号" :value="task.taskNo" ellipsis />
+          <wd-cell title="收货地址" :label="task.receiveAddress" vertical />
+          <wd-cell title="计划配送" :value="`${task.plannedDeliveryCount} 件`" />
+          <wd-cell title="预计回收" :value="`${task.plannedReturnCount} 件`" />
         </wd-cell-group>
       </view>
 
       <view class="page-section">
         <view class="block-title">
-          三照证据（缺一不可）
+          三照证据
         </view>
         <SignPhotoSlot
           v-for="slot in PHOTO_SLOTS"
@@ -253,12 +232,6 @@ async function handleSubmit() {
   align-items: center;
   gap: 8px;
   padding: 32px 0;
-}
-
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
 }
 
 .block-title {

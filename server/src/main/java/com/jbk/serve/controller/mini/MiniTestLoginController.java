@@ -16,16 +16,16 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 测试登录入口（<b>仅 {@code mini.pay-sim.enabled=true} 时注册</b>，生产不存在该路由）。
- *
- * <p>与 Pay-Sim 共用同一个开关，是刻意的：模拟支付与模拟登录属于同一档次的能力，
- * 应当同生共死。任何一个环境如果开了其中一个而关掉另一个，都说明门控被人手工绕过了。</p>
+ * 测试登录入口（仅 {@code mini.test-login.enabled=true} 时注册，缺省不存在该路由）。
+ * 与 Pay-Sim 开关刻意拆开：本端点凭一个手机号即签发完整 KH_USER 会话，签出的 Token 与
+ * 正式登录完全同形、事后无法分辨——危险度不同的能力必须能分别授权，跑模拟支付不得顺带
+ * 打开身份绕过；需要它的隔离验收环境（e2e 跑批脚本）显式声明。
  */
 @Tag(name = "MINI-测试登录(仅测试环境)")
 @Validated
 @RestController
 @RequestMapping("/mini/test-login")
-@ConditionalOnProperty(name = "mini.pay-sim.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "mini.test-login.enabled", havingValue = "true")
 public class MiniTestLoginController {
 
     @Autowired

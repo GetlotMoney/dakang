@@ -14,10 +14,6 @@ import jakarta.validation.constraints.NotNull;
 import java.io.Serializable;
 
 /**
- * <p>
- *
- * </p>
- *
  * @author xs
  * @since 2025-09-05
  */
@@ -44,6 +40,17 @@ public class ApiLogOperationBo extends PageBo implements Serializable {
     @Schema(description = "操作模块")
     @TableField("LOG_MODULE")
     private String logModule;
+
+    /**
+     * 动作类型：按落库的操作内容模糊匹配。
+     *
+     * <p>此前只有 {@code logModule} 一个入参，且在服务层被拆成
+     * 「模块 like ? OR 内容 like ?」——筛选框写着「操作模块」，命中的却可能是内容，
+     * 也无法只按动作检索。两个维度各走各的列，标签才与实际过滤一致。</p>
+     */
+    @Schema(description = "动作类型（操作内容）")
+    @TableField("LOG_CONTENT")
+    private String logContent;
 
     @Schema(description = "操作时间")
     @TableField("LOG_EXECUTE_TIME")

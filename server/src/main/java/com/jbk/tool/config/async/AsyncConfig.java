@@ -8,12 +8,6 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 
-/**
- * @ClassName AsyncConfig
- * @Author xs
- * @Date 2024/7/29 10:35
- * @Version 1.0
- */
 // 配置线程池 并 开启Async功能
 @Configuration
 @EnableAsync

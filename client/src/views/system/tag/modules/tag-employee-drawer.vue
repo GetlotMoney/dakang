@@ -14,6 +14,7 @@
         v-model="searchForm"
         :items="formItems"
         auto-search
+        :show-reset="false"
         :rules="rules"
         @reset="handleReset"
         @search="handleSearch"
@@ -105,7 +106,6 @@
     set: (value) => emit('update:visible', value)
   })
 
-  // 搜索
   const searchBarRef = ref()
   const searchForm = ref({
     employeeName: ''
@@ -123,17 +123,14 @@
 
   const rules = {}
 
-  // 分页
   const pagination = ref({
     current: 1,
     size: 10,
     total: 0
   })
 
-  // 用户数据
   const tableData = ref<Api.SystemManage.TagEmployeeItem[]>([])
 
-  // 添加用户弹窗
   const addDialogVisible = ref(false)
   const addFormRef = ref()
   const addFormData = reactive({
@@ -141,7 +138,6 @@
   })
   const allEmployees = ref<Api.SystemManage.UserListItem[]>([])
 
-  // 获取标签下用户列表
   const getTagEmployeeList = async (): Promise<void> => {
     if (!props.tagData?.id) return
     loading.value = true
@@ -162,21 +158,18 @@
     }
   }
 
-  // 搜索
   const handleSearch = (params: { employeeName?: string }) => {
     searchForm.value.employeeName = params.employeeName || ''
     pagination.value.current = 1
     getTagEmployeeList()
   }
 
-  // 重置
   const handleReset = () => {
     searchForm.value.employeeName = ''
     pagination.value.current = 1
     getTagEmployeeList()
   }
 
-  // 分页变化
   const handleSizeChange = (size: number) => {
     pagination.value.size = size
     pagination.value.current = 1
@@ -188,7 +181,6 @@
     getTagEmployeeList()
   }
 
-  // 表格列
   const columns = [
     { prop: 'employeeName', label: '用户姓名', minWidth: 120 },
     { prop: 'employeePhone', label: '手机号', minWidth: 120 },
@@ -221,7 +213,6 @@
     }
   ])
 
-  // 移除用户关联
   const removeEmployee = (row: Api.SystemManage.TagEmployeeItem): void => {
     ElMessageBox.confirm('确定要从该标签移除该用户吗？', '移除用户', {
       confirmButtonText: '确定',
@@ -241,7 +232,6 @@
     })
   }
 
-  // 显示添加用户弹窗
   const showAddEmployee = async () => {
     addDialogVisible.value = true
     addFormData.employeeIds = []

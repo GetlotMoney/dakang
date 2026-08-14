@@ -3,12 +3,6 @@ package com.jbk.tool.domain;
 import com.jbk.tool.exception.ErrorMsg;
 import io.swagger.v3.oas.annotations.media.Schema;
 
-/**
- * @ClassName R
- * @Author xs
- * @Date 2024/6/7 14:19
- * @Version 1.0
- */
 public class R<T> {
     @Schema(description = "响应数据")
     private T data;

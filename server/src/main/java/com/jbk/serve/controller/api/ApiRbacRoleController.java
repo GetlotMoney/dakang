@@ -115,7 +115,13 @@ public class ApiRbacRoleController {
     @RepeatSubmit
     @Operation(summary = "更新角色所有权限")
     @PostMapping("/updateMenu")
-    @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)}, permission = {@SaCheckPermission(value = "api:role:update", type = StpKit.DRIVER_MANAGE)})
+    // 门必须是「分配权限」api:role:permission（菜单 646），不是「修改角色」api:role:update（菜单 631）。
+    // 运行时权限 = 角色已授菜单行 MENU_API_PERMS 的并集（ApiRbacRoleServiceImpl.getUserPermission，无超管旁路），
+    // 而本接口是 delByRole + saveBatchByRole 直接重写角色的菜单绑定，既不限定目标角色是否为调用者自身，
+    // 也没有「只能授出自己已有权限」的天花板。用 api:role:update 门控 = 只要能改角色名称就能给自己所在角色
+    // 勾满全部菜单，一次请求拿到资金写、设备指令等全部功能点，等价超管。两个功能点在 01-base.sql 里本就分开建，
+    // 前端 system/role/index.vue 的「分配权限」按钮也一直按 api:role:permission 显示——此前是后端漏了对齐。
+    @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)}, permission = {@SaCheckPermission(value = "api:role:permission", type = StpKit.DRIVER_MANAGE)})
     public R<Boolean> updateMenu(
             @SwaggerApiExclude("id")
             @RequestBody
@@ -152,7 +158,10 @@ public class ApiRbacRoleController {
     @RepeatSubmit
     @Operation(summary = "添加人员角色-多个")
     @PostMapping("/addEmployeeToRoleList")
-    @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)}, permission = {@SaCheckPermission(value = "api:role:update", type = StpKit.DRIVER_MANAGE)})
+    // 门必须是「分配角色」api:employee:assignRole（菜单 645）：把人塞进高权角色与改角色名称不是一个风险级别，
+    // 共用 api:role:update 等于「能改角色名 = 能把自己加进超管角色」，与 /updateMenu 是同一条提权链的两个入口。
+    // 前端 system/user/index.vue 的「分配角色」按钮一直按 api:employee:assignRole 显示。
+    @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)}, permission = {@SaCheckPermission(value = "api:employee:assignRole", type = StpKit.DRIVER_MANAGE)})
     public R<Boolean> addEmployeeToRoleList(
             @SwaggerApiExclude({"id"})
             @RequestBody

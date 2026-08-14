@@ -23,16 +23,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 /**
- * 待接单取消编排实现（E2E-04 包A）。
- *
- * <p><b>本类没有 {@code @Transactional}，且必须没有。</b>它按固定顺序驱动三段独立提交的事务：
- * 业务段 → 认领段 → 资金段。加上类级事务会把三段吞并成一段，认领与失败落痕随资金回滚一起消失，
- * 失败动作永远停在「待执行」且无任何痕迹（理由详见 {@link IDeliveryCancelService} 与
- * {@code IAfterSaleActionTxService.claimIndependent}）。</p>
- *
- * <p>本类<b>不做任何业务判定</b>：能否取消由业务段事务在 CAS 里裁决，返还额度由售后策略与额度上限
- * 算定，返还是否成功由资金段事务裁决。这里只读一次订单/任务，把「订单不存在 / 已被接单」翻译成
- * 一句用户看得懂的话——同一批判定会在事务内原样重做一遍，本层的结论一概不作数。</p>
+ * 待接单取消编排实现（E2E-04 包A）。本类必须没有 {@code @Transactional}：
+ * 业务段 → 认领段 → 资金段三段必须独立提交（理由见 {@link IDeliveryCancelService}）。
+ * 不做业务判定，只把只读预检翻译成用户话术——权威判定全部在各段事务内重做。
  *
  * @author dakang
  * @since 2026-07-29
@@ -47,8 +40,7 @@ public class DeliveryCancelServiceImpl implements IDeliveryCancelService {
 
     /**
      * 订单已取消但资金结果未知（认领落空或返还失败）。
-     * <p>必须与 {@link #MSG_REFUNDED} 可区分：把在途退款说成已到账，用户就不会去核对，
-     * 而这笔钱正卡在「需人工对账」上等人处理。</p>
+     * 必须与 {@link #MSG_REFUNDED} 可区分：在途退款绝不能说成已到账。
      */
     private static final String MSG_PROCESSING = "配送订单已取消，退款处理中；如未到账请联系客服。";
 
@@ -62,7 +54,7 @@ public class DeliveryCancelServiceImpl implements IDeliveryCancelService {
         if (ObjectUtil.isNull(userId) || userId <= 0) {
             throw new JbkException("会话用户非法");
         }
-        // 三段事务共用同一个业务时钟：订单、任务、台账、流水与审计的时间轴不允许分叉
+        // 三段事务共用同一个业务时钟，时间轴不允许分叉
         String now = DateUtils.time();
 
         // ① CAS 前的只读断言：只为给出准确话术，权威判定在业务段事务内重做
@@ -82,29 +74,25 @@ public class DeliveryCancelServiceImpl implements IDeliveryCancelService {
         WsAfterSaleAction action = deliveryOrderTxService.cancelPendingDeliveryOrder(
                 order.getId(), userId, now);
 
-        // ③ 认领段（独立提交）：返回 false 说明该动作已被他人认领或已推进（含重放命中既有行），
-        //    此时必须放弃执行——继续调 executeInTx 就是对同一笔返还的二次执行
+        // ③ 认领段（独立提交）：false 即已被他人认领或已推进，必须放弃——继续执行就是二次返还
         if (!afterSaleActionTxService.claimIndependent(action.getId(), action.getVersion(), userId, now)) {
             log.info("配送取消：售后动作认领落空，转由人工/重放收口。orderNo={} afterSaleNo={}",
                     order.getOrderNo(), action.getAfterSaleNo());
             return MSG_PROCESSING;
         }
 
-        // ④ 资金段（独立事务 + READ_COMMITTED）：失败时主事务回滚保住「钱没动」，
-        //    再用独立事务把「为什么没动」落成终态——两者缺一，失败就成了无痕事件
+        // ④ 资金段（独立事务 + READ_COMMITTED）：失败时钱不动，终局证据独立落成
         try {
             afterSaleActionTxService.executeInTx(action.getId(), userId, now);
             return MSG_REFUNDED;
         } catch (RuntimeException failed) {
-            // 落 5需人工对账 而不是 4可重试：包A 没有重试 Worker，落可重试等于永远没人来捡。
-            // nextRetryTime 传 null 与目标态互为充要（内核对这条约束有断言）
+            // 落 5需人工对账 而非 4可重试：包A 没有重试 Worker，落可重试等于永远没人来捡
             afterSaleActionTxService.markTerminalIndependent(action.getId(), action.getVersion(),
                     ActionStatus.RECONCILIATION_REQUIRED.getValue(), null,
                     failureReason(failed), userId, now);
             log.error("配送取消返还失败，已落需人工对账：orderNo={} afterSaleNo={}",
                     order.getOrderNo(), action.getAfterSaleNo(), failed);
-            // 不向上抛：订单已经取消成功了，把整个请求判成失败会让用户以为可以重试取消。
-            // 资金缺口由「需人工对账」的动作行承接，用户侧只承诺"处理中"
+            // 不向上抛：订单已取消成功，判成失败会让用户以为可以重试取消；资金缺口由人工对账承接
             return MSG_PROCESSING;
         }
     }

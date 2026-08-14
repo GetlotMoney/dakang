@@ -2,16 +2,19 @@ package com.jbk.serve.service.mini.recharge.impl;
 
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONUtil;
 import com.jbk.serve.mapper.aftersale.WsCardEntitlementBatchMapper;
 import com.jbk.serve.mapper.trade.RechargeCreditMapper;
 import com.jbk.serve.service.aftersale.batch.EntitlementBatchOrder;
 import com.jbk.serve.service.aftersale.batch.EntitlementBatchWriter;
 import com.jbk.serve.service.aftersale.batch.EntitlementLedger;
+import com.jbk.serve.service.mini.notify.WechatNotifyEnqueue;
 import com.jbk.serve.service.mini.recharge.IRechargeCreditTx;
 import com.jbk.serve.service.mini.recharge.RechargeCredit;
 import com.jbk.serve.service.mini.recharge.RechargeExpiry;
 import com.jbk.serve.service.mini.card.WaterCardScope;
 import com.jbk.serve.service.mini.recharge.RechargeSnapshot;
+import com.jbk.tool.consts.mini.WechatNotifyEnum;
 import com.jbk.tool.data.trade.po.WsOrder;
 import com.jbk.tool.data.trade.po.WsPaymentEvent;
 import com.jbk.tool.data.user.po.WsCard;
@@ -53,15 +56,14 @@ public class RechargeCreditTxImpl implements IRechargeCreditTx {
     /** 入账同事务建立权益批次，作为退款折算的唯一基准。 */
     private final WsCardEntitlementBatchMapper batchMapper;
     private final EntitlementLedger entitlementLedger;
+    /** 订阅通知登记：与入账同事务——入账回滚意味着权益没到卡，通知必须一起消失。 */
+    private final WechatNotifyEnqueue notifyEnqueue;
 
     @Override
     /**
-     * READ_COMMITTED（与 RechargeIssueTxImpl 的 N-15 修复同因同解）：REPEATABLE READ 下
-     * 转正名额复查是普通一致性读，读视图在事务首条 SELECT（selectEventById）时已建立——
-     * 后到者在 ws_user 行锁上醒来后读到的仍是先行者提交前的快照，两张赠卡并发转正会各成一张
-     * 付费卡（真库复现见 RechargeCreditTxDbTest 并发转正用例）。READ_COMMITTED 让复查读到
-     * 赢家刚提交的卡；刻意不用 FOR UPDATE 复查——无卡用户的锁定读在二级索引上留 gap 锁，
-     * 无关用户并发会互等死锁。关键读本就全是 FOR UPDATE，不受隔离级别变化影响。
+     * READ_COMMITTED，与 {@code RechargeIssueTxImpl} 的 N-15 同因同解：RR 下名额复查读旧快照，
+     * 两张赠卡并发转正会各成一张付费卡（RechargeCreditTxDbTest 复现）；
+     * 刻意不用 FOR UPDATE 复查（二级索引 gap 锁会让无关用户并发互等死锁）。
      */
     @Transactional(rollbackFor = Exception.class,
             isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
@@ -123,29 +125,22 @@ public class RechargeCreditTxImpl implements IRechargeCreditTx {
             if (!cardFinite || packageFinite) {
                 return CreditResult.unrecoverable("转正单形态不符：卡应为有限赠卡、套餐应为永久");
             }
-            // 审计 P1-1：锁内名额复查。用户行锁已在 RechargeLockedState.load 按
-            // payment→order→user→card 序取得，这里的计数不会再被并发转正/首购绕过。
-            // 口径=首购发卡资格 SQL（跨全部 CARD_STATUS、按 CardEligibility 排除赠卡）：
-            // 本卡是赠卡不计入，>0 即名下已有付费卡，钱已收但一人一卡不允许第二张——
-            // 订单转 6、事实转待对账（unrecoverable 通道），零权益写入。
+            // 审计 P1-1：锁内名额复查（用户行锁已在 RechargeLockedState.load 取得，不会被并发绕过）。
+            // 口径=首购发卡资格 SQL；>0 即名下已有付费卡，一人一卡不允许第二张，转人工零权益写入
             if (creditMapper.countLiveCardsByUser(order.getUserId()) > 0) {
                 return CreditResult.unrecoverable("入账时名下已有正式水卡，转正终止转人工");
             }
-            // 审计 P0-2：已自然过期的赠卡先在同一事务内作废旧权益（批次置5清零 + 卡同步
-            // 扣减 + EXPIRE_CLEAR 流水，EntitlementLedger.settleExpired 唯一入口），
-            // 只有本次真实充值的新权益才能随转正成为永久权益。权益耗尽但未到期的赠卡
-            // 余额本就是 0，清算自然零动作。
+            // 审计 P0-2：已自然过期的赠卡先同事务作废旧权益（settleExpired 唯一入口），
+            // 只有本次真实充值的新权益才能随转正成为永久权益
             if (RechargeExpiry.naturallyExpired(card.getExpireTime(), processingTime)) {
                 EntitlementLedger.CardAfter settled =
                         entitlementLedger.settleExpired(card, order.getUserId(), processingTime);
                 card.setBalanceAmount(settled.amountAfter());
                 card.setBalanceMl(settled.mlAfter());
             }
-            // 审计 R2 P0-1：入账锁内重验转正资格——旧权益必须已<b>完全</b>归零。
-            // 创单到入账的窗口里，退款/退差/补偿可以把权益加回这张赠卡（refundCardAssets
-            // 的状态白名单含 1/3），耗尽资格在创单时成立不代表此刻仍成立；已过期赠卡上
+            // 审计 R2 P0-1：锁内重验旧权益完全归零——创单到入账的窗口里退款/补偿可把权益加回赠卡，
             // 退款锁定(2)的正余额批次 settleExpired 刻意不动，同样不得随转正永久化。
-            // 三条同时成立才放行：卡两列为 0 + 全部未删批次（不限状态）零正剩余。
+            // 放行条件：卡两列为 0 + 全部未删批次（不限状态）零正剩余
             long residualFen = card.getBalanceAmount() == null ? 0L : card.getBalanceAmount();
             long residualMl = card.getBalanceMl() == null ? 0L : card.getBalanceMl();
             if (residualFen != 0L || residualMl != 0L
@@ -185,11 +180,8 @@ public class RechargeCreditTxImpl implements IRechargeCreditTx {
         // ── 步骤 6：一条 CAS UPDATE 写全部权益，前态任一变化即影响 0 行 ──
         int rows;
         if (promote) {
-            // 赠卡转正（D-416）：复用有限卡 CAS，新有效期传 NULL——SQL 的
-            // SET EXPIRE_TIME=#{newExpireTime}, CARD_STATUS=1 一条语句同时完成
-            // 「转永久 + 过期状态恢复」，前态锁清算后余额与旧到期时间，并发改动即 0 行回滚。
-            // 创单到入账的窗口由上方的用户行锁 + 锁内名额复查封死（审计 P1-1），
-            // 不再依赖任何事后兜底。
+            // 赠卡转正（D-416）：复用有限卡 CAS、新有效期传 NULL，一条语句完成「转永久+状态恢复」；
+            // 前态锁清算后余额与旧到期时间，并发改动即 0 行回滚
             rows = creditMapper.creditFiniteCard(card.getId(), credit.amountFen(), credit.ml(),
                     null, order.getPackageId(), order.getPackageSnap(),
                     order.getUserId(), processingTime,
@@ -220,11 +212,9 @@ public class RechargeCreditTxImpl implements IRechargeCreditTx {
             throw new JbkException("充值流水插入影响行数异常");
         }
 
-        // E2E-04 包D：入账同事务建立权益批次（REQ-061）。
-        // 位置紧跟流水之后、与卡权益同事务：三者同生共死。理由见 EntitlementBatchWriter 类注释。
-        // 本批次的有效期取<b>本次充值算出的 newExpireTime</b> 而非卡的聚合有效期——
-        // 卡聚合有效期是所有批次里最晚的那个，用它会让本批次看起来比实际更晚过期，
-        // 消费次序因此排错，早到期的权益反而被留到最后作废。
+        // E2E-04 包D：入账同事务建权益批次（REQ-061），与卡权益、流水同生共死。
+        // 批次有效期取本次算出的 newExpireTime 而非卡聚合有效期——用聚合值会让消费次序排错，
+        // 早到期的权益反而被留到最后作废
         EntitlementBatchWriter.createOnCredit(batchMapper, order, card.getId(), order.getUserId(),
                 locked.payment().getId(),
                 EntitlementBatchOrder.SourceType.RECHARGE,
@@ -237,6 +227,12 @@ public class RechargeCreditTxImpl implements IRechargeCreditTx {
             throw new JbkException("订单状态非已支付，拒绝完成入账");
         }
         completeSuccessGroup(locked.events(), processingTime);
+        // 通知挂在权益真正落卡之后而非支付成功处：中间任一步可走 unrecoverable 转人工，
+        // 支付成功即通知「已到账」会让用户拿着假通知去查一张没动过的卡
+        notifyEnqueue.enqueue(WechatNotifyEnum.EventType.RECHARGE_CREDITED,
+                WechatNotifyEnum.BizObjectType.ORDER, order.getOrderNo(), order.getUserId(),
+                JSONUtil.createObj().set("amountFen", credit.amountFen())
+                        .set("ml", credit.ml()).set("time", processingTime));
         log.info("充值入账完成：orderNo={} 余额 {}→{} 水量 {}→{} 有效期 {}→{}",
                 order.getOrderNo(), oldAmount, afterAmount, oldMl, afterMl,
                 card.getExpireTime(), newExpireTime);

@@ -261,14 +261,37 @@ class SplitPlanCalculatorTest {
     }
 
     @Test
-    void brokenChainRejectedUntilClientDecides() {
-        // 有区县无市：缺失层份额归平台还是归上级未确认（第三节 2 条）——阻断而非猜
-        List<SplitCalcInput.RegionNode> broken = List.of(
+    void gapChainAbsorbedByNearestPresentUpper() {
+        // D-428：{省,区县} 断层——区县（直接归属层）拿区县累计全额，市缺席，
+        // 其级差切片被最近在场上级（省）吸收：省实得=省累计−区县累计。
+        // 区域整块合计仍恒等于省级累计，市那一份没有静默消失也没有落平台。
+        List<SplitCalcInput.RegionNode> gap = List.of(
                 new SplitCalcInput.RegionNode(RegionLevel.PROVINCE, PROVINCE),
                 new SplitCalcInput.RegionNode(RegionLevel.COUNTY, COUNTY));
-        JbkException e = assertThrows(JbkException.class, () -> SplitPlanCalculator.calculate(plan(),
-                water(10_000, OWNER, null, broken, AttributionSource.PRIVATE_REFERRAL)));
-        assertTrue(e.getMsg().contains("断层"), "实际=" + e.getMsg());
+        List<SplitComponentDraft> out = SplitPlanCalculator.calculate(plan(),
+                water(10_000, OWNER, null, gap, AttributionSource.PRIVATE_REFERRAL));
+        Map<RoleCode, SplitComponentDraft> map = byRole(out);
+        assertEquals(500, map.get(RoleCode.REGION_COUNTY).splitAmountFen());
+        assertEquals(500, map.get(RoleCode.REGION_PROVINCE).splitAmountFen());
+        assertFalse(map.containsKey(RoleCode.REGION_CITY));
+        assertEquals(10_000, total(out));
+    }
+
+    @Test
+    void missingUpperLevelsFallToPlatform() {
+        // D-428：{区县} 独存（公司直招、上级无人）——区县拿本层累计全额，
+        // 省市差额无人在场承接，自然落平台余数；全链恒等式不变。
+        List<SplitCalcInput.RegionNode> countyOnly = List.of(
+                new SplitCalcInput.RegionNode(RegionLevel.COUNTY, COUNTY));
+        List<SplitComponentDraft> out = SplitPlanCalculator.calculate(plan(),
+                water(10_000, OWNER, null, countyOnly, AttributionSource.PRIVATE_REFERRAL));
+        Map<RoleCode, SplitComponentDraft> map = byRole(out);
+        assertEquals(500, map.get(RoleCode.REGION_COUNTY).splitAmountFen());
+        assertFalse(map.containsKey(RoleCode.REGION_CITY));
+        assertFalse(map.containsKey(RoleCode.REGION_PROVINCE));
+        // 平台 = 基数 − 机主5000 − 区县500 = 4500（省市差额 500 含在其中）
+        assertEquals(4_500, map.get(RoleCode.PLATFORM_REMAINDER).splitAmountFen());
+        assertEquals(10_000, total(out));
     }
 
     @Test

@@ -49,10 +49,7 @@ class RechargePayFactRetryWorkerTest {
         order.verify(factService).process(13L);
     }
 
-    /**
-     * 中间一条抛异常，其余必须继续。这条守卫没了，一条毒事实就能卡死整个重试队列——
-     * 之后所有「卡解冻待入账」的正常订单都会陪葬，而且没有任何告警。
-     */
+    /** 中间一条抛异常其余必须继续：否则一条毒事实卡死整个重试队列。 */
     @Test
     void poisonEventDoesNotBlockTheBatch() {
         when(creditMapper.selectDueEventIds(anyString())).thenReturn(List.of(21L, 22L, 23L));

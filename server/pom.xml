@@ -295,6 +295,38 @@
         <finalName>dakang-server</finalName>
         <plugins>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <!--
+                  测试并行分叉。全量套件的时间几乎全部花在容器启动上：148 个测试类里有 45 个
+                  用 Testcontainers，每类一个 MySQL 实例，串行执行时这些启动时间纯粹相加
+                  （实测 11 分 20 秒）。
+
+                  2026-08-12 复量（1711 条 / fork=4 / 墙钟 7:48）：
+                    45 个 *DbTest 累计 1378.9s，其余 103 个类累计合计 33.3s——真库占 98%；
+                    其中光是启动 45 次 MySQL 就用掉 617.0s（均 13.7s，最长 17.3s），占真库时间的 45%。
+                  这 617 秒是可以消灭的：45 个容器只是库名不同（it / dakang_gift_it / …），
+                  改成「一个实例 + 每类 CREATE DATABASE 自己的库」即可降到每 fork 一次，隔离性不变。
+                  尚未做，因为要动 45 个测试类；日常提速先用下面的 fast profile。
+
+                  选 fork 级并行而不是线程级：每个 fork 是独立 JVM，容器、静态单例与 Spring
+                  上下文都天然隔离，不需要审查每个测试类是否线程安全——线程级并行则要求
+                  所有共享可变状态都被证明安全，那是一次全量审查的工作量，收益却相同。
+
+                  forkCount 取 4 是量出来的，不是猜的（8 核 16G，本机同时跑着 5 个应用容器）：
+                    串行      11:20
+                    fork=4     6:16
+                    fork=6     5:53   （只快 23 秒，却要多占 50% 的并发容器内存）
+                  瓶颈在 Docker 的内存与 IO 而不是 CPU，所以加到核数只会互相拖慢并让超时更易抖动。
+                  要改这个数字请先重新量一遍并更新上表，别凭感觉调。
+                  排障：`mvn test -DforkCount=1` 可退回串行复现问题。
+                -->
+                <configuration>
+                    <forkCount>4</forkCount>
+                    <reuseForks>true</reuseForks>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <version>3.2.4</version>
@@ -378,4 +410,36 @@
             </snapshots>
         </pluginRepository>
     </pluginRepositories>
+    <profiles>
+        <!--
+          迭代提速档：`mvn -o test -Pfast`，只跑 103 个纯逻辑测试类（约 33 秒），
+          跳过 45 个 *DbTest（它们占全量 7:48 里的 98%，见 surefire 注释处的实测数据）。
+
+          【为什么是显式档，而不是把全量改成需要加参数】
+          反过来做迟早会有人拿 33 秒的绿去交付：跳过的恰恰是事务两段式、CAS 影响行数、
+          并发与幂等这些只有真库才验得出的判据，而这些正是本项目历次 P0 的所在地。
+          让快档必须被手敲出来，敲的人就知道自己跳过了什么。
+
+          【什么时候必须跑全量】改动落到 server/ 任一处后的交付节点、移交审计前、封板前。
+          【判据为什么可靠】45 个真库类 100% 以 DbTest 结尾（2026-08-12 核过），
+          新增真库测试若不守这个后缀，会被 fast 档漏跑——所以命名不是风格问题。
+        -->
+        <profile>
+            <id>fast</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes>
+                                <exclude>**/*DbTest.java</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>

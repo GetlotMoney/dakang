@@ -7,11 +7,12 @@ import { useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { deliveryApi } from '@/api/delivery'
 import { inviteApi } from '@/api/invite'
-import { authApi, readPhoneAuthorization, TEST_LOGIN_SWITCH_KEY, testLoginAccounts, testLoginPhone } from '@/api/auth'
+import { authApi, readPhoneAuthorization } from '@/api/auth'
 import { ContractError } from '@/api/common'
 import { avatarMimeFromPath, profileApi, readFileAsBase64 } from '@/api/profile'
 import { resolveServerPath } from '@/api/request'
 import { isPhoneComponentAvailable } from '@/api/runtime'
+import WechatContactEntry from '@/components/wechat-contact-entry.vue'
 import { useAccountStore } from '@/store/account'
 import { ADMISSION_STATUS_LABELS, CARD_STATUS_LABELS, maskPhone } from '@/utils/format'
 import { goTo } from '@/utils/navigation'
@@ -29,10 +30,16 @@ const toast = useToast()
 const accountStore = useAccountStore()
 const context = computed(() => accountStore.context)
 const hasOwnerView = computed(() => accountStore.hasCapability('OWNER_VIEW'))
-const serviceNotice = '取水、充值、配送会实际扣减水卡余额。'
 const primaryCard = ref<CardSummary | null>(null)
 const ownCards = ref<UsableCard[]>([])
 const admission = ref<CourierAdmission | null>(null)
+
+/** 资产行顺序：主卡永远第一。纯展示排序，不改任何归属或权限判定。 */
+const assetCards = computed(() => {
+  const cards = ownCards.value ?? []
+  const main = primaryCard.value?.cardId
+  return [...cards].sort((a, b) => (a.cardId === main ? -1 : b.cardId === main ? 1 : 0))
+})
 
 const maskedPhone = computed(() => maskPhone(context.value?.userPhone))
 const avatarSrc = computed(() => resolveServerPath(context.value?.userAvatar))
@@ -52,10 +59,7 @@ function openProfileEdit() {
   editingProfile.value = true
 }
 
-/**
- * chooseAvatar 回调。未配置《用户隐私保护指引》时平台可能不回传 avatarUrl，
- * 必须给出可执行的指引而不是让按钮"点了没反应"（产物污染事故同款教训：沉默即死角）。
- */
+/** chooseAvatar 回调。未配置《用户隐私保护指引》时平台可能不回传 avatarUrl，必须给出可执行的指引。 */
 function onChooseAvatar(event: unknown) {
   // uni 的 _ButtonOnChooseavatarEvent 类型声明与运行时 detail 结构不符，按运行时真实结构窄化
   const path = (event as { detail?: { avatarUrl?: string } })?.detail?.avatarUrl
@@ -105,10 +109,7 @@ async function saveProfile() {
   }
 }
 
-/**
- * 组件不可用时只显示说明、不渲染按钮：主体未过微信认证，平台在组件层拦住 getPhoneNumber，
- * 点击不弹窗、回调也不触发——渲染出来就是个永远没反应的按钮。
- */
+/** 组件不可用时只显示说明、不渲染按钮：平台在组件层拦住 getPhoneNumber 时点击无弹窗无回调。 */
 const phoneComponentAvailable = isPhoneComponentAvailable()
 const bindingPhone = ref(false)
 
@@ -195,25 +196,14 @@ function handleCardTap() {
   }
 }
 
-function showPrivacyNote() {
-  uni.showModal({
-    title: '隐私与授权',
-    content: '登录与手机号绑定使用微信授权，当前不获取你的位置。',
-    showCancel: false,
-  })
+/** 打开平台《用户隐私保护指引》全文（微信渲染，非我方页面）；与登录页 openPrivacyContract 同一平台能力。 */
+function openPrivacyContract() {
+  const wxApi = (globalThis as Record<string, any>).wx
+  wxApi?.openPrivacyContract?.({})
 }
 
-function showServiceNote() {
-  uni.showModal({
-    title: '服务说明',
-    content: serviceNotice,
-    showCancel: false,
-  })
-}
-
-/** 退出登录：清会话回统一入口；测试登录多账号构建下停在账号选择，支持一台真机切换角色。 */
+/** 退出登录：清会话回统一入口（运营规范 12.6 要求提供登出）。 */
 function handleLogout() {
-  const canSwitchTestAccount = Boolean(testLoginPhone) && testLoginAccounts.length > 1
   uni.showModal({
     title: '退出登录',
     content: '确认退出当前账号？',
@@ -221,10 +211,6 @@ function handleLogout() {
     success: (result) => {
       if (!result.confirm) {
         return
-      }
-      if (canSwitchTestAccount) {
-        // 显式退出才写切换标记；401 强制登出不写，入口仍自动重登默认号
-        uni.setStorageSync(TEST_LOGIN_SWITCH_KEY, '1')
       }
       accountStore.logout()
       uni.reLaunch({ url: '/pages/entry/index' })
@@ -254,7 +240,10 @@ async function copyInviteCode() {
   }
   if (inviteCode.value) {
     uni.setClipboardData({ data: inviteCode.value })
+    return
   }
+  // 取码失败时 inviteCode 恒为空串，必须提示而不是静默 return
+  toast.show('邀请码获取失败，请稍后重试')
 }
 
 async function bindInvite() {
@@ -281,8 +270,10 @@ onShow(loadInviteCode)
 
 <template>
   <view class="page-shell top-level-page" :style="{ paddingTop: safeHeader.pageTopPadding }">
+    <image class="profile-watermark" src="/static/brand/page-watermark.jpg" mode="scaleToFill" />
     <wd-toast />
-    <view v-if="context" class="profile-header" @click="openProfileEdit">
+    <view v-if="context" class="profile-header profile-hero pressable" @click="openProfileEdit">
+      <image class="profile-hero__art" src="/static/brand/section-network.jpg" mode="aspectFill" />
       <view class="profile-avatar">
         <image v-if="avatarSrc" class="profile-avatar-img" :src="avatarSrc" mode="aspectFill" />
         <wd-icon v-else name="user" size="28px" color="var(--app-color-primary)" />
@@ -297,7 +288,7 @@ onShow(loadInviteCode)
       </view>
       <view class="profile-edit-hint">
         <text>编辑资料</text>
-        <wd-icon name="arrow-right" size="14px" color="#9aa0a6" />
+        <wd-icon name="arrow-right" size="14px" color="var(--app-text-tertiary)" />
       </view>
     </view>
 
@@ -311,7 +302,7 @@ onShow(loadInviteCode)
           <button class="profile-edit-avatar-btn" open-type="chooseAvatar" @chooseavatar="onChooseAvatar">
             <image v-if="editAvatarPreview" class="profile-edit-avatar-img" :src="editAvatarPreview" mode="aspectFill" />
             <view v-else class="profile-edit-avatar-empty">
-              <wd-icon name="user" size="24px" color="#9aa0a6" />
+              <wd-icon name="user" size="24px" color="var(--app-text-tertiary)" />
             </view>
             <text class="profile-edit-avatar-tip">
               点击更换
@@ -327,7 +318,7 @@ onShow(loadInviteCode)
             class="profile-edit-input"
             type="nickname"
             :maxlength="50"
-            placeholder="输入昵称（键盘可一键填入微信昵称）"
+            placeholder="昵称"
           >
         </view>
         <view class="profile-edit-actions">
@@ -345,11 +336,11 @@ onShow(loadInviteCode)
     <view v-if="context && !context.phoneBound" class="page-section">
       <view class="bind-phone-card">
         <view class="bind-phone-title">
-          <wd-icon name="phone" size="16px" color="#d97706" />
+          <wd-icon name="phone" size="16px" color="var(--app-color-warning)" />
           <text>绑定手机号</text>
         </view>
         <view class="bind-phone-desc">
-          绑定后可用于订单联系与换机找回账号；不绑定不影响当前使用。
+          用于订单联系与换机找回账号
         </view>
         <button
           v-if="phoneComponentAvailable"
@@ -367,26 +358,59 @@ onShow(loadInviteCode)
     </view>
 
     <view class="page-section">
-      <wd-cell-group title="用水账户" border>
-        <template v-if="ownCards.length > 1">
-          <wd-cell
-            v-for="card in ownCards"
-            :key="card.cardId"
-            :title="card.cardId === primaryCard?.cardId ? '水卡（主卡）' : '水卡'"
-            :value="`${CARD_STATUS_LABELS[card.cardStatus]} · ${card.cardNo}`"
-            icon="creditcard"
-            is-link
-            @click="goTo('U11', { cardId: card.cardId })"
-          />
-        </template>
-        <wd-cell
-          v-else
-          title="水卡"
-          :value="primaryCard ? `${CARD_STATUS_LABELS[primaryCard.cardStatus]} · ${primaryCard.cardNo}` : '暂无水卡'"
-          icon="creditcard"
-          is-link
-          @click="handleCardTap"
-        />
+      <view class="section-title-row">
+        <text class="section-title">
+          我的水卡
+        </text>
+      </view>
+
+      <!-- 卡是资产，与设置类入口分开展示；主卡排第一 -->
+      <view class="asset-list">
+        <view
+          v-for="card in assetCards"
+          :key="card.cardId"
+          class="asset-row pressable"
+          :class="{ 'asset-row--muted': card.cardStatus !== 1 }"
+          @click="goTo('U11', { cardId: card.cardId })"
+        >
+          <image class="asset-row__art" src="/static/brand/card-ripples-wide.jpg" mode="aspectFill" />
+          <view class="asset-row__main">
+            <text class="asset-row__title">
+              {{ card.cardId === primaryCard?.cardId ? '水卡（主卡）' : '水卡' }}
+            </text>
+            <text class="asset-row__no num">
+              {{ card.cardNo }}
+            </text>
+          </view>
+          <text class="asset-row__status" :class="{ 'asset-row__status--alert': card.cardStatus !== 1 }">
+            {{ CARD_STATUS_LABELS[card.cardStatus] }}
+          </text>
+          <view class="asset-row__enter">
+            <wd-icon name="arrow-right" size="14px" color="var(--app-text-inverse)" />
+          </view>
+        </view>
+        <view v-if="!assetCards.length" class="asset-row asset-row--empty pressable" @click="handleCardTap">
+          <wd-icon name="creditcard" size="22px" color="var(--app-text-tertiary)" />
+          <view class="asset-row__main">
+            <text class="asset-row__title">
+              暂无水卡
+            </text>
+            <text class="asset-row__no">
+              去开卡
+            </text>
+          </view>
+          <wd-icon name="arrow-right" size="14px" color="var(--app-text-tertiary)" />
+        </view>
+      </view>
+    </view>
+
+    <view class="page-section">
+      <view class="section-title-row">
+        <text class="section-title">
+          用水设置
+        </text>
+      </view>
+      <wd-cell-group border>
         <wd-cell title="家庭资料" icon="usergroup" is-link @click="goTo('U13')" />
         <wd-cell title="水配送地址" icon="location" is-link @click="goTo('U14')" />
         <wd-cell title="自动补货规则" icon="refresh" is-link @click="goTo('U16')" />
@@ -394,10 +418,16 @@ onShow(loadInviteCode)
     </view>
 
     <view class="page-section">
-      <wd-cell-group title="我的业务能力" border>
+      <view class="section-title-row">
+        <text class="section-title">
+          我的服务
+        </text>
+      </view>
+      <wd-cell-group border>
+        <!-- 无记录兜底文案必须与 status=0 同字：查询失败也降级成无记录，不得显示成「未开通」 -->
         <wd-cell
           title="配送员"
-          :value="admission ? ADMISSION_STATUS_LABELS[admission.status] : '未开通'"
+          :value="ADMISSION_STATUS_LABELS[admission ? admission.status : 0]"
           icon="goods"
           is-link
           @click="goTo('D02')"
@@ -408,57 +438,235 @@ onShow(loadInviteCode)
           :value="ownerScopeSummary"
           icon="dashboard"
           is-link
+          ellipsis
           @click="goTo('O01')"
         />
-        <!-- 收益钱包对所有登录用户开放：分账收款方含配送员与预留的推荐人/区域服务商，
-             入口若只挂机主概览，拿了分润的配送员将无处查看自己的钱 -->
+        <!-- 收益钱包对所有登录用户开放：分账收款方含配送员，入口不能只挂机主概览 -->
         <wd-cell
           title="收益钱包"
-          value="分润净额"
           icon="money-circle"
           is-link
           @click="goTo('O06')"
         />
       </wd-cell-group>
-      <view v-if="!hasOwnerView" class="muted-text owner-hint">
-        机主授权暂不支持自助申请，请联系运营。
+    </view>
+
+    <!-- 客服入口：只带页面路径，不带任何身份或凭据；未开通客服时组件自己降级为普通联系方式 -->
+    <view class="page-section">
+      <view class="section-title-row">
+        <text class="section-title">
+          帮助与客服
+        </text>
+      </view>
+      <view class="contact-row">
+        <WechatContactEntry scene="账号与订单咨询" page-path="/pages/user/profile/index" />
       </view>
     </view>
 
     <view class="page-section">
-      <wd-card title="邀请好友">
+      <view class="section-title-row">
+        <text class="section-title">
+          邀请好友
+        </text>
+      </view>
+      <view class="invite-block">
         <view class="invite-line">
-          <text>我的邀请码：{{ inviteCode || '—' }}</text>
+          <view class="invite-code">
+            <text class="invite-code__text">
+              我的邀请码：{{ inviteCode || '—' }}
+            </text>
+          </view>
           <wd-button size="small" plain @click="copyInviteCode">
             复制
           </wd-button>
         </view>
+        <!-- 「仅可绑定一次」不放 placeholder：一开始输入就消失，不可撤销的约束必须常显 -->
         <view class="invite-line invite-bind">
-          <wd-input v-model="inviteInput" placeholder="填写他人邀请码（仅可绑定一次）" no-border custom-class="invite-input" />
+          <view class="invite-field">
+            <wd-input v-model="inviteInput" placeholder="邀请码（仅可绑定一次）" no-border />
+          </view>
           <wd-button size="small" :loading="inviteBusy" @click="bindInvite">
             绑定
           </wd-button>
         </view>
-        <view class="muted-text">
-          绑定后的新订单计入推荐人，此前订单不回溯。
-        </view>
-      </wd-card>
+      </view>
     </view>
 
     <view class="page-section">
-      <wd-cell-group title="账号与服务" border>
+      <view class="section-title-row">
+        <text class="section-title">
+          账号
+        </text>
+      </view>
+      <wd-cell-group border>
         <wd-cell title="消息中心" icon="notification" is-link @click="goTo('C02')" />
-        <wd-cell title="隐私与授权" icon="secured" is-link @click="showPrivacyNote" />
-        <wd-cell title="服务说明" icon="tips" is-link @click="showServiceNote" />
-        <wd-cell title="退出登录" icon="logout" is-link @click="handleLogout" />
+        <wd-cell title="隐私与授权" icon="secured" is-link @click="openPrivacyContract" />
       </wd-cell-group>
+    </view>
+
+    <!-- 退出登录单独落在页尾：与查看类入口不是一类动作，避免顺手点到 -->
+    <view class="page-section logout" @click="handleLogout">
+      <text class="logout__text">
+        退出登录
+      </text>
     </view>
   </view>
 </template>
 
 <style scoped lang="scss">
+.asset-list {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.asset-row {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  gap: var(--sp-3);
+  align-items: center;
+  min-height: 72px;
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  color: var(--app-text-inverse);
+  background: var(--art-card-navy);
+
+  &--muted {
+    opacity: 0.72;
+  }
+
+  &--empty {
+    color: var(--app-text-primary);
+    background: var(--app-bg-card);
+  }
+
+  &__art {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  &__main {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__title {
+    display: block;
+    font-size: var(--fs-body);
+    font-weight: 500;
+  }
+
+  // 卡号是查证用的，降到 note 档
+  &__no {
+    display: block;
+    margin-top: 2px;
+    overflow: hidden;
+    color: currentColor;
+    font-size: var(--fs-note);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    opacity: 0.68;
+  }
+
+  &__status {
+    position: relative;
+    z-index: 1;
+    flex: none;
+    font-size: var(--fs-caption);
+    opacity: 0.85;
+
+    &--alert {
+      padding: 2px 8px;
+      border-radius: var(--r-pill);
+      background: var(--tint-inverse);
+      font-weight: 700;
+      opacity: 1;
+    }
+  }
+
+  &__enter {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+  }
+}
+
+// 邀请是低频动作，脱掉白卡外壳降权；输入与按钮同排且各自留够宽度
+.invite-block {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
+}
+
+// 平面身份区：不套卡、不描边、不投影。顶部多留一段把整行压到微信胶囊下方
+// （navigationStyle=custom，320 屏上避让胶囊会把昵称压成半截）
+.profile-hero {
+  position: relative;
+  box-sizing: border-box;
+  overflow: hidden;
+  height: 116px;
+  margin: var(--sp-2) -16px var(--gap-group);
+  padding: 44px 16px 16px;
+
+  &__art {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  // 昵称长度上限是本页自己给的 50（编辑框 maxlength），不截断必然把手机号挤下去
+  .profile-name {
+    overflow: hidden;
+    color: var(--app-text-primary);
+    font-size: var(--fs-title);
+    font-weight: 700;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .muted-text {
+    overflow: hidden;
+    color: var(--app-text-secondary);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .profile-edit-hint {
+    color: var(--app-color-primary);
+  }
+}
+
 .top-level-page {
+  position: relative;
+  overflow: hidden;
   padding-top: calc(env(safe-area-inset-top) + 20px);
+}
+
+.profile-watermark {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.profile-hero,
+.page-section,
+.logout {
+  position: relative;
+  z-index: 1;
 }
 
 .profile-header {
@@ -468,13 +676,15 @@ onShow(loadInviteCode)
 }
 
 .profile-avatar {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  background: rgba(93, 135, 255, 0.12);
+  background: var(--tint-primary-strong);
   overflow: hidden;
 }
 
@@ -485,23 +695,27 @@ onShow(loadInviteCode)
 }
 
 .profile-header-main {
+  position: relative;
+  z-index: 1;
   flex: 1;
   min-width: 0;
 }
 
 .profile-edit-hint {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 2px;
   font-size: 12px;
-  color: #9aa0a6;
+  color: var(--app-text-tertiary);
 }
 
+// 编辑态是临时展开的表单面，白底即可标明它是一块；不再用品牌色描边围一圈
 .profile-edit-card {
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: #ffffff;
-  border: 1px solid rgba(93, 135, 255, 0.18);
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
 }
 
 .profile-edit-row {
@@ -514,7 +728,7 @@ onShow(loadInviteCode)
 .profile-edit-label {
   width: 44px;
   font-size: 14px;
-  color: #646a73;
+  color: var(--app-text-secondary);
 }
 
 /* open-type 按钮必须去掉微信原生按钮皮：否则头像被包进灰色胶囊里 */
@@ -546,7 +760,7 @@ onShow(loadInviteCode)
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: rgba(154, 160, 166, 0.12);
+  background: var(--tint-neutral);
 }
 
 .profile-edit-avatar-tip {
@@ -559,7 +773,7 @@ onShow(loadInviteCode)
   height: 40px;
   padding: 0 12px;
   border-radius: 8px;
-  background: rgba(154, 160, 166, 0.08);
+  background: var(--tint-neutral);
   font-size: 14px;
 }
 
@@ -570,16 +784,11 @@ onShow(loadInviteCode)
   margin-top: 10px;
 }
 
-.profile-name {
-  font-size: 18px;
-  font-weight: 600;
-}
-
+// 未绑号提示用 warning 浅底承担语义，不再围同色描边
 .bind-phone-card {
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.22);
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--tint-warning);
 }
 
 .bind-phone-title {
@@ -588,24 +797,24 @@ onShow(loadInviteCode)
   gap: 6px;
   font-size: 15px;
   font-weight: 600;
-  color: #b45309;
+  color: var(--app-color-warning-text);
 }
 
 .bind-phone-desc {
   margin-top: 6px;
   font-size: 13px;
   line-height: 1.6;
-  color: #92400e;
+  color: var(--app-color-warning-text);
 }
 
 .bind-phone-btn {
-  margin-top: 12px;
+  margin-top: var(--sp-3);
   height: 40px;
   line-height: 40px;
-  border-radius: 20px;
+  border-radius: var(--r-pill);
   font-size: 15px;
-  color: #ffffff;
-  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: var(--app-text-inverse);
+  background: var(--app-color-warning);
   border: none;
 
   &::after {
@@ -617,23 +826,56 @@ onShow(loadInviteCode)
   margin-top: 10px;
   font-size: 12px;
   line-height: 1.6;
-  color: #a16207;
+  color: var(--app-color-warning-text);
 }
 
-.owner-hint {
-  margin-top: 8px;
-  padding: 0 4px;
+.group-hint {
+  margin-top: var(--sp-2);
+  padding: 0 var(--sp-1);
+  color: var(--app-text-tertiary);
+  font-size: var(--fs-caption);
+}
+
+// 退出登录：单独一行、危险语义、页尾。不与查看类入口同组，避免顺手点到。
+.logout {
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
+  text-align: center;
+
+  &__text {
+    color: var(--app-color-danger);
+    font-size: var(--fs-body);
+  }
 }
 
 .invite-line {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 6px 0;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+}
+
+// 邀请码长度由服务端决定，前端不设上限：不截断的话长码会把「复制」挤出屏
+.invite-code {
+  flex: 1;
+  min-width: 0;
+
+  &__text {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
 }
 
 .invite-bind {
-  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  border-top: 1px solid var(--line-1);
+}
+
+.invite-field {
+  flex: 1;
+  min-width: 0;
 }
 </style>

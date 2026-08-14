@@ -12,8 +12,10 @@ import {
   resolveRechargePageMode,
   visiblePackagesForMode,
 } from '@/api/recharge'
-import { currentMode } from '@/api/runtime'
+import AppBottomActionBar from '@/components/app-bottom-action-bar.vue'
 import AppNavbar from '@/components/app-navbar.vue'
+import PhoneBindSheet from '@/components/phone-bind-sheet.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import { CARD_STATUS_LABELS, CARD_STATUS_TONES, formatFen, formatMl } from '@/utils/format'
 import { backOr, redirectTo } from '@/utils/navigation'
 import { payAndSettle } from '@/utils/recharge-pay'
@@ -27,7 +29,6 @@ definePage({
 
 const toast = useToast()
 const message = useMessage()
-const isRechargeMock = currentMode('recharge') === 'mock'
 
 const loading = ref(true)
 const loadError = ref('')
@@ -41,6 +42,8 @@ const visiblePackages = computed(() => visiblePackagesForMode(packages.value, pa
 // 仅套餐充值（L2 契约：packageId 必填，自定义金额已按契约移除）。
 const selectedPackageId = ref('')
 const submitting = ref(false)
+/** 绑号半屏可见性：撞到 627 时弹出，绑完由用户自己重新发起，不自动重放。 */
+const phoneBindVisible = ref(false)
 /** 客户端幂等键：同一次创建重试复用；改选套餐后重置（见 recharge.ts 契约注释）。 */
 const requestId = ref(createRechargeRequestId())
 
@@ -127,24 +130,26 @@ async function handleSubmit() {
       packageId: selectedPackage.value.id,
       requestId: requestId.value,
     })
-    if (isRechargeMock) {
-      redirectTo('U06', { orderNo: created.orderNo, source: 'local-mock' })
+    // 付款与到账确认的实现统一在 utils/recharge-pay，与订单详情的「继续支付」共用一份
+    const settled = await payAndSettle(created.orderNo, created.payAmountFen, {
+      ...payPrompts,
+      completedMessage: isPurchase.value ? '新卡已开通，购卡权益已到账' : '充值已到账',
+    })
+    if (settled === null) {
+      // 用户取消确认：留在本页，允许再次发起（订单已创建，可从订单详情继续支付）
+      submitting.value = false
+      return
     }
-    else {
-      // 付款与到账确认的实现统一在 utils/recharge-pay，与订单详情的「继续支付」共用一份
-      const settled = await payAndSettle(created.orderNo, created.payAmountFen, {
-        ...payPrompts,
-        completedMessage: isPurchase.value ? '新卡已开通，购卡权益已到账' : '充值已到账',
-      })
-      if (settled === null) {
-        // 用户取消确认：留在本页，允许再次发起（订单已创建，可从订单详情继续支付）
-        submitting.value = false
-        return
-      }
-      redirectTo('U06', { orderNo: created.orderNo })
-    }
+    redirectTo('U06', { orderNo: created.orderNo })
   }
   catch (error) {
+    // 绑号闸（627）：游客态账号没有手机号，而购卡是发行可兑付预付卡。
+    // 弹绑号半屏让用户就地绑完接着买，而不是只给一句 toast 让他自己去找入口。
+    if (error instanceof ContractError && error.code === 'PHONE_BIND_REQUIRED') {
+      phoneBindVisible.value = true
+      submitting.value = false
+      return
+    }
     toast.error(error instanceof ContractError ? error.message : '创建订单失败，请重试')
     submitting.value = false
   }
@@ -152,22 +157,21 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <view class="page-shell">
+  <view class="page-shell page-shell--with-bar">
+    <PhoneBindSheet v-model="phoneBindVisible" />
     <AppNavbar :title="pageTitle" back-to="U03" />
     <wd-toast />
     <wd-message-box />
 
     <template v-if="loadError">
       <view class="page-section">
-        <wd-status-tip image="content" :tip="loadError">
-          <template #bottom>
-            <view class="status-actions">
-              <wd-button plain @click="backOr('U03')">
-                返回
-              </wd-button>
-            </view>
+        <AppPageState state="error" :message="loadError">
+          <template #actions>
+            <wd-button plain @click="backOr('U03')">
+              返回
+            </wd-button>
           </template>
-        </wd-status-tip>
+        </AppPageState>
       </view>
     </template>
     <template v-else>
@@ -208,9 +212,7 @@ async function handleSubmit() {
               </view>
             </view>
           </template>
-          <view v-else-if="loading" class="muted-text">
-            加载中…
-          </view>
+          <AppPageState v-else-if="loading" state="loading" :row-col="[1, { width: '70%' }]" />
           <view v-else class="muted-text">
             当前账号暂无水卡，请选择套餐购卡。
           </view>
@@ -219,33 +221,44 @@ async function handleSubmit() {
 
       <view class="page-section">
         <wd-card :title="isPurchase ? '选择购卡套餐' : '选择充值套餐'" custom-class="block-card">
-          <wd-status-tip
+          <AppPageState
             v-if="!loading && isPurchase && visiblePackages.length === 0"
-            image="content"
-            tip="暂无可购套餐，请联系客服"
+            state="empty"
+            message="暂无可购套餐，请联系客服"
           />
-          <wd-cell-group v-else border>
-            <wd-cell
+          <!-- 价格方案行：每行按「名称 / 售价」+「兑换 · 赠送 · 有效期」同一顺序排，
+               套餐之间可以逐项对比。选中态用品牌蓝浅底 + 加粗，不用发光描边。 -->
+          <view v-else class="pkg-list">
+            <view
               v-for="pkg in visiblePackages"
               :key="pkg.id"
-              :title="pkg.packageName"
-              :label="`兑换 ${formatMl(pkg.waterMl)} · 赠送 ${formatFen(pkg.bonusAmountFen)} · ${packageValidityText(pkg.expireDays)}`"
-              clickable
+              class="pkg-row pressable"
+              :class="{ 'pkg-row--selected': selectedPackageId === pkg.id }"
               @click="selectPackage(pkg.id)"
             >
-              <view class="pkg-value">
-                <view class="pkg-price">
+              <view class="pkg-row__head">
+                <text class="pkg-row__name">
+                  {{ pkg.packageName }}
+                </text>
+                <text class="pkg-row__price money">
                   {{ formatFen(pkg.payAmountFen) }}
-                </view>
-                <wd-icon
-                  v-if="selectedPackageId === pkg.id"
-                  name="check-outline"
-                  size="18px"
-                  color="var(--app-color-primary)"
-                />
+                </text>
               </view>
-            </wd-cell>
-          </wd-cell-group>
+              <!-- 零值不占位：纯充值套餐 waterMl=0、无赠送套餐 bonus=0，
+                   渲染成「兑换 0L」「赠送 ¥0.00」等于用一格空信息挤掉真正能比较的字段 -->
+              <view class="pkg-row__meta">
+                <text v-if="pkg.waterMl > 0" class="pkg-row__item">
+                  兑换 {{ formatMl(pkg.waterMl) }}
+                </text>
+                <text v-if="pkg.bonusAmountFen > 0" class="pkg-row__item">
+                  赠送 {{ formatFen(pkg.bonusAmountFen) }}
+                </text>
+                <text class="pkg-row__item">
+                  {{ packageValidityText(pkg.expireDays) }}
+                </text>
+              </view>
+            </view>
+          </view>
           <view v-if="unitPriceText" class="muted-text snapshot-note">
             折算单价约 {{ unitPriceText }} 元/升
           </view>
@@ -263,33 +276,28 @@ async function handleSubmit() {
         照实展示，接真前后都成立，不需要本页再声明一次。
       -->
       <view class="page-section">
-        <wd-button
-          block
-          size="large"
-          :loading="submitting"
-          :disabled="loading || (isPurchase ? visiblePackages.length === 0 : !card)"
-          @click="handleSubmit"
-        >
-          {{ isPurchase ? '创建购卡订单' : '创建充值订单' }}
-        </wd-button>
-        <view v-if="!isRechargeMock" class="muted-text meta-note">
-          {{ isPurchase
-            ? '有效期从支付成功时间起算。'
-            : '充值到账后卡有效期顺延套餐天数。' }}
-        </view>
+        <AppBottomActionBar>
+          <template #primary>
+            <!-- 付款类主按钮通栏：吸底栏无 summary 槽时按钮只按内容宽，
+                 320 屏上一颗右对齐的短按钮不像这一屏的主动作 -->
+            <wd-button
+              block
+              size="large"
+              type="primary"
+              :loading="submitting"
+              :disabled="loading || (isPurchase ? visiblePackages.length === 0 : !card)"
+              @click="handleSubmit"
+            >
+              {{ isPurchase ? '创建购卡订单' : '创建充值订单' }}
+            </wd-button>
+          </template>
+        </AppBottomActionBar>
       </view>
     </template>
   </view>
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 20px;
-  width: 100%;
-}
-
 .card-title-row {
   display: flex;
   align-items: center;
@@ -316,16 +324,64 @@ async function handleSubmit() {
   font-weight: 600;
 }
 
-.pkg-value {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
+.pkg-list {
+  overflow: hidden;
+  border-radius: var(--r-sm);
 }
 
-.pkg-price {
-  font-size: 15px;
-  font-weight: 600;
+.pkg-row {
+  padding: var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--line-1);
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &--selected {
+    border-radius: var(--r-sm);
+    background: var(--tint-primary);
+    border-bottom-color: transparent;
+
+    .pkg-row__name {
+      font-weight: 700;
+    }
+  }
+
+  &__head {
+    display: flex;
+    gap: var(--sp-3);
+    align-items: baseline;
+  }
+
+  &__name {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--fs-body);
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__price {
+    flex: none;
+    font-size: var(--fs-title);
+    font-weight: 700;
+  }
+
+  &__meta {
+    display: flex;
+    gap: var(--sp-3);
+    align-items: baseline;
+    margin-top: var(--sp-1);
+    color: var(--app-text-tertiary);
+    font-size: var(--fs-note);
+  }
+
+  &__item {
+    flex: none;
+  }
 }
 
 .snapshot-note {

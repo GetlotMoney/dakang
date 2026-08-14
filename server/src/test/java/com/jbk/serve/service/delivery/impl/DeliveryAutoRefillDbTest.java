@@ -29,7 +29,9 @@ import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.utils.DateUtils;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.mapper.MapperFactoryBean;
@@ -43,6 +45,7 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -59,6 +62,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -103,6 +107,19 @@ class DeliveryAutoRefillDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -139,6 +156,20 @@ class DeliveryAutoRefillDbTest {
             MapperFactoryBean<M> bean = new MapperFactoryBean<>(type);
             bean.setSqlSessionTemplate(template);
             return bean;
+        }
+
+
+        /** 订阅通知登记：真实实现。失败路径走独立事务，只有真表能证明"回滚后它还在"。 */
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper>
+                wechatNotifyOutboxMapper(SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper.class, t);
+        }
+
+        @Bean
+        com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue(
+                com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper m) {
+            return new com.jbk.serve.service.mini.notify.WechatNotifyEnqueue(m);
         }
 
         @Bean
@@ -206,10 +237,8 @@ class DeliveryAutoRefillDbTest {
 
         @Bean
         IWsDomainEventService domainEventService() {
-            // spy 而非 mock：默认全部委派真实现——本包要证的「同一期失败证据恰一条」就是
-            // uk_domain_event_biz_key 的真实行为，Mock 证不了。留出打桩能力只为一条用例：
-            // 「失败留痕自身写入失败」是外层逐规则隔离在现实中的唯一触发器（schema 的 NOT NULL
-            // 已挡住绝大多数脏数据 NPE），不打桩就没法证明那道 catch 不是死代码。
+            // spy 而非 mock：「同一期失败证据恰一条」是 uk_domain_event_biz_key 的真实行为；
+            // 打桩能力只为「失败留痕自身写入失败」那条用例保留
             return org.mockito.Mockito.spy(new WsDomainEventServiceImpl());
         }
 
@@ -257,6 +286,8 @@ class DeliveryAutoRefillDbTest {
     private com.jbk.serve.service.delivery.IMiniAutoRuleService miniAutoRuleService;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private PlatformTransactionManager txManager;
     /** spy：默认走真实现；只有「审计写入自身失败」那条用例对失败留痕打桩。 */
     @Autowired
     private IWsDomainEventService domainEventService;
@@ -481,13 +512,55 @@ class DeliveryAutoRefillDbTest {
         assertEquals(1, allFailEventCount(), "全库的自动补货失败证据也只有这一条");
     }
 
+    /** 自动补货失败 → 登记失败通知且对象编号带期序（传播方式的区分在下一条）。 */
+    @Test
+    void autoRefillFailureEnqueuesNotice() {
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        String due = DeliveryClock.plusHours(anchorOf(ruleId), 24 * 8);
+        jdbc.update("UPDATE ws_card SET BALANCE_AMOUNT=0 WHERE ID=?", CARD_ID);
+
+        assertEquals(0, worker.runOnce(due), "前置：本期必须创单失败，否则本用例什么都没验");
+
+        assertEquals(1, jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM ws_wechat_notify_outbox WHERE EVENT_TYPE='AUTO_REFILL_FAILED'",
+                        Integer.class),
+                "创单失败回滚后通知没了——用户收不到任何提示，还以为水在路上");
+        assertEquals(ruleId + ":1", jdbc.queryForObject(
+                        "SELECT BIZ_OBJECT_NO FROM ws_wechat_notify_outbox WHERE EVENT_TYPE='AUTO_REFILL_FAILED'",
+                        String.class),
+                "对象编号必须带期序：不带的话同一规则第二期失败会被判重复而静默丢弃");
+    }
+
     /**
-     * 8b：失败证据按<b>期</b>收敛，不是按规则收敛。
-     *
-     * <p>幂等键少了期序，一条规则连着几个月失败也只会留下第一期那一条证据，
-     * 后面每一期的失败都变成无痕事件——运营看到「有一条告警」，实际是连续三个月没送水。
-     * 上一条用例只跑第 1 期，证不了这件事。</p>
+     * {@code enqueueIndependent} 判据：外层事务回滚时失败通知必须活下来；
+     * 对照断言订单/任务随回滚消失，否则可能只是外层压根没回滚。
      */
+    @Test
+    void autoRefillFailureNoticeSurvivesAnOuterRollback() {
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        String due = DeliveryClock.plusHours(anchorOf(ruleId), 24 * 8);
+        jdbc.update("UPDATE ws_card SET BALANCE_AMOUNT=0 WHERE ID=?", CARD_ID);
+        int ordersBefore = count("ws_order");
+
+        TransactionTemplate outer = new TransactionTemplate(txManager);
+        try {
+            outer.execute(status -> {
+                worker.runOnce(due);
+                throw new IllegalStateException("制造外层回滚");
+            });
+        }
+        catch (IllegalStateException expected) {
+            // 外层回滚正是本用例的前提
+        }
+
+        assertEquals(ordersBefore, count("ws_order"), "外层没真的回滚，本用例什么都没验");
+        assertEquals(1, jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM ws_wechat_notify_outbox WHERE EVENT_TYPE='AUTO_REFILL_FAILED'",
+                        Integer.class),
+                "外层回滚把失败通知一起带走了——用户没收到水，也收不到任何提示");
+    }
+
+    /** 8b：失败证据按期收敛而非按规则——幂等键少了期序，后续每期失败都成无痕事件。 */
     @Test
     void eachPeriodKeepsItsOwnFailEvidence() {
         long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
@@ -601,12 +674,8 @@ class DeliveryAutoRefillDbTest {
     }
 
     /**
-     * 11b：脏数据引发的<b>非业务异常</b>同样不得阻塞后续规则。
-     *
-     * <p>与上一条的区别是走哪条 catch：余额不足抛的是 JbkException，被
-     * {@code generateForRule} 内层按「业务失败」处理；而 INTERVAL_DAYS 为 NULL 会在
-     * {@code periodIndex} 拆箱时抛 NPE——那是运行时异常，只有外层的逐规则隔离能兜住。
-     * 少了这条用例，把外层 catch 删掉全绿，等于隔离形同虚设。</p>
+     * 11b：非业务异常（如 INTERVAL_DAYS 为 NULL 的 NPE）同样不得阻塞后续规则——
+     * 它走的是外层逐规则隔离的 catch，与内层 JbkException 业务失败是两条路径。
      */
     @Test
     void auditWriteFailureOnOneRuleDoesNotBlockLaterRule() {
@@ -795,5 +864,70 @@ class DeliveryAutoRefillDbTest {
         assertEquals(0, worker.runOnce(DeliveryClock.plusHours(anchorOf(ruleId), 24 * 15)),
                 "取消后的后续期次恒零生成");
         assertEquals(ordersAfterRace, count("ws_order"), "取消后订单数冻结");
+    }
+
+    @Test
+    @DisplayName("G7-B08 同款补货规则不得并存：第二次相同水种/规格/地址被拒且零副作用")
+    void sameShapeRuleIsRejectedWhileAlive() {
+        seedCard(CARD_ID, USER_ID, 1, BALANCE_FEN);
+        long ruleId = seedRule(REQ_A, CARD_ID, USER_ID, 7);
+        int ordersAfterFirst = count("ws_order");
+
+        // 换一个 requestId 就绕过了创建幂等键——同款规则原本可以这样无限叠加，
+        // Worker 每期给每条各扣一次款，用户界面上却只看得到「我设了个补货」
+        JbkException rejected = assertThrows(JbkException.class,
+                () -> orderService.createDeliveryOrder(autoBo(REQ_B, CARD_ID, 7), USER_ID));
+        // 拒因必须来自**应用层预检**（「您已有一条…请先取消」），而不是库层撞键后的并发话术。
+        // 只断言「含自动补货规则」的话，删掉预检也照样绿——库层索引会给出另一句同样含该词的拒因。
+        assertTrue(rejected.getMessage().contains("请先在补货规则页取消"),
+                "顺序场景应由预检拒绝，实际：" + rejected.getMessage());
+        assertEquals(1, count("ws_delivery_auto_rule"), "被拒不得留下第二条规则");
+        assertEquals(ordersAfterFirst, count("ws_order"), "被拒不得留下订单");
+
+        // 取消后同款可以重新建：唯一键只在存活期(1/2)生效，已取消(3)不占位
+        jdbc.update("UPDATE ws_delivery_auto_rule SET RULE_STATUS=3 WHERE ID=?", ruleId);
+        long rebuilt = seedRule(REQ_B, CARD_ID, USER_ID, 7);
+        assertNotEquals(ruleId, rebuilt, "取消后应能建出新规则");
+        assertEquals(2, count("ws_delivery_auto_rule"));
+    }
+
+    @Test
+    @DisplayName("G7-B08 并发同款：库层唯一索引裁出唯一赢家，输方按业务拒绝而非幂等命中")
+    void concurrentSameShapeRulesLeaveExactlyOne() throws Exception {
+        seedCard(CARD_ID, USER_ID, 1, BALANCE_FEN);
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger ok = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger rejected = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            for (String req : java.util.List.of(REQ_A, REQ_B)) {
+                pool.submit(() -> {
+                    go.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                    try {
+                        orderService.createDeliveryOrder(autoBo(req, CARD_ID, 7), USER_ID);
+                        ok.incrementAndGet();
+                    }
+                    catch (RuntimeException expected) {
+                        // 并发输方必须拿到「刚刚被创建」而不是预检那句：预检时它确实还没有
+                        assertTrue(String.valueOf(expected.getMessage()).contains("刚刚被创建"),
+                                "并发输方拒因应为竞态话术，实际：" + expected.getMessage());
+                        rejected.incrementAndGet();
+                    }
+                    return true;
+                });
+            }
+            go.countDown();
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        finally {
+            pool.shutdownNow();
+        }
+        // 两个请求各自预检都会看到「还没有同款」——应用层判重在这里必然双开，
+        // 唯一裁决者只能是库层索引
+        assertEquals(1, ok.get(), "恰一个请求成功");
+        assertEquals(1, rejected.get(), "另一个必须被拒");
+        assertEquals(1, count("ws_delivery_auto_rule"), "并发后存活规则恰一条");
     }
 }

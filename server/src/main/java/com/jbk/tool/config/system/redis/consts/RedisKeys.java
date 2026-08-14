@@ -2,12 +2,6 @@ package com.jbk.tool.config.system.redis.consts;
 
 import cn.hutool.core.util.StrUtil;
 
-/**
- * @ClassName RedisKeys
- * @Author xs
- * @Date 2024/6/7 11:50
- * @Version 1.0
- */
 public interface RedisKeys {
     // 系统统一前缀
     String UNIFY_PRE = "auth-ai:";

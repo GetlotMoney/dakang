@@ -36,10 +36,13 @@ public class ApiLogOperationServiceImpl extends ServiceImpl<ApiLogOperationMappe
                         .like(StrUtil.isNotEmpty(logOperationBo.getLogUserName()),
                                 ApiLogOperation::getLogUserName, logOperationBo.getLogUserName()
                         )
-                        .and(StrUtil.isNotEmpty(logOperationBo.getLogModule()), e ->
-                                e.like(ApiLogOperation::getLogModule, logOperationBo.getLogModule())
-                                        .or()
-                                        .like(ApiLogOperation::getLogContent, logOperationBo.getLogModule())
+                        // 模块与动作各自过滤各自的列：混成 OR 时「操作模块」筛选框会命中操作内容，
+                        // 且两个维度无法叠加使用（查不到「某模块下的某个动作」）
+                        .like(StrUtil.isNotEmpty(logOperationBo.getLogModule()),
+                                ApiLogOperation::getLogModule, logOperationBo.getLogModule()
+                        )
+                        .like(StrUtil.isNotEmpty(logOperationBo.getLogContent()),
+                                ApiLogOperation::getLogContent, logOperationBo.getLogContent()
                         )
                         .ge(StrUtil.isNotEmpty(logOperationBo.getLogExecuteTimeBegin()),
                                 ApiLogOperation::getLogExecuteTime, logOperationBo.getLogExecuteTimeBegin()

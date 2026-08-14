@@ -103,7 +103,6 @@
 
   const ENCRYPT_KEY = import.meta.env.VITE_ACCESS_LOGIN_KEY
 
-  // 监听语言切换，重置表单
   watch(locale, () => {
     formKey.value++
   })
@@ -138,7 +137,6 @@
 
   const loading = ref(false)
 
-  // 登录
   const handleSubmit = async () => {
     if (!formRef.value) return
 
@@ -147,7 +145,6 @@
     const valid = await formRef.value.validate().catch(() => false)
     if (!valid) return
 
-    // 拖拽验证
     if (!isPassing.value) {
       isClickPass.value = true
       return
@@ -156,7 +153,6 @@
     loading.value = true
 
     try {
-      // 登录请求
       const { username, password } = formData
 
       const encryptor = new JSEncrypt()
@@ -171,9 +167,7 @@
 
       // 存储会话 token（http 拦截器注入 dakang-token 头）
       userStore.setToken(loginData.tokenValue || '')
-      // 存储用户信息（包含 rbacMenuList）
       userStore.setUserInfo(loginData as Api.Auth.UserInfo)
-      // 存储登录状态
       userStore.setLoginStatus(true)
 
       // 首次登录强改（R-201）：服务端已拒绝除改密/退出外的接口，改密页是唯一出口
@@ -183,7 +177,6 @@
         return
       }
 
-      // 登录成功处理
       showLoginSuccessNotice()
 
       // 恢复用户登录前的站内目标；拒绝协议相对地址，避免开放重定向。
@@ -196,7 +189,6 @@
     } catch (error) {
       // 处理 HttpError（账号密码错误等服务端失败由 http 拦截器统一提示）
       if (error instanceof HttpError) {
-        // console.log(error.code)
       } else {
         // 处理非 HttpError（真实网络/运行异常）
         ElMessage.error('登录失败，请稍后重试')
@@ -215,12 +207,10 @@
     }
   })
 
-  // 重置拖拽验证
   const resetDragVerify = () => {
     dragVerify.value.reset()
   }
 
-  // 登录成功提示
   const showLoginSuccessNotice = () => {
     setTimeout(() => {
       ElNotification({

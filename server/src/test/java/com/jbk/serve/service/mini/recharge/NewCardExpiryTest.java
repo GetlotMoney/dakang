@@ -11,16 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * 首次购卡新卡有效期（决策 A1）。
- *
- * <p>决策 A1 的两条语义在这里钉死：</p>
- * <ol>
- *   <li><b>只从权威 paySuccessTime 起算</b>——{@code compute} 的签名根本不接收创单时间或处理时间，
- *       误用在编译期就不可能；本类断言同一支付时间无论何时重算结果都相同（重放稳定）。</li>
- *   <li><b>不得复用/改造 {@link RechargeExpiry} 让 NULL 退化为 paySuccessTime</b>——
- *       L2-B 里 {@code currentExpireTime=NULL} 表示既有永久卡，退化会把永久卡续成有限卡。
- *       本类断言 {@code expireDays=NULL} 的唯一输出是 {@code null}（EXPIRE_TIME 保持 SQL NULL）。</li>
- * </ol>
+ * 首次购卡新卡有效期（决策 A1）：只从 paySuccessTime 起算（签名不收其他时间，重放稳定）；
+ * expireDays=NULL 唯一输出 null——RechargeExpiry 的 NULL 表示永久卡，退化会把永久卡续成有限卡。
  */
 class NewCardExpiryTest {
 

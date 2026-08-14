@@ -176,23 +176,45 @@ public interface DeviceEnum {
         }
     }
 
+    /**
+     * 指令风险档位（D-423）。档位钉在 {@link CmdType} 构造器上：新增指令不声明档位就编译不过，不会默默进入免检档。
+     */
+    enum CmdTier {
+        /** 只能由订单链路触发，人工入口永久不受理。 */
+        ORDER_ONLY,
+        /** 只读，无物理副作用；范围再大也不加二次验证（扇出负载用目标数上限治）。 */
+        READ_ONLY,
+        /** 单台可逆：平台侧存在反向指令；逐台点名沿用权限+日志，范围≥水站才加闸。 */
+        REVERSIBLE_SINGLE,
+        /** 恒加闸：不可逆或触及计价，任何范围都要二次验证。 */
+        GATED
+    }
+
     // 设备指令类型 (dictType=1320)
     enum CmdType {
-        START_DISPENSE(1, "开始出水"),
-        STOP_DISPENSE(2, "停止出水"),
-        QUERY_STATUS(3, "查询状态"),
-        LOCK(4, "锁机"),
-        UNLOCK(5, "解锁"),
-        PARAM_SYNC(6, "参数同步"),
-        REBOOT(7, "重启"),
-        PRICE_SYNC(8, "价格同步");
+        START_DISPENSE(1, "开始出水", CmdTier.ORDER_ONLY),
+        // 平台侧不存在反向指令，恢复口径待厂家确认 → 恒加闸
+        STOP_DISPENSE(2, "停止出水", CmdTier.GATED),
+        QUERY_STATUS(3, "查询状态", CmdTier.READ_ONLY),
+        LOCK(4, "锁机", CmdTier.REVERSIBLE_SINGLE),
+        UNLOCK(5, "解锁", CmdTier.REVERSIBLE_SINGLE),
+        PARAM_SYNC(6, "参数同步", CmdTier.REVERSIBLE_SINGLE),
+        REBOOT(7, "重启", CmdTier.REVERSIBLE_SINGLE),
+        // 触及计价：回滚指令改得回价格，改不回已按错价成交的订单 → 恒加闸
+        PRICE_SYNC(8, "价格同步", CmdTier.GATED);
 
         private final int value;
         private final String desc;
+        private final CmdTier tier;
 
-        CmdType(int value, String desc) {
+        CmdType(int value, String desc, CmdTier tier) {
             this.value = value;
             this.desc = desc;
+            this.tier = tier;
+        }
+
+        public CmdTier getTier() {
+            return tier;
         }
 
         public int getValue() {

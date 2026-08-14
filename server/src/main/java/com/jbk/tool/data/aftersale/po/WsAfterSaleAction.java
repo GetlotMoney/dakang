@@ -14,18 +14,9 @@ import java.io.Serializable;
 
 /**
  * 售后执行动作表 Po（E2E-04 包A；严格对齐 deploy/mysql/migrations/2026-07-29-aftersale-e2e04-a.sql）。
- *
- * <p>三条来源（待接单取消 / 配送申诉补偿 / 取水异常核账）共用这一张执行表：
- * 差异只在触发时机与 SOURCE_*，返还内核完全相同；拆成「案件表 + 动作表」会让返还逻辑有两个入口。</p>
- *
- * <p><b>四元额度是本表的要害</b>（REFUND_PRODUCT_FEN / REFUND_SERVICE_FEN / REFUND_PRODUCT_ML
- * + 合计列 REFUND_AMOUNT）：payWay=2 时水费与配送费**都从余额扣**，若只按混合总额判累计封顶，
- * 连续多次 SERVICE_FEE_ONLY 申诉会各自拿「订单总额」当额度，把水费额度挪去退配送费——
- * 本单实际只扣过 N 分配送费却能退出 3N。故封顶必须按「水品 / 配送费」两条独立维度分别判定，
- * 各自的额度锚点见对应字段注释；REFUND_AMOUNT 只供余额 CAS 与流水使用，**不参与封顶判定**。</p>
- *
- * <p>额度锚点一律取订单快照（ws_order.PACKAGE_SNAP）而非当前价目表：
- * 价目调整后按新价重算历史单，会与原扣款流水对不上，而封顶基准正是原扣款流水。</p>
+ * 三条来源共用一张执行表，差异只在 SOURCE_*。
+ * 要害：封顶必须按「水品 / 配送费」两条维度独立判定（payWay=2 时两者都从余额扣，按混合总额判会超退）；
+ * REFUND_AMOUNT 只供余额 CAS 与流水使用，不参与封顶判定。额度锚点一律取订单快照 PACKAGE_SNAP 而非当前价目表。
  *
  * @author dakang
  * @since 2026-07-29

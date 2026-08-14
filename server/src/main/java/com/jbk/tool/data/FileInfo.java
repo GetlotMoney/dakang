@@ -5,12 +5,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * @ClassName FileInfoVo
- * @Author xs
- * @Date 2023/11/27 16:05
- * @Version 1.0
- */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

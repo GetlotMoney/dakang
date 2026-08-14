@@ -9,17 +9,9 @@ import lombok.Data;
 import java.io.Serializable;
 
 /**
- * PC 裁决申诉入参（E2E-04 包A：策略码驱动）。
- *
- * <p><b>本 Bo 上没有 outcome，这是刻意的。</b>申诉终态由
- * {@code AfterSaleStrategy.deriveOutcome(strategyCode)} 从策略码唯一派生：
- * 策略码与终态两套码并存时，「REJECT + 补偿策略」「COMPENSATE_PENDING + RESEND」这类
- * 自相矛盾的裁决会双双通过各自的白名单校验，最终以「申诉已驳回、售后仍在退钱」收场。
- * 入参只保留一个真相源，矛盾态在物理上不可表达。</p>
- *
- * <p><b>前端只提交策略码 / 数量 / 说明，绝不提交金额与水量</b>：返还额度由服务端按
- * 订单冻结快照（{@code ws_order.PACKAGE_SNAP}）与批准数量计算，任何来自请求体的金额
- * 都等于把「退多少钱」的决定权交给调用方。</p>
+ * PC 裁决申诉入参（E2E-04 包A：策略码驱动）。刻意不带 outcome：终态由
+ * {@code AfterSaleStrategy.deriveOutcome(strategyCode)} 从策略码唯一派生，矛盾态物理不可表达。
+ * 前端只提交策略码/数量/说明，绝不提交金额与水量：额度由服务端按订单冻结快照与批准数量计算。
  */
 @Data
 @Schema(name = "DeliveryAppealDecideBo", description = "裁决配送申诉入参")

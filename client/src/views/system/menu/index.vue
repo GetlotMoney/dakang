@@ -61,23 +61,19 @@
 
   defineOptions({ name: 'Menus' })
 
-  // 权限判断函数
   const hasPermission = (perm: string) => {
     return useUserStore().rbacMenuList.some((item) => item.menuWebPerms === perm)
   }
 
-  // 状态管理
   const loading = ref(false)
   const isExpanded = ref(false)
   const tableRef = ref()
 
-  // 弹窗相关
   const dialogVisible = ref(false)
   const editData = ref<any>(null)
   const parentId = ref(0)
   const submitLoading = ref(false)
 
-  // 字典数据
   const menuTypeOptions = ref<{ label: string; value: number }[]>([])
 
   const menuTreeData = computed(() => {
@@ -115,9 +111,6 @@
     }
   })
 
-  /**
-   * 获取菜单列表数据
-   */
   const getMenuList = async (): Promise<void> => {
     loading.value = true
 
@@ -131,10 +124,8 @@
     }
   }
 
-  // 表格数据
   const tableData = ref<any[]>([])
 
-  // 表格列配置
   const { columnChecks, columns } = useTableColumns(() => [
     {
       prop: 'menuName',
@@ -238,43 +229,28 @@
     }
   ])
 
-  /**
-   * 刷新菜单列表
-   */
   const handleRefresh = (): void => {
     getMenuList()
   }
 
-  /**
-   * 添加菜单
-   */
   const handleAddMenu = (): void => {
     editData.value = null
     parentId.value = 0
     dialogVisible.value = true
   }
 
-  /**
-   * 添加子菜单
-   */
   const handleAddChild = (row: any): void => {
     editData.value = null
     parentId.value = row.id
     dialogVisible.value = true
   }
 
-  /**
-   * 编辑菜单
-   */
   const handleEdit = (row: any): void => {
     editData.value = row
     parentId.value = row.menuParentId || 0
     dialogVisible.value = true
   }
 
-  /**
-   * 删除菜单
-   */
   const handleDelete = async (row: any): Promise<void> => {
     try {
       await ElMessageBox.confirm(`确定要删除「${row.menuName}」吗？删除后无法恢复`, '提示', {
@@ -292,9 +268,6 @@
     }
   }
 
-  /**
-   * 提交表单数据
-   */
   const handleSubmit = async (formData: any): Promise<void> => {
     submitLoading.value = true
     try {
@@ -311,9 +284,6 @@
     }
   }
 
-  /**
-   * 切换展开/收起所有菜单
-   */
   const toggleExpand = (): void => {
     isExpanded.value = !isExpanded.value
     nextTick(() => {

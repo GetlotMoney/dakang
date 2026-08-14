@@ -112,7 +112,8 @@
   async function handleSubmit() {
     await formRef.value?.validate()
     if (!props.deviceId) return
-    // 锁机属高风险操作：显式确认（完整二次验证 openSafe 为商业一期口径）
+    // 单台锁机＝单台可逆档（D-423）：按功能点权限 + 操作日志 + 这一次显式确认。
+    // 恒加闸档（紧急停机/价格同步）与范围 ≥ 水站的批量操作走批量页的二级认证，本入口结构上到不了那两档。
     if (formData.cmdType === CMD_TYPE_LOCK) {
       await ElMessageBox.confirm(
         `锁机后设备 ${props.deviceNo} 停止取水，确认锁机？`,

@@ -104,7 +104,8 @@ class AdminDeliveryTraceAssemblyTest {
         order.setOrderType(3);
         order.setUserId(6L);
         order.setUserName("张女士");
-        order.setUserPhone("13900001111");
+        // 列表投影进入追溯前已过 decorateActorAndOwner：原值列被清空，只剩脱敏号
+        order.setActorMaskedPhone("139****1111");
         order.setStationName("光谷软件园水站");
         order.setOrderAmount(4200L);
         order.setPayWay(2);

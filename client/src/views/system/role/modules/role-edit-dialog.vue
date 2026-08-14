@@ -79,17 +79,11 @@
   const formRef = ref<FormInstance>()
   const submitting = ref(false)
 
-  /**
-   * 弹窗显示状态双向绑定
-   */
   const visible = computed({
     get: () => props.modelValue,
     set: (value) => emit('update:modelValue', value)
   })
 
-  /**
-   * 表单验证规则
-   */
   const rules = reactive<FormRules>({
     roleName: [
       { required: true, message: '请输入角色名称', trigger: 'blur' },
@@ -106,9 +100,6 @@
     ]
   })
 
-  /**
-   * 表单数据
-   */
   const form = reactive<Omit<RoleListItem, 'id' | 'createTime' | 'updateTime'> & { id?: string }>({
     roleName: '',
     roleCode: '',
@@ -116,9 +107,6 @@
     roleSort: 1
   })
 
-  /**
-   * 监听弹窗打开，初始化表单数据
-   */
   watch(
     () => props.modelValue,
     (newVal) => {
@@ -126,9 +114,6 @@
     }
   )
 
-  /**
-   * 监听角色数据变化，更新表单
-   */
   watch(
     () => props.roleData,
     (newData) => {
@@ -157,9 +142,6 @@
     }
   }
 
-  /**
-   * 关闭弹窗并重置表单
-   */
   const handleClose = () => {
     visible.value = false
     formRef.value?.resetFields()

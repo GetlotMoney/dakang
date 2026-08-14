@@ -85,15 +85,11 @@ public class MiniAuthServiceImpl implements IMiniAuthService {
         WsUser user = findUsableByOpenid(openid);
         if (ObjectUtil.isNull(user)) {
             if (phonelessRegisterEnabled) {
-                // 仅微信身份建号：小程序主体未过微信认证时，getPhoneNumber 组件被平台禁用（点击不弹窗、
-                // 回调不触发），拿不到 phoneCode，走原路径新用户永远停在 UNBOUND、整条登录链断死。
-                // 此处以 openid 直接建号、手机号留空，登录后在「我的」自助补绑。
+                // 仅微信身份建号：getPhoneNumber 组件被平台禁用时新用户会永远停在 UNBOUND，
+                // 此分支以 openid 直接建号、手机号自助补绑；默认关闭，留作平台侧组件不可用的兜底。
                 BoundUser created = bindTx.registerByOpenid(openid);
-                // D-418：注册建号事务已提交后触发注册送（幂等、失败不阻断登录）。
-                // 并发同 openid 竞态里只有真正 insert 成功的那次 newlyCreated=true，不双发。
-                if (created.newlyCreated()) {
-                    registerGiftService.grantIfEnabled(created.id());
-                }
+                // D-418 赠卡不在这里发：无手机号的账号不可联系、不可人工找回，
+                // 挂点已后移到首次绑号成功点（bindPhone / bindPhoneForCurrentUser）
                 return boundResult(created.id(), created.userName(), created.userPhone());
             }
             // 未绑定：下发一次性 bindTicket（128bit 随机、绑 appid/openid/purpose/签发时间，TTL 5min）。
@@ -108,6 +104,11 @@ public class MiniAuthServiceImpl implements IMiniAuthService {
         // 会话已建立，无需票据；手机号仍由服务端向微信换取，绝不信前端直传号码。
         String phone = phoneAdapter.resolvePhone(bo.getPhoneCode());
         BoundUser bound = bindTx.bindPhoneToCurrentUser(userId, phone);
+        // D-418 赠卡挂点（游客态）：判据 phoneNewlyBound 而非「调用成功」——幂等复绑也会成功返回，
+        // 判据取舍详见 bindPhone 同名判据处
+        if (bound.phoneNewlyBound()) {
+            registerGiftService.grantIfEnabled(bound.id());
+        }
         // 补绑不换会话：沿用当前 Token，只回吐刷新后的上下文，避免用户在成功后被动登出。
         return accountContextOf(bound.id(), bound.userName(), bound.userPhone());
     }
@@ -135,8 +136,9 @@ public class MiniAuthServiceImpl implements IMiniAuthService {
 
         // 4) 数据库绑定在独立事务内完成；返回即代表已提交，随后才签发 Token（提交失败则抛异常、绝不签发）。
         BoundUser bound = bindTx.bind(openid, phone);
-        // D-418：绑定链里手机号首次建号同样是「注册成功」（另两分支复用既有账号，flag=false）
-        if (bound.newlyCreated()) {
+        // D-418 判据只能是 phoneNewlyBound：用 newlyCreated 会让游客态绑号用户拿不到卡（账号早建好），
+        // 无条件发会让存量老用户挂 openid 时白得一张——两种错法方向相反
+        if (bound.phoneNewlyBound()) {
             registerGiftService.grantIfEnabled(bound.id());
         }
 

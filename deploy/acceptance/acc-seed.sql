@@ -123,3 +123,66 @@ INSERT IGNORE INTO `ws_split_config`
 (9803, 0, 1, '20260101000000', 1, '20260101000000', 2, 1, 6000, '20260101000000', '配送-机主 60%（演示值）'),
 (9804, 0, 1, '20260101000000', 1, '20260101000000', 2, 2, 3000, '20260101000000', '配送-配送员 30%（演示值）'),
 (9805, 0, 1, '20260101000000', 1, '20260101000000', 2, 3, 1000, '20260101000000', '配送-平台 10%（演示值）');
+
+-- ============================================================
+-- E2E-09 商城验收种子（S1~S16 全链所需的最小真实底座）。
+--
+-- ID 段 99xx，与既有 9x xx 段互不重叠：
+--   9901       ws_mall_category           验收品类
+--   9911/9912  ws_mall_product            桶装水 / 净水滤芯
+--   9921~9923  ws_mall_sku                两款商品共三个 SKU
+--   9931/9932  ws_mall_warehouse          验收前置仓A（独占服务 420117）/ 前置仓B（420118，越权对照）
+--   9941~9944  ws_mall_stock              仓A 三个 SKU + 仓B 一个 SKU
+--   9951/9952  ws_mall_courier_scope      配送员 9601 只覆盖仓A
+--   9961/9962  ws_mall_warehouse_operator 运营 9001 只管仓A（acc-ops2=9002 一个仓都不管，作越权对照）
+--   9971       ws_user_address            用户 9001 的收货地址，区县码 420117 → 唯一命中仓A
+--
+-- 刻意让 acc-ops2(9002) 不绑定任何前置仓：S15 的越权拒绝必须由归属判据给出，
+-- 而不是由「这个账号没登录成功」之类的旁因给出。
+--
+-- 库存给足（各 200 件）：验收要反复跑，库存不足导致的失败会把真正的缺陷淹掉。
+-- ============================================================
+INSERT IGNORE INTO `ws_mall_category`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`CATEGORY_CODE`,`CATEGORY_NAME`,`CATEGORY_SORT`,`CATEGORY_STATUS`) VALUES
+(9901, 0, 1, '20260801000000', 1, '20260801000000', 'ACC-MALL-CAT-1', '验收饮水用品', 1, 1);
+
+INSERT IGNORE INTO `ws_mall_product`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`PRODUCT_NO`,`CATEGORY_ID`,`PRODUCT_NAME`,`PRODUCT_SUBTITLE`,`COVER_URL`,`PRODUCT_DESC`,`PRODUCT_STATUS`,`VERSION`) VALUES
+(9911, 0, 1, '20260801000000', 1, '20260801000000', 'ACC-MALL-P-0001', 9901, '验收桶装水', '18.9L 家庭装', NULL, '商城验收专用商品', 2, 1),
+(9912, 0, 1, '20260801000000', 1, '20260801000000', 'ACC-MALL-P-0002', 9901, '验收净水滤芯', 'PP 棉滤芯', NULL, '商城验收专用商品', 2, 1);
+
+INSERT IGNORE INTO `ws_mall_sku`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`SKU_NO`,`PRODUCT_ID`,`SKU_NAME`,`SPEC_SNAP`,`SALE_PRICE`,`MARKET_PRICE`,`WEIGHT_GRAM`,`SKU_STATUS`,`VERSION`) VALUES
+(9921, 0, 1, '20260801000000', 1, '20260801000000', 'ACC-MALL-S-0001', 9911, '单桶', '{"规格":"18.9L"}', 1800, 2200, 19500, 1, 1),
+(9922, 0, 1, '20260801000000', 1, '20260801000000', 'ACC-MALL-S-0002', 9911, '两桶装', '{"规格":"18.9L×2"}', 3400, 4400, 39000, 1, 1),
+(9923, 0, 1, '20260801000000', 1, '20260801000000', 'ACC-MALL-S-0003', 9912, '标准滤芯', '{"型号":"PP-10"}', 900, 1200, 300, 1, 1);
+
+-- 服务范围形状与 MallWarehouseServiceImpl.buildScopeJson 一致（districts + 六位区县码）
+INSERT IGNORE INTO `ws_mall_warehouse`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`WAREHOUSE_NO`,`WAREHOUSE_NAME`,`CONTACT_NAME`,`CONTACT_PHONE`,`PROVINCE_CODE`,`CITY_CODE`,`DISTRICT_CODE`,`WAREHOUSE_ADDRESS`,`LONGITUDE`,`LATITUDE`,`SERVICE_SCOPE_JSON`,`WAREHOUSE_STATUS`,`VERSION`) VALUES
+(9931, 0, 1, '20260801000000', 1, '20260801000000', 'ACC-WH-001', '验收前置仓A', '仓管甲', '13999990011', '420000', '420100', '420117', '验收专区前置仓A', NULL, NULL, '{"scopeType":"districts","districtCodes":["420117"]}', 1, 1),
+(9932, 0, 1, '20260801000000', 1, '20260801000000', 'ACC-WH-002', '验收前置仓B', '仓管乙', '13999990012', '420000', '420100', '420118', '验收专区前置仓B', NULL, NULL, '{"scopeType":"districts","districtCodes":["420118"]}', 1, 1);
+
+INSERT IGNORE INTO `ws_mall_stock`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`WAREHOUSE_ID`,`SKU_ID`,`AVAILABLE_QTY`,`RESERVED_QTY`,`VERSION`) VALUES
+(9941, 0, 1, '20260801000000', 1, '20260801000000', 9931, 9921, 200, 0, 1),
+(9942, 0, 1, '20260801000000', 1, '20260801000000', 9931, 9922, 200, 0, 1),
+(9943, 0, 1, '20260801000000', 1, '20260801000000', 9931, 9923, 200, 0, 1),
+(9944, 0, 1, '20260801000000', 1, '20260801000000', 9932, 9921, 200, 0, 1);
+
+-- 配送归属：9601 只覆盖仓A。仓B 无任何配送员，S15 越权对照据此成立
+INSERT IGNORE INTO `ws_mall_courier_scope`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`WAREHOUSE_ID`,`COURIER_ID`) VALUES
+(9951, 0, 1, '20260801000000', 1, '20260801000000', 9931, 9601);
+
+-- 前置仓操作员：运营 9001 只管仓A；9002 刻意不给任何绑定
+INSERT IGNORE INTO `ws_mall_warehouse_operator`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`WAREHOUSE_ID`,`OPERATOR_ID`) VALUES
+(9961, 0, 1, '20260801000000', 1, '20260801000000', 9931, 9001);
+
+-- 收货地址：区县码 420117 唯一命中仓A。刻意避开演示仓也服务的 420111——
+-- 选仓规则是「候选中按仓库ID升序取第一个」，与演示仓共用区县码会让验收单落到 ID 更小的演示仓，
+-- 而操作员/配送员只绑定了验收仓，整条链会因为一个种子巧合而全红。
+INSERT IGNORE INTO `ws_user_address`
+(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`USER_ID`,`CONTACT_NAME`,`CONTACT_PHONE`,`REGION`,`DISTRICT_CODE`,`ADDRESS_DETAIL`,`IS_DEFAULT`,`LOCATION_AUTHORIZED`) VALUES
+(9971, 0, 1, '20260801000000', 1, '20260801000000', 9001, '验收卡主', '13999990001', '湖北省武汉市新洲区', '420117', '验收专区商城收货点1号', 1, 0);

@@ -6,12 +6,6 @@ import lombok.Data;
 
 import jakarta.validation.constraints.NotNull;
 
-/**
- * @ClassName PageBo
- * @Author xs
- * @Date 2024/6/11 9:00
- * @Version 1.0
- */
 @Data
 public class PageBo {
     @NotNull(message = "current不能为空", groups = {PageGroup.class})

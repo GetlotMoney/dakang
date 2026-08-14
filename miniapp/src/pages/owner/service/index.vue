@@ -6,8 +6,8 @@ import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
 import { newDeliveryRequestId, uploadDeliveryMedia } from '@/api/delivery'
 import { deviceApi } from '@/api/device'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import AppPrototypeNotice from '@/components/prototype-notice.vue'
 import {
   SERVICE_STATUS_LABELS,
@@ -33,9 +33,6 @@ const MAX_EVIDENCE_COUNT = 3
 
 const message = useMessage()
 const toast = useToast()
-
-/** device 域接真时：申报生成真实工单、凭证真实上传（文案与行为同步分流，不再是原型请求）。 */
-const isRealDevice = currentMode('device') === 'real'
 
 const loading = ref(true)
 const errorMessage = ref('')
@@ -153,22 +150,18 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
-    let evidenceRefs: string[]
-    if (isRealDevice) {
-      // 逐张真实上传换受控 mediaKey；任一失败整体失败，绝不提交半套证据
-      evidenceRefs = []
-      for (const item of evidences.value) {
-        evidenceRefs.push(await uploadDeliveryMedia(item.localPath, 'workorder'))
-      }
-      if (!submissionRequestId.value) {
-        submissionRequestId.value = newDeliveryRequestId()
-      }
+    // 逐张真实上传换受控 mediaKey；任一失败整体失败，绝不提交半套证据。
+    // 这里曾有一条回落分支编造 `OSR-EV-1` 这样的键，并且把 requestId 传成 undefined：
+    // 工单显示带凭证但点开是空的，且失去幂等——重复提交会开出两张工单。
+    const evidenceRefs: string[] = []
+    for (const item of evidences.value) {
+      evidenceRefs.push(await uploadDeliveryMedia(item.localPath, 'workorder'))
     }
-    else {
-      evidenceRefs = evidences.value.map((_, index) => `OSR-EV-${index + 1}`)
+    if (!submissionRequestId.value) {
+      submissionRequestId.value = newDeliveryRequestId()
     }
     const created = await deviceApi.createOwnerServiceRequest({
-      requestId: isRealDevice ? submissionRequestId.value : undefined,
+      requestId: submissionRequestId.value,
       deviceNo: model.deviceNo,
       serviceType: model.serviceType,
       description: model.description,
@@ -200,20 +193,18 @@ async function handleSubmit() {
     <wd-message-box />
     <AppPrototypeNotice domain="device" />
 
-    <view v-if="loading" class="page-section muted-text">
-      加载中…
+    <view v-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="errorMessage" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain size="small" @click="backOr('O01')">
-              返回
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain size="small" @click="backOr('O01')">
+            返回
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else>
@@ -278,7 +269,7 @@ async function handleSubmit() {
               </view>
             </view>
           </template>
-          <wd-status-tip v-else image="content" tip="暂无报修或配件请求" />
+          <AppPageState v-else state="empty" message="暂无报修或配件请求" />
         </wd-card>
       </view>
 
@@ -337,7 +328,7 @@ async function handleSubmit() {
                   >
                     <image :src="item.localPath" mode="aspectFill" class="evidence-image" />
                     <view class="evidence-remove" @click="removeEvidence(index)">
-                      <wd-icon name="close" size="12px" color="#fff" />
+                      <wd-icon name="close" size="12px" color="var(--app-text-inverse)" />
                     </view>
                   </view>
                   <view
@@ -363,17 +354,10 @@ async function handleSubmit() {
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  width: 100%;
-}
-
 .service-trace {
   margin-top: 8px;
   padding: 8px;
-  background: #f7f8fa;
+  background: var(--app-bg-page);
   border-radius: 6px;
 }
 
@@ -396,7 +380,7 @@ async function handleSubmit() {
 
 .service-item--highlight {
   border-color: var(--wot-color-theme, var(--app-color-primary));
-  background: rgba(93, 135, 255, 0.08);
+  background: var(--tint-primary);
 }
 
 .service-item-head {
@@ -458,7 +442,7 @@ async function handleSubmit() {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--mask-overlay);
 }
 
 .evidence-add {
@@ -467,7 +451,7 @@ async function handleSubmit() {
   justify-content: center;
   width: 72px;
   height: 72px;
-  border: 1px dashed rgba(100, 106, 115, 0.4);
+  border: 1px dashed var(--app-text-disabled);
   border-radius: 8px;
 }
 

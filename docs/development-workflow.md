@@ -2,12 +2,12 @@
 
 ## 1. 当前阶段与核心原则
 
-页面验收与接真状态以 `docs/demo-module-status.md` 为唯一状态源；B01～B24 需求能力链与宏观 `E2E-*` 业务旅程状态以 `docs/requirements/demo-business-chain-matrix.md` 为唯一来源。Demo 页面基线继续保留，但全项目不再统一默认处于 Demo 定型阶段；开发必须按每条宏观业务链的实际状态分类推进。PC 5+1 信息架构和小程序统一账号能力模型仍是页面基线，不因某条链进入契约或真实实现而被推翻。
+页面验收与接真状态以 `docs/demo-module-status.md` 为唯一状态源；B01～B24 需求能力链与宏观 `E2E-*` 业务旅程状态以 `docs/requirements/demo-business-chain-matrix.md` 为唯一来源。Demo 页面基线继续保留，但全项目不再统一默认处于 Demo 定型阶段；开发必须按每条宏观业务链的实际状态分类推进。PC 一级信息架构以 `client/src/config/businessNavigation.ts` 的职责工作区投影为准，小程序统一账号能力模型保持不变；两者均不因某条链进入契约或真实实现而被推翻。
 
 核心顺序：
 
 ```text
-业务故事 → 接口契约 → 页面 + Mock → 用户验收
+业务故事 → 接口契约 → 页面实现 → 用户验收
                                     ↓ 通过
                           SQL → 后端 → 接真 → 联调闭环
 ```
@@ -16,10 +16,9 @@
 
 1. **先判断业务链阶段**：开始任务前先读对应业务链矩阵、最新用户决策和已有契约，再判断是 Demo 定型、契约待验收、真实实现还是已有模块维护。
 2. **先定契约，再写页面**：页面字段、状态和操作必须能追溯到接口契约，禁止页面与 API 各自造一套字段。
-3. **先 Mock 演示，再接真实接口**：Mock 用于验证产品形态和业务故事，不代表真实业务已经完成。
-4. **一道明确验收门**：未经用户确认，不从当前业务链的 Demo 或契约待验收阶段自动进入实现；用户可以一次授权一个边界明确的纯代码实现包。
-5. **授权包内连续落地**：已授权包内的正常代码步骤不按人为切片反复停工；只完成授权边界内工作，不把纯代码授权扩张为 SQL、主库或外部副作用授权。
-6. **安全规则始终生效**：Demo 也不得引入万能密码、鉴权绕过、真实资金副作用或绕开 `ws_command` 的设备控制。
+3. **页面可操作不等于业务已完成**：终态、异常分支与资金/设备动作须有服务端证据，不得以界面表现代替。
+4. **一道明确验收门**：未经用户确认，不从当前业务链的 Demo 或契约待验收阶段自动进入实现；授权边界（纯代码包 vs 需独立授权的副作用）唯一源见 `AGENTS.md`。
+5. **安全规则始终生效**：Demo 也不得引入万能密码、鉴权绕过、真实资金副作用或绕开 `ws_command` 的设备控制。
 
 ## 2. 规则优先级与唯一来源
 
@@ -33,7 +32,7 @@
 4. `AGENTS.md` 中“审核通过后的真实模块开发流程”。
 5. 各目录 Skill 的代码与格式规范。
 
-`AGENTS.md` 中的 SQL → 后端 → 前端 → 联调流程只适用于已经通过验收门并取得实施授权的业务链。E2E-01～E2E-03 已完成模拟环境内部验收；后续链路状态只从业务链矩阵读取，本文不复制具体进度。
+`AGENTS.md` 中的 SQL → 后端 → 前端 → 联调流程只适用于已经通过验收门并取得实施授权的业务链。链路状态唯一源见 `docs/requirements/demo-business-chain-matrix.md` §6，本文不复制具体进度。
 
 ## 3. 接到任务后先分类
 
@@ -58,7 +57,7 @@
 
 适用情形：Bug 修复、样式微调、性能优化、安全加固、已有真实接口的小范围变更。
 
-执行：只走与变更范围相称的检查、修改和验证；不得为了套流程无故重做模块，也不得把真实接口退回 Mock。
+执行：只走与变更范围相称的检查、修改和验证；不得为了套流程无故重做模块，也不得把真实接口退回假数据。
 
 ### D. 分析或评审任务
 
@@ -74,15 +73,12 @@
 
 - `AGENTS.md`、已有需求和项目边界；
 - `docs/requirements/README.md`、`demo-business-chain-matrix.md`，并在 `requirements-pool.csv` 中检索对应 REQ ID、验收标准、依赖和人工确认点；
-- 当前模块的路由、页面、API、Mock、字典和相关 SQL；
-- PC 前端开发必须完整阅读 `client/.agents/skills/art-design-pro/SKILL.md`；
-- 小程序开发必须完整阅读 `miniapp/AGENTS.md`、`miniapp/README.md` 和 `miniapp/.agents/skills/wot-ui/SKILL.md`，并按实际组件读取该 Skill 指向的 `references/*.md`；
-- 涉及设备契约必须同时阅读 `docs/mqtt-topics.md`；
-- 仅当进入数据库/后端工作时，再完整读取 `mysql8`、`spring-boot3` Skill。
+- 当前模块的路由、页面、API、字典和相关 SQL；
+- 本任务对应端/层的 Skill 与必读文档，唯一登记见 `AGENTS.md` 的 Skill 表。
 
 先复用现有结构和命名。用户未要求的新角色、新模块、新表、新状态不得凭空扩张。
 
-需求池原始 Excel 是历史快照，不是自动实施授权。用户最新确认或 `docs/requirements/decisions.md` 中较新的决策覆盖旧口径；范围变化应先记入决策日志。
+范围变化（新增或删减需求、改变链边界、调整验收口径）**必须先记入 `docs/requirements/decisions.md`** 再开工；口径以用户最新确认与 decisions.md 中较新的决策为准，二者优先于需求池旧快照。
 
 ### D1：业务故事与页面 PRD
 
@@ -100,41 +96,14 @@
 
 ### D2：接口契约先行
 
-PC 端以 `client/src/api/<module>.ts` 作为前端可执行契约的主要来源；小程序初始化后以 `miniapp/src/api/<domain>.ts` 承载同等职责。契约必须先于页面或与页面同一批完成，并包含：
+PC 端以 `client/src/api/<module>.ts` 作为前端可执行契约的主要来源；小程序以 `miniapp/src/api/<domain>.ts` 承载同等职责。契约必须先于页面或与页面同一批完成，并包含：
 
 1. 查询参数、表单 DTO、列表项、详情 VO、操作参数的 TypeScript 类型；
 2. 字段单位、枚举值、是否可空和派生规则；
-3. 前端可运行的 Mock 实现；
-4. 计划中的真实 POST 路径和请求体，标注 `TODO: 替换为真实接口`；
-5. Mock 与真实实现保持相同函数名、参数和返回类型，接真时页面调用方原则上不改。
+3. 计划中的真实 POST 路径和请求体，标注 `TODO: 替换为真实接口`；
+4. 接口函数名、参数与返回类型一经冻结即保持稳定，实现变更不改调用方。
 
-达康接口契约固定口径：
-
-```typescript
-/** HTTP 原始响应；请求封装成功后会返回 data，不把外壳交给页面 */
-interface ApiResponse<T> {
-  code: number; // 0=成功
-  msg: string;
-  data: T;
-}
-
-/** 后端 PageDataVo 的线上结构；Long 会被序列化为 string */
-interface BackendPageData<T> {
-  list: T[];
-  total: string;
-}
-
-/** API 适配层提供给页面/Mock 的稳定结构 */
-interface PageResult<T> {
-  list: T[];
-  total: number;
-}
-
-interface PageQuery {
-  current: number;
-  size: number;
-}
-```
+接口外壳与分页契约的唯一源是可执行代码：`miniapp/src/api/common.ts`（`ApiEnvelope` / `BackendPageData` / `PageQuery` / `PageResult`）与 PC 端 `client/src/api/*.ts`、`client/src/types/common/response.ts`；文档不复制类型定义。
 
 字段映射必须遵循：
 
@@ -145,25 +114,20 @@ interface PageQuery {
 - 已有字典优先调用 `/api/dict/listByType`；Demo 新枚举可先在 API 文件维护有类型的本地选项并标记“待注册 dictType”，接真阶段检查编号冲突后注册并切换为真实字典。
 - 菜单类型统一为 `1=目录、2=菜单、3=功能点`，不得反转。
 
-### D3：页面 + Mock
+### D3：页面实现
 
-PC 页面遵循 `art-design-pro` Skill 和现有 5+1 信息架构。小程序页面遵循 `miniapp/AGENTS.md`、`wot-ui` Skill 及所用组件的参考文档，不混用 PC 组件和布局规则。页面形态由业务决定，不强制每页使用相同结构。
+PC 页面遵循 `art-design-pro` Skill 和现有一级信息架构。小程序页面遵循 `miniapp/AGENTS.md`、`wot-ui` Skill 及所用组件的参考文档，不混用 PC 组件和布局规则。页面形态由业务决定，不强制每页使用相同结构。
 
-Mock 必须满足：
+**Mock 阶段已结束**（2026-08-02 小程序 Mock 基建整体退役；PC 侧无 `src/mock` 目录、无 mock 引用，三端恒接真实后端）。作业规范随之失效，只保留两条仍然成立的回退闸：
 
-1. 数据固定、可复现，禁止随机数导致每次演示不一致；
-2. 覆盖主要枚举、空状态、边界和异常状态；
-3. 跨页面使用相同订单号、设备号、任务号、金额和统计口径；
-4. 增删改/裁决可在内存中形成演示闭环，但必须注明刷新后重置；
-5. 页面明显标识 Mock 边界，不能让“页面可操作”被误解为“后端已完成”；
-6. 已有真实接口不得为了方便被退回 Mock；允许同一模块“已真实部分 + 待定型 Mock 部分”并存，但 API 注释和页面提示必须说明数据来源；
-7. Mock 仅存在于前端；后端不得加入 Demo 鉴权绕过、万能密码、虚假支付结果或缺少终态跟踪的设备指令。
+1. 已有真实接口**不得为了方便被退回 Mock 或写死假数据**；确需临时占位必须在 API 注释与页面提示写明数据来源。
+2. 后端不得加入 Demo 鉴权绕过、万能密码、虚假支付结果或缺少终态跟踪的设备指令（根 `AGENTS.md` 铁律 5 同源，例外只有已裁决的 `/mini/test-login/by-phone`）。
 
-当前 5+1 菜单骨架已定型。调整现有模块内页面可直接使用现有导航；新增一级模块或改变 5+1 边界必须先取得用户确认，不得借 Demo 之名扩张一期范围。
+调整现有模块内页面可直接使用现有导航；新增一级模块或改变一级信息架构边界必须先取得用户确认，不得借 Demo 之名扩张范围。
 
 ### D4：Demo 自测与交付验收
 
-运行入口以 `docs/runtime-entrypoints.md` 为唯一口径。PC 端 `13321` 只用于前端 HMR 迭代；最终页面自测、截图和用户验收必须先构建部署，再在 `http://localhost:8081/#/...` 完成。`13330` 仅为 API，禁止当作页面入口。小程序初始化后必须在 `miniapp/package.json` 和运行入口文档中登记唯一开发、构建与验收命令；最终 D4 以微信开发者工具中的实际编译和交互为准，H5 预览只能作为补充检查。
+运行入口与端口职责以 `docs/runtime-entrypoints.md` 为唯一口径，页面访问强制见 `AGENTS.md`；小程序最终 D4 以微信开发者工具中的实际编译和交互为准，H5 预览只能作为补充检查。
 
 至少完成：
 
@@ -171,22 +135,22 @@ Mock 必须满足：
 - 列表、搜索/重置、详情、弹窗、分页和关键状态操作可演示；
 - 加载中、空数据、失败、提交中和防重复提交按页面风险覆盖；
 - 跨页跳转携带的查询参数能被目标页消费；
-- Mock 统计、订单、设备、指令、配送和申诉故事线不互相穿帮；
+- 统计、订单、设备、指令、配送和申诉故事线不互相穿帮；
 - 对应端的 TypeScript 类型检查通过；
 - 对应端的格式检查通过；
 - 有条件时进行浏览器实测，并为复杂主流程保存必要的验收记录。
 
-小程序还必须验证能力入口与撤销、页面返回栈、扫码入口、授权拒绝、加载/空/失败状态和 Mock 刷新边界；涉及微信能力的流程不能以 H5 成功冒充微信开发者工具已通过。
+小程序还必须验证能力入口与撤销、页面返回栈、扫码入口、授权拒绝、加载/空/失败状态；涉及微信能力的流程不能以 H5 成功冒充微信开发者工具已通过。
 
 交付时必须使用准确状态：
 
-- **Demo 待验收**：页面和 Mock 已完成，等待用户确认；
+- **Demo 待验收**：页面已完成，等待用户确认；
 - **Demo 已定型**：用户已经明确确认；
 - 不得只写“模块已完成”，以免被误解为真实后端已完成。
 
 模块状态必须同步到 `docs/demo-module-status.md`。页面验收和真实接口是两个独立维度，只能根据用户明确验收、实际代码和联调结果更新，禁止凭推断把状态提升为“已定型”或“真实链路已闭环”。
 
-业务链状态只在 `docs/requirements/demo-business-chain-matrix.md` 维护：B01～B24 需求能力链继续拆分为“PC 责任状态”和“整链实现状态”；独立编号的宏观 `E2E-*` 旅程分别记录“内部技术闭环、外部能力闭环、用户验收”，且不参与 B 链计数或需求唯一映射。协议模拟器或 Pay-Sim 通过只能提升内部技术证据，不能提升外部能力状态。修改任一层的范围或状态后必须运行 `python3 tools/check-demo-baseline.py`；不得在验收报告、状态台账或交付说明中维护竞争性状态源或复制另一套计数。
+业务链状态只在 `docs/requirements/demo-business-chain-matrix.md` 维护；三维口径、计数规则与改后必跑的门禁要求唯一源见 `AGENTS.md`，不得在验收报告、状态台账或交付说明中维护竞争性状态源。
 
 ## 5. 验收门
 
@@ -206,9 +170,9 @@ Mock 必须满足：
 - 用户只要求继续打磨 Demo；
 - 用户未回复。
 
-验收未通过时可以继续修页面、契约和 Mock，但不得自动创建新业务表、实现真实资金入账或扩大设备控制能力。
+验收未通过时可以继续修页面与契约，但不得自动创建新业务表、实现真实资金入账或扩大设备控制能力。
 
-一个边界明确的纯代码实现包可以连续完成编码、本地无副作用测试和文档同步。主库迁移、持久余额或水量变化、Pay-Sim 实际运行、真实支付、外部调用和设备指令需要独立授权。
+授权边界（纯代码实现包可连续落地 vs 主库迁移、持久资金/水量变化、Pay-Sim 实际运行、真实支付、外部调用和设备指令需独立授权）唯一源见 `AGENTS.md`。
 
 ## 6. 阶段二：真实实现（P0～P4）
 
@@ -223,18 +187,18 @@ Mock 必须满足：
 
 ### P1：SQL 与字典
 
-完整执行 `AGENTS.md` 的数据库阶段：读取 `mysql8` Skill、检查 DictType 冲突、编写表/字典/权限/测试数据、执行到本地数据库，并同步 `deploy/mysql/init/`。幂等写法按约束事实选择——带显式主键 ID 的用 `INSERT IGNORE`，字典表（无唯一键）必须用 `NOT EXISTS`，详见 `AGENTS.md` 字典段。
+完整执行 `AGENTS.md` 的数据库阶段：读取 `mysql8` Skill、检查 DictType 冲突、编写表/字典/权限/测试数据、执行到本地数据库，并同步 `deploy/mysql/init/`。幂等写法按约束事实选择——带显式主键 ID 的用 `INSERT IGNORE`，字典表（无唯一键）必须用 `NOT EXISTS`，详见 `server/.agents/skills/mysql8/SKILL.md`。
 
 ### P2：后端实现
 
 完整执行 `spring-boot3` Skill，按 Enum、Po、Bo、Vo、Mapper、Service、Controller、XML 实现。涉及资金与设备时逐条落实七条安全铁律；机主、渠道、配送员接口在 Service 层强制数据范围。
 
-### P3：替换 Mock
+### P3：接口实现
 
-保持页面 API 函数签名稳定，将 Mock 内部实现替换为真实 `request.post`：
+保持页面 API 函数签名稳定，实现走真实 `request.post`：
 
 - 枚举切换为真实字典；
-- 删除或隔离不再需要的 Mock 数据，禁止真实与 Mock 悄悄混算；
+- 禁止真实数据与占位数据悄悄混算；
 - 接口适配、单位换算、时间格式化和派生字段集中在 API 层；
 - 路由、菜单 SQL、组件路径和权限值逐项核对。
 
@@ -245,7 +209,7 @@ Mock 必须满足：
 - 页面显示的数据确实来自数据库；
 - 刷新后状态不会回退；
 - 主流程能从起点走到结果，并能在详情/流水/审计中追溯；
-- Mock 阶段演示过的异常和边界在真实状态机中有对应处理；
+- 契约中列出的异常和边界在真实状态机中有对应处理；
 - 资金与设备链路包含幂等、并发、超时、重复消息等专项验证。
 
 交付状态使用：
@@ -267,11 +231,10 @@ Mock 必须满足：
 
 - [ ] 角色、入口、主流程、异常和边界清楚
 - [ ] API 类型与字段单位明确
-- [ ] Mock 可复现并覆盖主要状态
 - [ ] 页面、搜索、详情、操作和跳转可演示
 - [ ] 跨页面故事线和统计口径一致
 - [ ] 类型检查、格式检查、页面验证通过
-- [ ] Mock 边界与待确认项已标识
+- [ ] 待确认项已标识
 - [ ] 用户明确验收
 
 ### 真实实现完成清单
@@ -280,7 +243,7 @@ Mock 必须满足：
 - [ ] SQL、字典、菜单、权限、测试数据已执行并同步部署目录
 - [ ] 后端分层和权限符合 Skill
 - [ ] 资金/设备/数据范围安全规则逐条满足
-- [ ] Mock 已替换且页面调用签名稳定
+- [ ] 页面调用签名稳定
 - [ ] 编译、接口、页面和主链路联调通过
 - [ ] 数据可从订单、指令、流水或审计中追溯
 
@@ -289,22 +252,7 @@ Mock 必须满足：
 - [ ] 主库备份 → 迁移执行 → 前置/后置不变式 + 未触碰业务表 CHECKSUM 零漂移
 - [ ] 后端：`server/target` JAR → `deploy/dist/server/dakang-server.jar` → 重启 `dakang-server`
 - [ ] PC：`client` `build:demo` → `deploy/dist/client/` → 重启 `dakang-web`
-- [ ] **小程序：`miniapp` `pnpm dev:mp-weixin` 重建 `dist/dev/mp-weixin`**——
-      E2E-06/07/08 三链连续漏做此步，用户在微信开发者工具打开的一直是数周前的旧产物，
-      新页面一个都看不到。必须核对产物 `project.config.json` 的 appid 与页面清单。
-      注意两个坑：① `build:mp-weixin` 走 production 模式只读 `env/.env`（appid=touristappid），
-      真实 appid 只在 `env/.env.development.local`，故验收产物必须用 dev 模式构建；
-      ② `VITE_SERVER_BASEURL` 写死局域网 IP，本机 IP 漂移后必须改该文件再重建，
-      否则小程序连不上后端（用 `ipconfig getifaddr en0` 核对）。
-- [ ] **小程序构建纪律（2026-08-01 产物污染事故）**——`dev:mp-weixin` 是 watch 进程，
-      杀 pnpm 包装进程不会杀掉真正的编译器；事故当晚累计 15 个孤儿编译器（最老的活了 29 小时）
-      各持启动时刻的 env 快照竞写同一 dist，产物按文件粒度混层（authMode 被旧快照写回 mock，
-      真机登录整晚间歇性失败）。构建前后必须执行：
-      ① 构建前 `pgrep -f "vite-plugin-uni/bin/uni.js"` 必须为 0，有则 `pkill -f` 清掉；
-      ② "Build complete" 只表示编译完成、不代表落盘完毕，须等 dist 写入静默后再动产物；
-      ③ 构建后用 `pkill -f "vite-plugin-uni/bin/uni.js"` 按进程树终止并复核 pgrep 为 0；
-      ④ 产物核验不看构建日志，看内容：`build-fingerprint.json` 与页面内指纹一致、
-      `api/runtime.js` 的 `authMode` 等模式值符合预期、appid、后端 IP。
+- [ ] 小程序：必须以 dev 模式 `pnpm dev:mp-weixin` 重建 `dist/dev/mp-weixin`，并按内容核验产物（appid、后端 IP、`build-fingerprint.json` 指纹）；构建纪律、AppID 陷阱与 IP 漂移规则唯一源见 `miniapp/README.md`
 - [ ] 冒烟：新端点鉴权门、nginx 前缀路由、老链无回归
 
 ## 9. 交付与产物管理
@@ -320,7 +268,13 @@ Mock 必须满足：
 
 ```bash
 python3 tools/check-demo-baseline.py
+python3 tools/check-ui-copy.py
+python3 tools/check-enum-parity.py
+python3 tools/check-migration-safety.py
+python3 tools/check-secret-leak.py
 git diff --check
 ```
+
+各门禁挡什么、为什么，唯一源是各 `tools/check-*.py` 自身的 docstring，本文不做第二份转述。
 
 涉及持久数据的验收必须使用独立环境，或在执行前取得明确授权。自动化报告不能代替页面视觉复核、数据库核对或用户验收。

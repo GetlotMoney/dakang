@@ -14,19 +14,10 @@ import java.time.format.DateTimeParseException;
  * 永久套餐（expireDays = NULL）：返回 null（EXPIRE_TIME 保持 SQL NULL = 永久）
  * </pre>
  *
- * <p><b>为什么不复用/改造 {@link RechargeExpiry}（决策 A1 明令）：</b>
- * {@code RechargeExpiry.extend(currentExpireTime, ...)} 是 L2-B 充值续期公式
- * {@code max(currentExpireTime, paySuccessTime) + expireDays}，其中 {@code currentExpireTime=NULL}
- * 在 L2-B 语义里表示「既有永久卡」——若为了发卡而让 NULL 退化为从 paySuccessTime 起算，
- * 同一个入口就会把一张既有永久卡的充值续成有限卡，用户的永久权益被静默没收。
- * 两个类各管各的：L2-B 续期永远走 {@code RechargeExpiry}，L2-A 发卡永远走本类，互不引用对方公式。</p>
- *
- * <p><b>起算基准必须是权威 {@code paySuccessTime}，不得用创单时间或处理时间</b>（决策 A1）：
- * 用创单时间会把用户没付款的等待时间从有效期里吃掉；用异步 Worker 的处理时间则会在延迟重放时
- * 凭空多送有效期，且同一笔支付重放结果不稳定。本方法签名刻意不接收处理时间参数，编译期即杜绝误用。</p>
- *
- * <p>业务时区固定 Asia/Shanghai；时间一律 {@code yyyyMMddHHmmss} 字符串，
- * 校验严格程度与 {@link RechargeExpiry} 完全一致（长度 14 + 可解析，否则拒绝）。</p>
+ * <p>不复用 {@link RechargeExpiry}（A1 明令）：其 currentExpireTime=NULL 在 L2-B 语义是
+ * 「既有永久卡」，让 NULL 退化为从 paySuccessTime 起算会把永久卡充值续成有限卡。
+ * 起算基准必须是权威 paySuccessTime——创单时间会吃掉用户等待时间，处理时间会在延迟重放时
+ * 多送有效期；签名刻意不收处理时间参数。时间一律 Asia/Shanghai 的 yyyyMMddHHmmss。</p>
  */
 public final class NewCardExpiry {
 

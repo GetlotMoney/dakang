@@ -78,27 +78,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * E2E-04 包A 待接单取消的<b>真实 MySQL + 真实 Spring 事务</b>集成测试
- *（搭法对齐 {@code DeliveryOrderTxDbTest} / {@code DeliveryFulfillmentTxDbTest}）。
- *
- * <p>被测的三段事务边界全部用真实现装配（{@code DeliveryOrderTxServiceImpl} +
- * {@code AfterSaleActionTxServiceImpl} + 真实审计/消息服务）：Mock 掉其中任意一段，
- * 「任一失败全回滚」「认领与失败落痕独立提交」「同来源撞唯一键幂等」这三条性质就都测不到了。</p>
- *
- * <p>钉住的事实：</p>
- * <ol>
- *   <li><b>业务段三步同生共死</b>：任务 1→6、订单 2→7、售后动作 PENDING 三者同事务；
- *       订单 CAS 影响 0 行时任务状态与动作行必须一并回滚。</li>
- *   <li><b>拒绝路径零副作用</b>：已接单 / 订单非已支付 / 非本人 / COURIER_ID 被外力挂上，
- *       四条拒绝都不得留下任何状态、资金、消息或台账痕迹。</li>
- *   <li><b>幂等靠键</b>：同来源第二次登记撞 {@code uk_after_sale_source} 返回既有行，
- *       重复取消不产生第二条动作、不退第二次钱。</li>
- *   <li><b>资金段失败可区分</b>：业务段已提交而返还失败时，动作落 5需人工对账 且钱一分未动，
- *       用户话术必须是「处理中」而不是「已到账」。</li>
- *   <li><b>取消后 PC 配送追溯仍为 ok</b>（第三批矩阵扩展的运行时佐证）。</li>
- * </ol>
- *
- * <p>无 Docker 环境自动跳过。</p>
+ * E2E-04 包A 待接单取消真实 MySQL + Spring 事务集成测试（三段事务全用真实现）。
+ * 钉住：业务段三步（任务 1→6 / 订单 2→7 / 动作 PENDING）同生共死；拒绝路径零副作用；
+ * uk_after_sale_source 幂等靠键；资金段失败落 5需人工对账 且钱未动；取消后追溯仍 ok。
+ * 无 Docker 自动跳过。
  */
 @Testcontainers(disabledWithoutDocker = true)
 @ExtendWith(SpringExtension.class)
@@ -128,6 +111,19 @@ class DeliveryCancelTxDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -167,6 +163,7 @@ class DeliveryCancelTxDbTest {
                     .getResources("classpath:mapper/*/*.xml"));
             return new SqlSessionTemplate(factory.getObject());
         }
+
 
         @Bean
         MapperFactoryBean<TradeCardMapper> tradeCardMapper(SqlSessionTemplate t) {
@@ -298,6 +295,23 @@ class DeliveryCancelTxDbTest {
         com.jbk.serve.service.settlement.IInviteService inviteService() {
             // E2E-08 归因快照协作方：mock 恒返回 null 推荐人，归因行为由 AttributionDbTest 锁定
             return org.mockito.Mockito.mock(com.jbk.serve.service.settlement.IInviteService.class);
+        }
+
+        /** 订阅通知登记：真实实现而不是 mock——挂点行为由 DeliveryAutoRefillDbTest 锁定，
+         * 这里只需要 DeliveryOrderServiceImpl 能装配起来且登记写的是真表。 */
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper>
+                wechatNotifyOutboxMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue(
+                com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper m) {
+            return new com.jbk.serve.service.mini.notify.WechatNotifyEnqueue(m);
         }
 
         @Bean
@@ -497,12 +511,8 @@ class DeliveryCancelTxDbTest {
     }
 
     /**
-     * <b>本类最关键的一条：订单 CAS 影响 0 行时，已经成功的任务 1→6 必须一并回滚。</b>
-     *
-     * <p>构造方式是真实的 TOCTOU 而不是打桩：先在外层事务里做一次普通读固定 RR 读视图，
-     * 再用另一条连接把订单推出 2已支付 并提交。事务内 {@code selectById} 仍读到旧快照（status=2），
-     * 因此可履约栅栏放行、任务 CAS 命中 1 行；而订单 CAS 是当前读，看见的是最新已提交值 → 0 行 → 抛出。
-     * 只要有人把订单那步的影响行校验删掉或改成「≥0 就算过」，这条断言立刻变红。</p>
+     * 订单 CAS 影响 0 行时，已成功的任务 1→6 必须一并回滚。构造真实 TOCTOU：
+     * 外层事务先普通读定格 RR 快照，另一连接推走订单并提交——快照读放行、当前读 0 行抛出。
      */
     @Test
     void orderCasMissRollsBackTaskMoveAndPendingAction() {
@@ -592,12 +602,8 @@ class DeliveryCancelTxDbTest {
     }
 
     /**
-     * COURIER_ID 非空但状态仍为 1（被外力改写）→ 拒绝。
-     *
-     * <p>这是任务 CAS 刻意叠加的第二条件：接单事务同时写状态与配送员，只认状态时，
-     * 一个被改回 1 却仍挂着配送员的任务会被当成可取消——配送员已在路上，钱却退了。
-     * 编排层的只读断言（状态维度）在这里会放行，唯一拦住它的就是 CAS 的
-     * {@code COURIER_ID IS NULL}；删掉那一条这个用例立刻变红。</p>
+     * COURIER_ID 非空但状态被改回 1 → 拒绝：只认状态会把「配送员已在路上」的任务
+     * 当成可取消，唯一防线是 CAS 的 {@code COURIER_ID IS NULL}。
      */
     @Test
     void pendingTaskCarryingCourierIsRejectedByCasSecondCondition() {
@@ -682,11 +688,8 @@ class DeliveryCancelTxDbTest {
     }
 
     /**
-     * 同来源第二次登记撞 {@code uk_after_sale_source} → 返回既有行（幂等靠键，不靠应用层查重）。
-     *
-     * <p>直接驱动内核而不是再走一次编排：编排层在订单状态那一层就被拦住了，
-     * 永远走不到唯一键；而这把键正是「同一来源只允许一笔售后」的物理防线，
-     * 它挡的是重放、并发与将来任何绕过状态闸的新调用方。</p>
+     * 同来源二次登记撞 {@code uk_after_sale_source} → 返回既有行（幂等靠键）。
+     * 直接驱动内核：编排层在状态闸就被拦住，永远走不到唯一键。
      */
     @Test
     void createPendingIsIdempotentOnSourceKeyAndRejectsOwnershipDrift() {
@@ -724,11 +727,8 @@ class DeliveryCancelTxDbTest {
     }
 
     /**
-     * 资金段失败：业务段已提交（订单 7 / 任务 6），返还必须整体回滚且落 5需人工对账。
-     *
-     * <p>这条同时验证三段边界：认领若与资金同事务，回滚会把状态复原成 1待执行，
-     * 失败落痕的 CAS（前态 2执行中）就恒 0 行，动作将永远无终态、无错因。
-     * 用户话术也必须与「已到账」可区分——把在途退款说成已到账，用户就不会去核对。</p>
+     * 资金段失败：业务段已提交，返还整体回滚且落 5需人工对账。认领必须独立提交，
+     * 否则失败落痕 CAS 恒 0 行；用户话术须是「处理中」而非「已到账」。
      */
     @Test
     void refundFailureLeavesMoneyUntouchedAndMarksReconciliationRequired() {
@@ -793,7 +793,8 @@ class DeliveryCancelTxDbTest {
         item.setOrderType(3);
         item.setUserId(USER_ID);
         item.setUserName("张三");
-        item.setUserPhone("13900001111");
+        // 列表投影进入追溯前已过 decorateActorAndOwner：原值列被清空，只剩脱敏号
+        item.setActorMaskedPhone("139****1111");
         item.setStationId(STATION_ID);
         item.setStationName("测试站");
         return item;

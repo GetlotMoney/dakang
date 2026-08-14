@@ -28,14 +28,8 @@ import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 外部退款请求事务实现（E2E-04 包B）。
- *
- * <h3>依赖清单即安全边界：本类没有任何「把退款改成功」的能力</h3>
- * <p>本类<b>刻意不注入</b>退款事实收件箱 Mapper，也不注入任何卡/流水写入能力。
- * 它能做的只有两件事：按准入闸建一张 1退款中 的退款单，以及回填服务方受理凭据。
- * 「退款成功」必须由收件箱里的事实经 Worker 推进（R0-8）。
- * 把推进能力从依赖清单里删掉，任何想在这里「顺手标成功」的改动都必须先加字段和构造参数——
- * 那是评审一眼能看见的动作，而不是埋在分支里的一行。</p>
+ * 外部退款请求事务实现（E2E-04 包B）。依赖清单即安全边界：不注入事实收件箱与卡/流水写入能力，
+ * 只能建 1退款中 的退款单与回填受理凭据；「退款成功」必须由收件箱事实经 Worker 推进（R0-8）。
  *
  * @author dakang
  * @since 2026-07-29
@@ -60,10 +54,8 @@ public class RefundRequestTxServiceImpl implements IRefundRequestTxService {
     private final IAfterSaleActionTxService actionTxService;
 
     /**
-     * 从 PC 订单行受理“已付款未入账异常充值单”全额退款。
-     *
-     * <p>动作与本地退款单必须同一事务提交：只有动作没有退款单会留幽灵待办，只有退款单没有动作
-     * 则事实成功后没有订单终态落点。外部受理不在本方法内，由编排层在本事务提交后调用。</p>
+     * 从 PC 订单行受理「已付款未入账异常充值单」全额退款。动作与本地退款单必须同事务提交
+     * （缺一即幽灵待办或事实成功后无终态落点）；外部受理由编排层在本事务提交后调用。
      */
     @Override
     @Transactional(rollbackFor = Exception.class, propagation = Propagation.REQUIRES_NEW,
@@ -74,7 +66,7 @@ public class RefundRequestTxServiceImpl implements IRefundRequestTxService {
             throw new JbkException("退款受理说明不能为空且不得超过200字");
         }
 
-        // 能力闸必须早于锁与写入；微信未接入时不能先留动作再失败，更不能自动退化到 Sim。
+        // 能力闸必须早于锁与写入；微信未接入时不能先留动作再失败，更不能自动退化到 Sim
         refundSourceAdapter.requireOperable();
 
         WsOrder order = refundMapper.lockOrder(orderId);
@@ -84,7 +76,7 @@ public class RefundRequestTxServiceImpl implements IRefundRequestTxService {
         WsPayment payment = RefundEligibility.requireSinglePayment(refundMapper.lockPaymentsByOrder(order.getId()));
         RefundEligibility.requireMatchingSource(payment, refundSourceAdapter.currentSource());
 
-        // 所有准入证据在任何动作写入之前一次判完；失败时本事务零持久副作用。
+        // 准入证据在任何写入之前一次判完，失败时本事务零持久副作用
         long refundable = requireUnsettledPath(order, payment);
         WsAfterSaleAction draft = new WsAfterSaleAction()
                 .setSourceType(AfterSaleEnum.SourceType.RECHARGE_REFUND.getValue())
@@ -122,8 +114,7 @@ public class RefundRequestTxServiceImpl implements IRefundRequestTxService {
     public Long createPending(Long afterSaleId, Long opUserId, String now) {
         requireArgs(afterSaleId, opUserId, now);
 
-        // ── ① 能力闸：必须早于任何写库。见 IRefundSourceAdapter#requireOperable 的注释——
-        //    等写完退款单再发现发不出去，库里就留下一张永远推进不了、又无法判断是否已出款的单。
+        // ── ① 能力闸：必须早于任何写库（见 IRefundSourceAdapter#requireOperable）
         refundSourceAdapter.requireOperable();
 
         WsAfterSaleAction action = actionMapper.selectByIdIncludingDeleted(afterSaleId);
@@ -133,8 +124,7 @@ public class RefundRequestTxServiceImpl implements IRefundRequestTxService {
         if (ObjectUtil.notEqual(action.getDataStatus(), 0)) {
             throw new JbkException("售后动作已被逻辑删除，拒绝发起退款");
         }
-        // 只有「机构退款」这一种动作类型走外部退款。卡内退款/补偿走 ws_wallet_flow，
-        // 任务书 3.2 明令内部返还不得伪造 ws_refund —— 这道闸就是那条禁令的执行点。
+        // 只有「机构退款」走外部退款；任务书 3.2 明令内部返还不得伪造 ws_refund，此闸即执行点
         if (ObjectUtil.notEqual(action.getActionType(), AfterSaleEnum.ActionType.GATEWAY_REFUND.getValue())) {
             throw new JbkException("该售后动作不是机构退款类型，卡内返还不得写退款单");
         }
@@ -210,9 +200,7 @@ public class RefundRequestTxServiceImpl implements IRefundRequestTxService {
         if (opUserId == null || opUserId <= 0 || now == null || now.length() != TIME_LEN) {
             throw new JbkException("退款受理回填的操作人或业务时间非法");
         }
-        // 本方法自身就是 REQUIRES_NEW 事务，前态版本必须在本事务内重读：
-        // 调用方手上的版本是 createPending 提交前的快照，拿它做 CAS 恒 0 行
-        // （包A 的 markTerminal 踩过完全相同的坑）。
+        // 前态版本必须在本 REQUIRES_NEW 事务内重读：调用方手上是提交前快照，拿它做 CAS 恒 0 行
         WsRefund current = refundMapper.lockById(refundId);
         if (ObjectUtil.isNull(current)) {
             throw new JbkException("退款单不存在，无法回填受理凭据");
@@ -229,11 +217,8 @@ public class RefundRequestTxServiceImpl implements IRefundRequestTxService {
     }
 
     /**
-     * 权益批次路径（包D-5）：金额由受理时冻结的计划给出，本方法只核验资格与封顶。
-     *
-     * <p>批次由 {@code batchMapper} 只读回查：本类<b>没有</b>批次的写能力，
-     * 锁定动作在受理事务里已经做完（{@code EntitlementRefundTxServiceImpl.prepare}）。
-     * 这里只确认「它确实被这笔动作锁着」——资格判定绝不接受调用方的口头保证。</p>
+     * 权益批次路径（包D-5）：金额取受理时冻结的计划，本方法只核验资格与封顶。
+     * 批次只读回查、确认「确实被这笔动作锁着」——锁定动作在受理事务里已做完，本类无批次写能力。
      */
     private long requireEntitlementPath(WsAfterSaleAction action, WsOrder order, WsPayment payment) {
         WsCardEntitlementBatch batch = batchMapper.selectByOrderId(order.getId());
@@ -320,7 +305,7 @@ public class RefundRequestTxServiceImpl implements IRefundRequestTxService {
             throw new JbkException("退款发起人缺失，拒绝退款");
         }
         if (now == null || now.length() != TIME_LEN) {
-            // 不做「为空就取当前时间」的兜底：那会让退款单、事实与审计出现两套时钟
+            // 不做取当前时间的兜底：会让退款单、事实与审计出现两套时钟
             throw new JbkException("业务时间格式非法，拒绝退款");
         }
     }

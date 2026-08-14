@@ -16,10 +16,6 @@ import lombok.experimental.Accessors;
 import jakarta.validation.constraints.NotNull;
 
 /**
- * <p>
- * 
- * </p>
- *
  * @author xs
  * @since 2025-09-05
  */

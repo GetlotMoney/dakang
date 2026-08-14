@@ -119,7 +119,7 @@
   import { ElMessage } from 'element-plus'
   import { fetchAddDevice, fetchUpdateDevice, type DeviceItem } from '@/api/device'
   import { fetchStationList, type StationItem } from '@/api/station'
-  import { fetchWsUserPage, type WsUserItem } from '@/api/user'
+  import { fetchWsUserPage } from '@/api/user'
   import { fetchDictOptions, toDictOptions } from '@/utils/dict'
   import { DictTypeEnum } from '@/constants/dict'
 
@@ -173,7 +173,15 @@
   // 水站下拉
   const stationOptions = ref<StationItem[]>([])
   // 机主远程搜索
-  const ownerOptions = ref<WsUserItem[]>([])
+  // 选项 id 兼容两种来源：远程搜索来自用户列表（身份类 Long 恒为 string），
+  // 编辑回显来自设备行上的 ownerUserId（本域历史契约仍是 number）。
+  // 不做数值转换——Number() 会在超过 2^53 时静默改人。
+  interface OwnerOption {
+    id: string | number
+    userName?: string
+    userPhone?: string
+  }
+  const ownerOptions = ref<OwnerOption[]>([])
   const ownerLoading = ref(false)
   const simStatusOptions = ref<{ label: string; value: number }[]>([])
 
@@ -226,9 +234,7 @@
       })
       // 编辑回显机主选项（远程下拉初始为空会导致只显示 ID）
       if (row.ownerUserId && row.ownerUserName) {
-        ownerOptions.value = [
-          { id: row.ownerUserId, userName: row.ownerUserName, userPhone: '' } as WsUserItem
-        ]
+        ownerOptions.value = [{ id: row.ownerUserId, userName: row.ownerUserName, userPhone: '' }]
       }
     } else {
       Object.assign(formData, {

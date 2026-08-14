@@ -70,25 +70,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * E2E-04 包A 售后返还内核的<b>真实 MySQL + 真实 Spring 事务</b>集成测试。
- *
- * <p>这里钉住的每一条性质都无法用 Mock 证明——被测物本身就是「库层唯一键 + 行锁 + CAS 前态 +
- * 隔离级别 + Spring 回滚」的合力：</p>
- * <ol>
- *   <li><b>正向返还</b>：双支付方式下卡的两列精确变动、<b>混合返还只留一条流水</b>、
- *       AFTER 双列等于卡终值、动作落 SUCCESS、审计事件同事务落库。</li>
- *   <li><b>CAS 前态</b>：{@code refundCardAssets} 的每一条 WHERE 都是一个静默错账的堵口
- *       （余额前态 / 归属 / 注销 / 逻辑删除），而<b>过期卡必须放行</b>、
- *       <b>冻结卡放行但不得被自动解冻</b>——这两条是刻意的口径，不是遗漏。</li>
- *   <li><b>累计封顶（P0）</b>：串行超额拒绝之外，还必须在<b>真并发</b>下只返一次。
- *       这条并发用例保护的正是「RR 快照下封顶失效 ⇒ 同一订单可重复全额返还」那个 P0。</li>
- *   <li><b>幂等与回滚</b>：{@code uk_after_sale_source} 收敛重复登记，
- *       {@code uk_wallet_flow_biz_key} 让重复执行整体回滚，卡只增一次。</li>
- *   <li><b>状态机</b>：认领只认可认领态；终局落痕<b>不依赖调用方版本</b>（claim 已把版本 +1，
- *       调用方手上永远是旧版本，这是本批修的 P0）；重试耗尽升级为需人工对账。</li>
- * </ol>
- *
- * <p>无 Docker 环境自动跳过。</p>
+ * E2E-04 包A 售后返还内核真实 MySQL + Spring 事务集成测试。钉住：
+ * 正向返还（混合返还恰一条流水、AFTER=卡终值）；CAS 前态各 WHERE（过期卡放行、
+ * 冻结卡放行不解冻是刻意口径）；四元累计封顶真并发只返一次（RR 快照 P0）；
+ * uk_after_sale_source / uk_wallet_flow_biz_key 幂等回滚；终局落痕不依赖调用方版本。
+ * 无 Docker 自动跳过。
  */
 @Testcontainers(disabledWithoutDocker = true)
 @ExtendWith(SpringExtension.class)
@@ -126,11 +112,8 @@ class AfterSaleRefundTxDbTest {
     private static final String FUTURE = "20260730120000";
 
     /**
-     * 卡余额<b>读到的前态</b>相对库中真值的漂移量（分）。0 = 直通。
-     *
-     * <p>用于制造「读卡与 UPDATE 之间余额被并发改动」：真并发无法复现该窗口——
-     * {@code selectByIdForUpdate} 已持行 X 锁，别的事务物理上插不进来。这里只把<b>读到的前态</b>
-     * 拨歪，UPDATE 的 CAS、影响行数校验、抛出与 Spring 回滚全部是真的，被测性质一点没被 Mock 掉。</p>
+     * 读到的卡余额前态相对真值的漂移量（0=直通）：X 锁下真并发无法复现该窗口，
+     * 故只拨读到的前态，CAS/影响行数/回滚全是真的。
      */
     private static final AtomicLong CARD_READ_DRIFT = new AtomicLong(0L);
 
@@ -769,11 +752,8 @@ class AfterSaleRefundTxDbTest {
     }
 
     /**
-     * <b>本包最重要的一条</b>：同一订单两条不同 sourceId 的动作各占 60% 额度，两线程真并发执行。
-     *
-     * <p>保护的是「RR 快照下封顶失效 ⇒ 同一订单可重复全额返还」那个 P0：卡行 X 锁把两笔串行化，
-     * 落败者醒来后的额度聚合必须看得见赢家刚提交的已完成行。若封顶失效，卡会被加两次 1800，
-     * 本用例的余额断言立刻变红。</p>
+     * 同订单两条不同 sourceId 动作各占 60% 额度真并发：卡行 X 锁串行化，
+     * 落败者的额度聚合必须看见赢家刚提交的行——保护 RR 快照下封顶失效那个 P0。
      */
     @Test
     void concurrentRefundsOnSameOrderCreditCardExactlyOnce() throws Exception {
@@ -965,10 +945,8 @@ class AfterSaleRefundTxDbTest {
     }
 
     /**
-     * 本批修的 P0：{@code claimIndependent} 独立提交时把 VERSION 加了 1，而它只返回 boolean，
-     * 编排层手上永远是 claim <b>之前</b> 的版本。终局落痕必须自己在独立事务内重读版本——
-     * 传旧版本、甚至<b>不传版本</b>都要能落住终态。改回沿用入参版本，本用例立刻变红
-     * （动作会永久停在 2执行中、无终态无错因）。
+     * claim 已把 VERSION+1 而编排层手上永远是旧版本：终局落痕必须自己重读版本，
+     * 传旧版本甚至不传版本都要能落住终态，否则动作永久停在执行中。
      */
     @Test
     void markTerminalLandsWithoutRelyingOnCallerVersion() {

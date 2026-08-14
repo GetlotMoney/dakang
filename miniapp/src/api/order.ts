@@ -2,7 +2,6 @@ import type {
   BackendPageData,
   BusinessTime,
   EntityId,
-  MockMeta,
   MoneyFen,
   PageQuery,
   PageResult,
@@ -20,7 +19,6 @@ import {
 import type { DeliveryAppealRaw, DeliveryTaskRaw } from './delivery-normalize'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { realAdapterPending } from './runtime'
 
 export type OrderType = 1 | 2 | 3
 export type OrderStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
@@ -66,16 +64,10 @@ export interface OrderItem {
   planMl?: VolumeMl
   actualMl?: VolumeMl
   packageSnapshot?: string
-  /**
-   * 充值订单结构化详情（契约 v2 §9.2）。
-   * 页面**只消费本区块，不解析 packageSnapshot**——快照的合法性判定只在服务端做一次，
-   * 复制到前端再实现一遍必然走样，而快照是充值的凭据，两边不一致就是金额对不上。
-   * Mock 与历史快照由本模块的适配层统一归一化成同一形状，页面无需感知来源。
-   */
+  /** 充值订单结构化详情（契约 v2 §9.2）。页面只消费本区块、不解析 packageSnapshot——快照合法性判定只在服务端做一次。 */
   recharge?: RechargeDetailBlock
   createTime: BusinessTime
   finishTime?: BusinessTime
-  mockMeta?: MockMeta
 }
 
 export interface OrderTraceNode {
@@ -94,15 +86,9 @@ export interface OrderDetail {
   flowCount: number
   deliveryTaskNo?: string
   appealId?: EntityId
-  /**
-   * 售后进度（E2E-04 包E，只读）。缺省 = 服务端未下发本单售后动作，
-   * 页面隐藏售后区块；**不得由订单状态、金额或数量本地推算出一份售后结论**。
-   */
+  /** 售后进度（E2E-04 包E，只读）。缺省=服务端未下发即隐藏区块；不得由订单状态/金额本地推算售后结论。 */
   afterSale?: AfterSaleProgress
-  /**
-   * 待接单取消资格。缺省 = 服务端未下发，取消入口一律不显示。
-   * 判定逻辑（任务是否仍待接单、是否本人、是否有在途售后）只存在于服务端事务内。
-   */
+  /** 待接单取消资格。缺省=服务端未下发即不显示入口；判定逻辑只存在于服务端事务内。 */
   cancelEligibility?: AfterSaleCancelEligibility
 }
 
@@ -157,17 +143,10 @@ export interface CreateWaterOrderInput {
   payWay: 2 | 3
 }
 
-export interface CreateRechargeOrderInput {
-  cardId: EntityId
-  packageId?: EntityId
-  amountFen: MoneyFen
-}
-
 export interface OrderApi {
   listMyOrders: (query?: OrderQuery) => Promise<PageResult<OrderItem>>
   getOrderDetail: (orderNo: string) => Promise<OrderDetail>
   createWaterOrder: (input: CreateWaterOrderInput) => Promise<OrderDetail>
-  createRechargeOrder: (input: CreateRechargeOrderInput) => Promise<OrderDetail>
   getMyDeliveryAppeal: (appealId: EntityId) => Promise<DeliveryAppeal>
   createDeliveryAppeal: (input: CreateDeliveryAppealInput) => Promise<DeliveryAppeal>
   /** 消费者视角查看本人订单的配送任务（U06 三照/时间线证据），与配送员端 getTaskDetail 数据范围互不越权。 */
@@ -178,17 +157,12 @@ export const orderEndpoints = {
   list: '/mini/order/page',
   detail: '/mini/order/detail',
   createWater: '/mini/order/water/create',
-  createRecharge: '/mini/order/recharge/create',
   appealDetail: '/mini/order/appeal/detail',
   appealCreate: '/mini/order/appeal/create',
   deliveryTaskDetail: '/mini/order/delivery-task/detail',
 } as const
 
-/**
- * 后端订单项原始返回：后端全局 Jackson 将 Long 序列化为字符串（防 JS 精度丢失），
- * 故 orderId/userId/orderAmountFen/stationId/cardId/planMl/actualMl 到达前端是数值字符串；
- * orderType/orderStatus/payWay 为 Integer 仍是数字；可空字段后端返回 null。
- */
+/** 后端订单项原始返回：Long 序列化为字符串（防精度丢失），Integer 仍是数字；可空字段返回 null。 */
 interface OrderItemRaw {
   orderId: string | number
   orderNo: string
@@ -246,7 +220,7 @@ function optionalString(value: string | null | undefined): string | undefined {
   return value == null ? undefined : value
 }
 
-/** 后端订单项 → 前端 OrderItem（严格按 order.ts 契约类型归一化，real 数据不含 mockMeta）。 */
+/** 后端订单项 → 前端 OrderItem（严格按 order.ts 契约类型归一化）。 */
 function normalizeOrderItem(raw: OrderItemRaw): OrderItem {
   return {
     orderId: String(raw.orderId),
@@ -271,10 +245,8 @@ function normalizeOrderItem(raw: OrderItemRaw): OrderItem {
   }
 }
 
-/** 数值字段：后端把 Long 序列化成字符串防精度丢失，两种形态都要接受，但拒绝任何畸形值。 */
+/** 数值字段：number 与数值字符串两种形态都接受，但必须是安全整数——只判 isFinite 会让 1.5 一路渲染出去。 */
 function strictNumber(value: unknown): number | undefined {
-  // 必须是安全整数：金额是分、水量是毫升、有效期是天，全都不存在小数形态。
-  // 只判 isFinite 会让 1.5 这类值一路渲染出去（测试抓到过）。
   if (typeof value === 'number') {
     return Number.isSafeInteger(value) ? value : undefined
   }
@@ -426,12 +398,8 @@ export function normalizeRechargeBlock(raw: OrderItemRaw): RechargeDetailBlock |
 }
 
 /**
- * 历史/Mock 快照采用统一兼容方案归一化。
- *
- * 历史快照用的是 `payAmountFen`/`bonusAmountFen`，v2 用的是 `payAmount`/`bonusAmount`。
- * 早期页面直接读 v2 字段名，历史单于是显示成 ¥NaN、赠送金额整个丢失。
- * 这里把两代字段收敛到同一形状，**并对每个值做严格校验**——
- * 任一必需字段缺失或畸形即整体判为 snapshotValid=false，不允许残缺值拼出一个看起来正常的订单。
+ * 历史/Mock 快照兼容归一化：历史用 payAmountFen/bonusAmountFen，v2 用 payAmount/bonusAmount，
+ * 收敛到同一形状并严格校验——任一必需字段缺失/畸形整体判 snapshotValid=false。
  */
 export function rechargeBlockFromLegacySnapshot(
   snapshot: string | undefined,
@@ -455,7 +423,6 @@ export function rechargeBlockFromLegacySnapshot(
     return { snapshotValid: false }
   }
   const packageName = requiredRechargeName(parsed.packageName)
-  // 两代字段名并存：v2 用 payAmount/bonusAmount，历史 Mock 用 payAmountFen/bonusAmountFen
   const payAmountFen = strictNumber(parsed.payAmount ?? parsed.payAmountFen)
   const waterMl = strictNumber(parsed.waterMl)
   const bonusAmountFen = strictNumber(parsed.bonusAmount ?? parsed.bonusAmountFen)
@@ -497,13 +464,7 @@ export function normalizeOrderDetail(raw: OrderDetailRaw): OrderDetail {
   }
 }
 
-/**
- * order 域真实适配器（L1e-MP 扫码取水下单链）。
- *
- * 仅 water/create、page、detail 三接口接真（后端 /mini/order/* 已就绪）；
- * appeal/delivery-task 读路径暂委托 mock（对真实订单返回空或明确报错，不制造假数据）；
- * 充值创建为写路径，L2 后端未建时显式 pending——Mock 假单会在 U06 真实查单处 404（2026-07-20 收口轮）。
- */
+/** order 域真实适配器（L1e-MP 扫码取水下单链）。 */
 const realOrderApi: OrderApi = {
   async listMyOrders(query = {}) {
     return withRealSession(async () => {
@@ -539,12 +500,6 @@ const realOrderApi: OrderApi = {
       return normalizeOrderDetail(raw)
     })
   },
-  // 充值创建（写路径）不得委托 mock：order 域 real 下 Mock 单跳 U06 真实查单必 404（2026-07-20 收口轮 P0-3），
-  // L2 后端就绪前显式 pending，宁可明确阻断也不给假成功。
-  createRechargeOrder: () => realAdapterPending('创建充值订单', orderEndpoints.createRecharge),
-  // 用户侧配送视图三接口按 delivery 域二次分流（E2E-03 包B）：delivery=real 走 /mini/order/**
-  // 真实端点；delivery 仍为 mock 时保持原委托——读路径对真实订单安全返回空/明确报错，
-  // 申诉创建（写路径）在 mock 域内也只会作用于 Mock 订单，不会对真实订单造假申诉。
   async getMyDeliveryAppeal(appealId) {
     return withRealSession(async () => {
       const raw = await post<DeliveryAppealRaw>(orderEndpoints.appealDetail, { appealId })

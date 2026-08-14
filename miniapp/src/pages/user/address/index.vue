@@ -5,7 +5,9 @@ import { ref } from 'vue'
 import { useMessage, useToast } from 'wot-design-uni'
 import { cardApi } from '@/api/card'
 import { ContractError } from '@/api/common'
+import AppBottomActionBar from '@/components/app-bottom-action-bar.vue'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import { setDraftAddress } from '@/store/delivery-draft'
 import { goTo } from '@/utils/navigation'
 
@@ -87,133 +89,178 @@ function handleDelete(item: DeliveryAddress) {
 </script>
 
 <template>
-  <view class="page-shell">
+  <!-- 吸底栏是条件渲染的：栏出现时由它的等高 placeholder 负责底部留白，
+       此时才去掉 page-shell 为旧流式底栏预留的 84px，否则两段空白叠加。 -->
+  <view class="page-shell" :class="{ 'page-shell--with-bar': !loading && !errorMessage && !selectMode }">
     <AppNavbar title="水配送地址" back-to="U03" />
     <wd-toast />
     <wd-message-box />
 
-    <view v-if="loading" class="page-section muted-text">
-      地址加载中…
+    <view v-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="errorMessage" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button size="small" plain @click="refresh">
-              重新加载
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button size="small" plain @click="refresh">
+            重新加载
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <view v-else-if="!addresses.length" class="page-section">
-      <wd-status-tip image="content" tip="暂无水配送地址">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button size="small" icon="add-circle" @click="handleAdd">
-              新增地址
-            </wd-button>
-          </view>
+      <AppPageState state="empty" message="暂无水配送地址">
+        <template #actions>
+          <wd-button size="small" icon="add-circle" @click="handleAdd">
+            新增地址
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
-    <view v-else class="page-section">
-      <wd-card v-for="item in addresses" :key="item.addressId">
-        <template #title>
-          <view class="card-title-row" @click="handleItemTap(item)">
-            <view class="address-contact">
-              {{ item.contactName }}
-              <text class="muted-text">
-                {{ item.maskedPhone }}
-              </text>
-            </view>
-            <view class="address-tags">
-              <wd-tag v-if="item.isDefault" type="primary" plain>
-                默认
-              </wd-tag>
-              <wd-tag :type="item.locationAuthorized ? 'success' : 'default'" plain>
-                {{ item.locationAuthorized ? '定位已授权' : '定位未授权' }}
-              </wd-tag>
-            </view>
-          </view>
-        </template>
-        <view class="address-body" @click="handleItemTap(item)">
-          <view>{{ item.region }}</view>
-          <view class="muted-text">
-            {{ item.detail }}
-          </view>
-          <view v-if="selectMode" class="select-cue">
-            点击选择该地址
-            <wd-icon name="arrow-right" size="14px" />
-          </view>
+    <!-- 一张连续的白底表，不是一摞阴影卡。收货人与手机号第一层，区域与详址第二层；
+         编辑与删除降到文字级，主入口「新增地址」上吸底栏常驻。 -->
+    <view v-else class="address-list">
+      <view
+        v-for="item in addresses"
+        :key="item.addressId"
+        class="address-row"
+        :class="{ pressable: selectMode }"
+        @click="handleItemTap(item)"
+      >
+        <view class="address-row__head">
+          <text class="address-row__contact">
+            {{ item.contactName }}
+          </text>
+          <text class="address-row__phone">
+            {{ item.maskedPhone }}
+          </text>
+          <wd-tag v-if="item.isDefault" type="primary" plain>
+            默认
+          </wd-tag>
+          <!-- 缺区县编码才出标签：定位/编码齐全是常态，常态不上标签，
+               否则每一行都挂两枚状态 tag，真正缺东西的那一行反而看不出来 -->
+          <wd-tag v-if="!item.districtCode" type="warning" plain>
+            缺区县编码
+          </wd-tag>
         </view>
-        <template v-if="!selectMode" #footer>
-          <view class="address-actions">
-            <wd-button size="small" plain @click="goTo('U15', { addressId: item.addressId })">
-              编辑
-            </wd-button>
-            <wd-button size="small" plain type="error" @click="handleDelete(item)">
-              删除
-            </wd-button>
-          </view>
-        </template>
-      </wd-card>
+        <text class="address-row__region">
+          {{ item.region }}
+        </text>
+        <text class="address-row__detail">
+          {{ item.detail }}
+        </text>
+        <view v-if="selectMode" class="address-row__select">
+          点击选择该地址
+          <wd-icon name="arrow-right" size="14px" />
+        </view>
+        <view v-else class="address-row__actions">
+          <text class="address-row__link" @click.stop="goTo('U15', { addressId: item.addressId })">
+            编辑
+          </text>
+          <text class="address-row__link address-row__link--danger" @click.stop="handleDelete(item)">
+            删除
+          </text>
+        </view>
+      </view>
     </view>
 
-    <view v-if="!loading && !errorMessage && addresses.length" class="page-section">
-      <wd-button block plain icon="add-circle" @click="handleAdd">
-        新增地址
-      </wd-button>
-    </view>
+    <AppBottomActionBar v-if="!loading && !errorMessage && !selectMode">
+      <template #primary>
+        <wd-button block size="large" type="primary" icon="add-circle" @click="handleAdd">
+          新增地址
+        </wd-button>
+      </template>
+    </AppBottomActionBar>
   </view>
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  width: 100%;
+.address-list {
+  margin-top: var(--gap-block);
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--app-bg-card);
 }
 
-.card-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
+.address-row {
+  padding: var(--sp-4);
+  border-bottom: 1px solid var(--line-1);
 
-.address-contact {
-  font-size: 15px;
-  font-weight: 600;
-}
+  &:last-child {
+    border-bottom: none;
+  }
 
-.address-tags {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+  &__head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    align-items: center;
+  }
 
-.address-body {
-  font-size: 14px;
-  line-height: 1.7;
-}
+  &__contact {
+    max-width: 40%;
+    overflow: hidden;
+    font-size: var(--fs-body);
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
 
-.select-cue {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-top: 6px;
-  color: var(--wot-color-theme, var(--app-color-primary));
-  font-size: 13px;
-}
+  &__phone {
+    color: var(--app-text-secondary);
+    font-size: var(--fs-caption);
+  }
 
-.address-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
+  &__region {
+    display: block;
+    margin-top: var(--sp-2);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-caption);
+  }
+
+  // 详址长度不可控，最多两行；完整地址在编辑页可见
+  &__detail {
+    display: -webkit-box;
+    overflow: hidden;
+    margin-top: 2px;
+    font-size: var(--fs-caption);
+    line-height: 1.45;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  &__select {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    margin-top: var(--sp-3);
+    color: var(--app-color-primary);
+    font-size: var(--fs-caption);
+    font-weight: 600;
+  }
+
+  // 编辑与删除弱化成文字级：它们是低频维护动作，不该和「新增地址」抢按钮形态
+  &__actions {
+    display: flex;
+    gap: var(--sp-5);
+    justify-content: flex-end;
+    margin-top: var(--sp-3);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--line-1);
+  }
+
+  &__link {
+    padding: 2px var(--sp-2);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-caption);
+
+    &--danger {
+      color: var(--app-color-danger);
+    }
+  }
 }
 </style>

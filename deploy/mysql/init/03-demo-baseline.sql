@@ -103,18 +103,19 @@ INSERT IGNORE INTO `api_rbac_menu`
 (1023,'设备运营配置',2,NULL,1001,2,'operations','/device/operations',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1030,'水种管理',2,NULL,1002,2,'water','/product/water',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1031,'套餐管理',2,NULL,1002,1,'package','/product/package',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
-(1040,'C端用户',2,NULL,1003,3,'index','/user/index',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
+(1040,'用户列表',2,NULL,1003,3,'index','/user/index',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1041,'水卡与授权',2,NULL,1003,2,'card','/user/card',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1042,'配送员准入',2,NULL,1003,1,'courier','/user/courier',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 -- E2E-07 消息记录（REQ-087「后台记录」）：全域站内消息只读查询，挂用户管理（触达对象是 C 端用户）
 (1027,'消息记录',2,NULL,1003,0,'message','/user/message',1,NULL,NULL,1,1,0,1,'20260731120000',1,'20260731120000'),
 (1050,'订单查询',2,NULL,1004,3,'index','/order/index',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
-(1051,'配送履约',2,NULL,1004,2,'delivery','/order/delivery',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
+(1051,'配送任务',2,NULL,1004,2,'delivery','/order/delivery',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 (1052,'申诉处理',2,NULL,1004,1,'appeal','/order/appeal',1,NULL,NULL,1,1,0,1,'20260714120000',1,'20260714120000'),
 -- E2E-08 财务面（挂订单中心组，不动 5+1 契约）：分账明细/日对账/比例配置 + 三个高风险功能点
 (1028,'分账明细',2,NULL,1004,0,'split','/order/split',1,NULL,NULL,1,1,0,1,'20260731120000',1,'20260731120000'),
 (1029,'日对账',2,NULL,1004,0,'reconcile','/order/reconcile',1,NULL,NULL,1,1,0,1,'20260731120000',1,'20260731120000'),
 (1032,'分账比例配置',2,NULL,1004,0,'splitconfig','/order/splitconfig',1,NULL,NULL,1,1,0,1,'20260731120000',1,'20260731120000'),
+(1053,'分润归属',2,NULL,1004,0,'attribution','/order/attribution',1,NULL,NULL,1,1,0,1,'20260814120000',1,'20260814120000'),
 (1033,'自动补货规则',2,NULL,1004,0,'autorule','/order/autorule',1,NULL,NULL,1,1,0,1,'20260807120000',1,'20260807120000'),
 (1034,'水种用量统计',2,NULL,1004,0,'waterstats','/order/waterstats',1,NULL,NULL,1,1,0,1,'20260807120000',1,'20260807120000'),
 (1145,'对账触发',3,NULL,1029,1,NULL,NULL,1,'finance:reconcile:run','finance:reconcile:run',2,1,0,1,'20260731120000',1,'20260731120000'),
@@ -139,7 +140,11 @@ INSERT IGNORE INTO `api_rbac_menu`
 (1131,'新增配送员',3,NULL,1042,1,NULL,NULL,1,'user:courier:add','user:courier:add',2,1,0,1,'20260714120000',1,'20260714120000'),
 (1132,'配送员准入审核',3,NULL,1042,2,NULL,NULL,1,'user:courier:audit','user:courier:audit',2,1,0,1,'20260714120000',1,'20260714120000'),
 (1133,'申诉裁决',3,NULL,1052,1,NULL,NULL,1,'order:appeal:handle','order:appeal:handle',2,1,0,1,'20260714120000',1,'20260714120000'),
-(1134,'设备运营配置维护',3,NULL,1023,1,NULL,NULL,1,'device:operations:config','device:operations:config',2,1,0,1,'20260714120000',1,'20260714120000'),
+-- 1134 已退役（DATA_STATUS=1，保留行占号）：E2E-05 收敛删掉了 /device/operations 上的「展示策略保存」与
+-- 「公告投放」两个假写动作，该页现为纯只读，全仓无任何后端端点或前端按钮引用 device:operations:config。
+-- 留成可勾选状态等于在「操作权限」树里挂一个勾了也不生效的开关。该页日后真落地写动作时重新启用本行，不要另发新码。
+-- 老库同步语句在 migrations/2026-08-13-lwkm-perms.sql。
+(1134,'设备运营配置维护',3,NULL,1023,1,NULL,NULL,1,'device:operations:config','device:operations:config',2,1,1,1,'20260714120000',1,'20260714120000'),
 (1135,'审计导出申请',3,NULL,1060,1,NULL,NULL,1,'system:audit:export','system:audit:export',2,1,0,1,'20260714120000',1,'20260714120000'),
 (1136,'新增套餐',3,NULL,1031,1,NULL,NULL,1,'product:package:add','product:package:add',2,1,0,1,'20260719120000',1,'20260719120000'),
 (1137,'修改套餐',3,NULL,1031,2,NULL,NULL,1,'product:package:update','product:package:update',2,1,0,1,'20260719120000',1,'20260719120000'),
@@ -165,7 +170,41 @@ INSERT IGNORE INTO `api_rbac_menu`
 -- 批量控制单列权限：锁全站/全网设备的破坏半径远大于单设备指令，不与 device:command:send 共用开关
 (1142,'告警处置',3,NULL,1024,1,NULL,NULL,1,'device:alarm:handle','device:alarm:handle',2,1,0,1,'20260730120000',1,'20260730120000'),
 (1143,'工单处理',3,NULL,1025,1,NULL,NULL,1,'device:workorder:handle','device:workorder:handle',2,1,0,1,'20260730120000',1,'20260730120000'),
-(1144,'批量指令执行',3,NULL,1026,1,NULL,NULL,1,'device:batch:execute','device:batch:execute',2,1,0,1,'20260730120000',1,'20260730120000');
+(1144,'批量指令执行',3,NULL,1026,1,NULL,NULL,1,'device:batch:execute','device:batch:execute',2,1,0,1,'20260730120000',1,'20260730120000'),
+-- E2E-09 商城管理（二期新一级目录，不改一期 5+1 六入口语义；仍在超管绑定 SELECT 之前）：
+-- 四个二级页面 + 五个功能点；ID/权限码与 migrations/2026-08-08-mall-s1.sql 逐字一致
+(1005,'商城管理',1,'ri:store-2-line',0,82,'/mall','/index/index',1,NULL,NULL,1,1,0,1,'20260808120000',1,'20260808120000'),
+(1036,'商品管理',2,NULL,1005,4,'product','/mall/product',1,NULL,NULL,1,1,0,1,'20260808120000',1,'20260808120000'),
+(1037,'分类管理',2,NULL,1005,3,'category','/mall/category',1,NULL,NULL,1,1,0,1,'20260808120000',1,'20260808120000'),
+(1038,'前置仓管理',2,NULL,1005,2,'warehouse','/mall/warehouse',1,NULL,NULL,1,1,0,1,'20260808120000',1,'20260808120000'),
+(1039,'库存管理',2,NULL,1005,1,'stock','/mall/stock',1,NULL,NULL,1,1,0,1,'20260808120000',1,'20260808120000'),
+(1043,'商城订单',2,NULL,1005,5,'order','/mall/order',1,NULL,NULL,1,1,0,1,'20260808120000',1,'20260808120000'),
+(1044,'商城履约',2,NULL,1005,6,'fulfillment','/mall/fulfillment',1,NULL,NULL,1,1,0,1,'20260809120000',1,'20260809120000'),
+(1045,'商城售后',2,NULL,1005,7,'aftersale','/mall/aftersale',1,NULL,NULL,1,1,0,1,'20260810120000',1,'20260810120000'),
+(1151,'分类维护',3,NULL,1037,1,NULL,NULL,1,'mall:category:edit','mall:category:edit',2,1,0,1,'20260808120000',1,'20260808120000'),
+(1152,'商品维护',3,NULL,1036,1,NULL,NULL,1,'mall:product:edit','mall:product:edit',2,1,0,1,'20260808120000',1,'20260808120000'),
+(1153,'商品上下架',3,NULL,1036,2,NULL,NULL,1,'mall:product:shelf','mall:product:shelf',2,1,0,1,'20260808120000',1,'20260808120000'),
+(1154,'前置仓维护',3,NULL,1038,1,NULL,NULL,1,'mall:warehouse:edit','mall:warehouse:edit',2,1,0,1,'20260808120000',1,'20260808120000'),
+(1155,'库存调整',3,NULL,1039,1,NULL,NULL,1,'mall:stock:adjust','mall:stock:adjust',2,1,0,1,'20260808120000',1,'20260808120000'),
+(1156,'查看用户档案',3,NULL,1040,1,NULL,NULL,1,'user:user:query','user:user:query',2,1,0,1,'20260813120000',1,'20260813120000'),
+(1157,'售后审核',3,NULL,1045,1,NULL,NULL,1,'mall:aftersale:audit','mall:aftersale:audit',2,1,0,1,'20260813120000',1,'20260813120000'),
+(1158,'售后收货与质检',3,NULL,1045,2,NULL,NULL,1,'mall:aftersale:handle','mall:aftersale:handle',2,1,0,1,'20260813120000',1,'20260813120000'),
+(1159,'售后模拟退款',3,NULL,1045,3,NULL,NULL,1,'mall:aftersale:refund','mall:aftersale:refund',2,1,0,1,'20260813120000',1,'20260813120000'),
+(1160,'前置仓拣货打包',3,NULL,1044,1,NULL,NULL,1,'mall:fulfillment:handle','mall:fulfillment:handle',2,1,0,1,'20260813120000',1,'20260813120000'),
+(1161,'安排发运',3,NULL,1044,2,NULL,NULL,1,'mall:fulfillment:dispatch','mall:fulfillment:dispatch',2,1,0,1,'20260813120000',1,'20260813120000'),
+-- 日志查询权从 616/617 两行 MENU_TYPE=2 页面菜单下沉到功能点：授权弹窗的「菜单权限」树按 MENU_TYPE<>3 过滤，
+-- 页面行自带 MENU_API_PERMS 会让弹窗上「勾选菜单不会同时授予操作权限」对日志两页失效（勾页面即得查询权，
+-- 且在「操作权限」树里看不到这个开关）。父菜单 616/617 由 01-base.sql 建，其权限码已在那里清空。
+(1162,'查询登录日志',3,NULL,616,1,NULL,NULL,1,'api:logLogin:query','api:logLogin:query',2,1,0,1,'20260813120000',1,'20260813120000'),
+(1163,'查询操作日志',3,NULL,617,1,NULL,NULL,1,'api:logOperation:query','api:logOperation:query',2,1,0,1,'20260813120000',1,'20260813120000'),
+-- 财务三个只读端点（分账明细/日对账/比例配置分页）与 finance:*:query 逐项对应；
+-- 无码时连超管都 403（运行时权限=角色已授菜单行权限码并集，无超管旁路）。
+(1164,'查询分账明细',3,NULL,1028,2,NULL,NULL,1,'finance:split:query','finance:split:query',2,1,0,1,'20260813120000',1,'20260813120000'),
+(1165,'查询日对账',3,NULL,1029,2,NULL,NULL,1,'finance:reconcile:query','finance:reconcile:query',2,1,0,1,'20260813120000',1,'20260813120000'),
+(1166,'查询比例配置',3,NULL,1032,2,NULL,NULL,1,'finance:config:query','finance:config:query',2,1,0,1,'20260813120000',1,'20260813120000'),
+-- 分润归属（D-428 六方口径）：查询与录入分权——录入建立即冻结，决定商务推广与运营中心的钱付给谁
+(1167,'查询分润归属',3,NULL,1053,1,NULL,NULL,1,'finance:attribution:query','finance:attribution:query',2,1,0,1,'20260814120000',1,'20260814120000'),
+(1168,'录入分润归属',3,NULL,1053,2,NULL,NULL,1,'finance:attribution:edit','finance:attribution:edit',2,1,0,1,'20260814120000',1,'20260814120000');
 
 -- C 端用户样例仅用于 Demo 查询和跨表追溯；身份证字段保存不可逆占位密文，不放真实身份信息。
 INSERT IGNORE INTO `ws_user`

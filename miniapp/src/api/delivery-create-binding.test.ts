@@ -30,6 +30,14 @@ describe('配送创单页支付方式绑定 (D-214)', () => {
     expect(source).not.toContain('自动补货暂仅支持水卡余额支付')
   })
 
+  it('区分无卡与有卡但余额或水量不足，不把所有支付方式禁用误报成无卡', () => {
+    expect(source).toMatch(/const noCard = computed\(\(\) => primaryCard\.value === null\)/)
+    expect(source).toMatch(/const noPayWayAvailable = computed\(\(\) => balanceOption\.value\.disabled && mlOption\.value\.disabled\)/)
+    expect(source).toMatch(/v-if="!noCard" class="pay-option-note/)
+    expect(source).toMatch(/\{\{ payBlockedText \}\}/)
+    expect(source).toMatch(/\{\{ noCard \? '去购卡' : '去充值' \}\}/)
+  })
+
   it('费用预览走 deliveryPriceLines 契约展示函数，payWay=3 时快照水费为 0 而不是价目水费', () => {
     expect(source).toMatch(/deliveryPriceLines\(\{/)
     expect(source).toMatch(/v-for="line in priceLines"/)

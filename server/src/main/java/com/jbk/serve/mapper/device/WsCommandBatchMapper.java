@@ -17,11 +17,8 @@ import org.apache.ibatis.annotations.Update;
 public interface WsCommandBatchMapper extends BaseMapper<WsCommandBatch> {
 
     /**
-     * 子指令终态累加。三列互斥：一次调用恰有一列 +1（由调用方按终态映射好传 1/0）。
-     *
-     * <p>不带 VERSION：累加是可交换操作，两个子指令并发回写互不覆盖（各自 +1），
-     * 乐观锁反而会让其中一个白白失败重试。防重复累加靠调用方——指令状态机的
-     * {@code conditionalTransit} 保证每条子指令只进入终态一次，钩子随之只触发一次。</p>
+     * 子指令终态累加：一次调用恰有一列 +1。不带 VERSION（累加可交换，乐观锁只会白白失败重试）；
+     * 防重复累加靠 {@code conditionalTransit} 保证每条子指令只进终态一次。
      */
     @Update("UPDATE ws_command_batch SET "
             + "SUCCESS_COUNT = SUCCESS_COUNT + #{successDelta}, "
@@ -36,12 +33,8 @@ public interface WsCommandBatchMapper extends BaseMapper<WsCommandBatch> {
                                 @Param("now") String now);
 
     /**
-     * 计数满则置聚合终态（幂等 CAS：前态必须仍是 1处理中）。
-     *
-     * <p>终态判定放进 WHERE 而不是先查后判：并发的最后两条子指令同时回写时，
-     * 两边都可能看到「已满」，靠 {@code BATCH_STATUS = 1} 前态保证只有一个赢家置终态。
-     * 聚合口径：全成→2；有成有败→3；全败→4。部分完成(PARTIAL)计入 FAIL_COUNT，
-     * 「部分成功」的批次绝不显示为全部成功（任务书 S11）。</p>
+     * 计数满则置聚合终态（幂等 CAS，前态 1处理中 保证并发只有一个赢家）。聚合口径：全成→2；有成有败→3；全败→4；
+     * PARTIAL 计入 FAIL_COUNT，「部分成功」绝不显示为全部成功（任务书 S11）。
      */
     @Update("UPDATE ws_command_batch SET "
             + "BATCH_STATUS = CASE "
@@ -54,11 +47,8 @@ public interface WsCommandBatchMapper extends BaseMapper<WsCommandBatch> {
     int settleIfComplete(@Param("id") Long id, @Param("now") String now);
 
     /**
-     * 收敛服务中断留下的陈旧批次。
-     *
-     * <p>批次可能在展开部分子指令后进程退出。已有子指令仍由正常状态机进入终态，
-     * 未展开目标没有指令行可供超时扫描处理。本语句只在“已有子指令全部终态”时重算
-     * 三类计数，并把缺失目标计入失败；仍有待下发/已下发/已回执子指令时绝不提前结算。</p>
+     * 收敛服务中断留下的陈旧批次（展开一半进程退出，未展开目标无指令行可扫）。只在已有子指令全部终态时重算计数并把缺失目标计入失败；
+     * 仍有活跃子指令时绝不提前结算。
      */
     @Update("UPDATE ws_command_batch b "
             + "LEFT JOIN ("

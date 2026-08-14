@@ -8,13 +8,8 @@ import lombok.EqualsAndHashCode;
 import java.io.Serializable;
 
 /**
- * PC 售后台账查询入参（E2E-04 包A）。
- *
- * <p>四个筛选维度与 {@code WsAfterSaleActionMapper.xml} 的 {@code <if>} 一一对应；
- * 新增筛选字段必须同时改 XML，否则前端传了也不会生效，表现为「筛选无反应」。</p>
- *
- * <p>本 Bo <b>只承载查询条件</b>：金额、水量、目标状态一律由服务端从订单快照派生，
- * 绝不接受前端传入 —— 让调用方决定退多少钱，等于把资金口径的真相源交给不可信输入。</p>
+ * PC 售后台账查询入参（E2E-04 包A）。筛选维度与 {@code WsAfterSaleActionMapper.xml} 的 {@code <if>} 一一对应，
+ * 新增字段必须同步改 XML 否则静默无效。只承载查询条件：金额/水量/目标状态由服务端从订单快照派生，绝不接受前端传入。
  *
  * @author dakang
  * @since 2026-07-29

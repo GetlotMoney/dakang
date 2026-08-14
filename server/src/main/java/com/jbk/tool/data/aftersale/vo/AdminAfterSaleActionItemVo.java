@@ -11,14 +11,8 @@ import java.io.Serializable;
 /**
  * PC 售后台账行（E2E-04 包A）。列集严格对齐 {@code WsAfterSaleActionMapper.xml} 的
  * {@code Admin_Action_Columns} 别名；改一侧必须改另一侧，否则字段静默为 null。
- *
- * <p>手机号走 {@code userPhoneRaw}（@JsonIgnore）+ {@code userMaskedPhone} 两列：
- * SQL 取原值、Service 统一用 {@code PhoneMask} 脱敏后填掩码列，明文不出接口。
- * 与配送申诉台账（AdminDeliveryAppealItemVo）同一范式，脱敏只有一处实现。</p>
- *
- * <p>四元额度分列下发的原因见 {@code ws_after_sale_action} 表注释：
- * payWay=2 时水费与配送费都从余额扣，只看合计 {@code refundAmount} 无法判断
- * 「这笔退的是水品还是服务费」，运营对账与累计封顶都会失真。</p>
+ * 手机号走 userPhoneRaw（@JsonIgnore）+ userMaskedPhone 两列，Service 统一脱敏，明文不出接口。
+ * 四元额度分列下发，原因见 ws_after_sale_action 表注释。
  *
  * @author dakang
  * @since 2026-07-29

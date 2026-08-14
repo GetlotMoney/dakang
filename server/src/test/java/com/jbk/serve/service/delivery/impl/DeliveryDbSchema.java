@@ -3,13 +3,9 @@ package com.jbk.serve.service.delivery.impl;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * E2E-03 配送域 + E2E-04 售后域 DB 测试共享 schema（列/唯一键与 02-ws-business.sql 权威结构对齐；
- * 生成列 ACTIVE_TASK_KEY、uk_order_no / uk_wallet_flow_biz_key / uk_dtask_* 必须
- * 与生产一致——这些唯一键正是被测的幂等与并发防线，缺了断言就退化成口头保证）。
- *
- * <p>包可见性放开到 public 是为了让 {@code service/aftersale/impl} 的两个真库测试复用同一份基座：
- * 售后链路读写的正是配送域这些表，复制第二份 DDL 会让两份建表从落地第一天起漂移，
- * 而漂移的表现是「一边测试全绿、另一边撞唯一键」。</p>
+ * E2E-03 配送域 + E2E-04 售后域 DB 测试共享 schema：列/唯一键与 02-ws-business.sql 对齐，
+ * 唯一键（ACTIVE_TASK_KEY、uk_order_no / uk_wallet_flow_biz_key / uk_dtask_*）正是被测防线。
+ * public 供 service/aftersale/impl 复用，避免第二份 DDL 漂移。
  */
 public final class DeliveryDbSchema {
 
@@ -17,6 +13,9 @@ public final class DeliveryDbSchema {
     }
 
     public static void createAll(JdbcTemplate jdbc) {
+        // 通知 outbox 是部署契约的一部分，表缺失会让事务内登记的业务动作整体失败；
+        // DDL 不复制，直接执行真实迁移文件防抄本漂移
+        com.jbk.serve.service.mini.notify.WechatNotifyTestSchema.create(jdbc);
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_card (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -173,7 +172,12 @@ public final class DeliveryDbSchema {
                   PLAN_RETURN_COUNT INT NOT NULL, RECEIVE_ADDRESS VARCHAR(200) NOT NULL,
                   RECEIVE_PHONE VARCHAR(20) NOT NULL, INTERVAL_DAYS INT NOT NULL,
                   ANCHOR_TIME VARCHAR(20) NOT NULL, RULE_STATUS TINYINT NOT NULL,
-                  UNIQUE KEY uk_dauto_rule_key (RULE_KEY)
+                  ACTIVE_SHAPE_KEY VARCHAR(64) GENERATED ALWAYS AS (
+                    CASE WHEN RULE_STATUS IN (1, 2)
+                         THEN SHA2(CONCAT_WS(':', USER_ID, WATER_TYPE_ID, CONTAINER_SPEC, RECEIVE_ADDRESS), 256)
+                         ELSE NULL END) STORED,
+                  UNIQUE KEY uk_dauto_rule_key (RULE_KEY),
+                  UNIQUE KEY uk_dauto_active_shape (ACTIVE_SHAPE_KEY)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_message (
@@ -390,14 +394,9 @@ public final class DeliveryDbSchema {
     }
 
     /**
-     * E2E-04 包D：权益批次与消费分摊。两把唯一键与生产同名同形——
-     * uk_batch_order 是「每笔充值恰好一个批次」的物理保证，
-     * uk_alloc_biz_batch 是「同一次消费对同一批次只分摊一次」的物理保证。
-     * 与生产 DDL 的一致性由 SchemaParityTest 常态守住。
-     *
-     * <p>单独开成 public 方法是因为 D-4 之后<b>取水域</b>的真库测试也要建这两张表
-     * （取水扣减同事务写分摊）。取水测试自带一份精简 schema，不需要配送域那一堆表，
-     * 但两张批次表必须与这里同源——复制第二份 DDL 就等着两侧漂移。</p>
+     * E2E-04 包D：权益批次与消费分摊。uk_batch_order=每笔充值恰一批次、
+     * uk_alloc_biz_batch=同消费对同批次只分摊一次；一致性由 SchemaParityTest 守住。
+     * public 供取水域真库测试复用，防第二份 DDL 漂移。
      */
     public static void createEntitlementTables(JdbcTemplate jdbc) {
         jdbc.execute("""
@@ -527,6 +526,7 @@ public final class DeliveryDbSchema {
         // 包D 起追加两张批次表：uk_alloc_biz_batch 跨用例复用同一订单号会撞键，
         // 漏清的表现是「上一条用例的分摊把下一条的消费顶掉」，而错因看起来像业务 Bug
         for (String table : new String[]{
+                "ws_wechat_notify_outbox",
                 "ws_message", "ws_domain_event", "ws_after_sale_action", "ws_delivery_auto_rule",
                 "ws_delivery_media", "ws_delivery_exception", "ws_delivery_appeal", "ws_delivery_task",
                 "ws_entitlement_allocation", "ws_card_entitlement_batch", "ws_card_member",

@@ -33,13 +33,20 @@ public final class MiniUserIdentitySupport {
         return rows.get(0);
     }
 
-    /** 有效用户：DATA_STATUS=0 且 DISABLED_FLAG=1 且 USER_STATUS=1；删除/禁用/注销一律 fail-closed。 */
-    public static void assertUsable(WsUser user) {
-        boolean usable = ObjectUtil.isNotNull(user)
+    /**
+     * 账号可用性的<b>唯一判据</b>：三字段全部正常才算可用（null 视为不可用）。
+     * 无副作用，供不能抛异常的旁路（如订阅通知 Worker）复用——判据只能有这一份。
+     */
+    public static boolean isUsable(WsUser user) {
+        return ObjectUtil.isNotNull(user)
                 && ObjectUtil.equals(user.getDataStatus(), DATA_STATUS_NORMAL)
                 && ObjectUtil.equals(user.getDisabledFlag(), DISABLED_FLAG_ENABLED)
                 && ObjectUtil.equals(user.getUserStatus(), USER_STATUS_ACTIVE);
-        if (!usable) {
+    }
+
+    /** 有效用户：DATA_STATUS=0 且 DISABLED_FLAG=1 且 USER_STATUS=1；删除/禁用/注销一律 fail-closed。 */
+    public static void assertUsable(WsUser user) {
+        if (!isUsable(user)) {
             throw new JbkException("账号不可用（已禁用、注销或删除），请联系客服");
         }
     }

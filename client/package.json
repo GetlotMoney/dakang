@@ -8,8 +8,8 @@
   },
   "scripts": {
     "dev": "vite --open",
-    "build": "node scripts/check-module-nav.mjs && node scripts/check-card-scope-ids.mjs && vue-tsc --noEmit && vite build",
-    "build:demo": "node scripts/check-module-nav.mjs && node scripts/check-card-scope-ids.mjs && vue-tsc --noEmit && vite build --mode demo",
+    "build": "node scripts/check-module-nav.mjs && node scripts/check-card-scope-ids.mjs && node scripts/check-proxy-prefixes.mjs && node scripts/check-mall-pages.mjs && node scripts/check-api-endpoints.mjs && vue-tsc --noEmit && vite build",
+    "build:demo": "node scripts/check-module-nav.mjs && node scripts/check-card-scope-ids.mjs && node scripts/check-proxy-prefixes.mjs && node scripts/check-mall-pages.mjs && node scripts/check-api-endpoints.mjs && vue-tsc --noEmit && vite build --mode demo",
     "serve": "vite preview",
     "lint": "eslint",
     "fix": "eslint --fix",
@@ -17,6 +17,9 @@
     "lint:stylelint": "stylelint  \"**/*.{css,scss,vue}\" --fix",
     "check:nav": "node scripts/check-module-nav.mjs",
     "check:card-scope-ids": "node scripts/check-card-scope-ids.mjs",
+    "check:proxy-prefixes": "node scripts/check-proxy-prefixes.mjs",
+    "check:mall-pages": "node scripts/check-mall-pages.mjs",
+    "check:api-endpoints": "node scripts/check-api-endpoints.mjs",
     "test": "vitest run"
   },
   "dependencies": {

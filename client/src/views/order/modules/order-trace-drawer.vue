@@ -1,10 +1,7 @@
-<!-- 订单全链路追溯抽屉（REQ-050，MVP 验收核心）
-     八区块：①基本信息 ②支付事实 ③指令与回执 ④共享审计 ⑤原扣款与返还流水
-             ⑥售后处理（售后动作／退款事实／补送任务） ⑦配送轨迹与三照 ⑧申诉记录
-
-     E2E-04 包E：售后区块的每一列都取自 /order/after-sale/page 的台账行，按 orderId 精确匹配
-     （不用模糊关键字命中，否则订单号互为子串的两单会串行）。台账接口没下发的字段一律不显示，
-     更不在前端凑数——本抽屉是对账证据，凑出来的一列比缺一列危险得多。 -->
+<!-- 订单全链路追溯抽屉（REQ-050）。八区块：①基本信息 ②支付事实 ③指令与回执 ④共享审计
+     ⑤原扣款与返还流水 ⑥售后处理 ⑦配送轨迹与三照 ⑧申诉记录。
+     售后区块取台账行按 orderId 精确匹配（模糊命中会让互为子串的订单号串行）；
+     台账没下发的字段一律不显示，本抽屉是对账证据，不在前端凑数。 -->
 <template>
   <ElDrawer v-model="drawerVisible" title="订单全链路追溯" size="760px" destroy-on-close>
     <div ref="traceContentRef" v-loading="loading">
@@ -297,7 +294,7 @@
         </ElTable>
         <ElEmpty v-else description="暂无关联审计事件" :image-size="50" />
 
-        <!-- 区块五：充值单展示后端已核验的双维权益；其他订单和 Mock 保持原流水列表。
+        <!-- 区块五：充值单展示后端已核验的双维权益；其他订单保持原流水列表。
              本区块同时是「原扣款」与「售后返还流水」的证据面：两者都以 ORDER_ID 挂在本单上，
              由服务端按流水ID升序整体下发，页面不做拆分也不做正负归类。 -->
         <div class="section-title">原扣款 / 返还流水</div>
@@ -837,11 +834,8 @@
   )
 
   /**
-   * 按订单号做关键字检索后，再按 orderId 精确过滤。
-   *
-   * 台账接口的 keyword 是 LIKE 模糊匹配（售后号/订单号/姓名/手机号四选一命中），订单号互为
-   * 子串时会带回别单的售后动作 —— 在对账证据面上混入他单返还，比不显示严重得多。
-   * 这里的过滤是服务端字段的等值比较，不是前端推导。
+   * 按订单号关键字检索后，再按 orderId 精确过滤：台账 keyword 是 LIKE 模糊匹配，
+   * 订单号互为子串时会混入他单的售后动作。
    */
   async function loadAfterSaleActions(
     orderId: string,
@@ -853,10 +847,8 @@
     afterSaleLoading.value = true
     try {
       const result = await fetchAfterSaleActionPage({ current: 1, size: 50, keyword: orderNo })
-      // 竞态守卫，与主流程同一把 loadSequence：本请求是抽屉里的**第二跳**，
-      // 快速切换订单时它可能比新订单的请求更晚返回。不比对序号就会出现
-      // 「原扣款/返还流水是 B 单、售后处理是 A 单」——正是本函数上面那段注释
-      // 声明「比不显示严重得多」的他单返还混入，只不过来源从 LIKE 变成了乱序回包。
+      // 竞态守卫（与主流程同一把 loadSequence）：本请求是第二跳，快速切换订单时
+      // 乱序回包不比对序号会把 B 单的售后动作展示到 A 单上。
       if (sequence !== loadSequence) return
       afterSaleActions.value = result.list.filter((item) => item.orderId === orderId)
     } catch {
@@ -977,7 +969,7 @@
   /**
    * P1-B「本单结算后」证据源：取本订单最后一条携带 AFTER 快照的有效流水（后端按流水 ID 升序下发，
    * 末条即本单终笔）。AFTER 是流水写入时冻结的卡面快照，永不随后续充值/取水漂移；
-   * Mock 域与历史数据无 AFTER 字段时保持 undefined，对应条目整行隐藏，不伪造数值。
+   * 历史数据无 AFTER 字段时保持 undefined，对应条目整行隐藏，不伪造数值。
    */
   const settledAfter = computed(() => {
     const flows = trace.value?.flows || []

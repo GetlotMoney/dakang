@@ -7,6 +7,7 @@ export enum ApiStatus {
   unauthorized = 401, // 未授权
   pwdChangeRequired = 626, // 待修改初始密码：服务端拒绝除改密/退出外的接口（R-201）
   tokenExpired = 1401, // 登录状态异常（Token 失效）
+  safeAuthRequired = 1440, // 需二级认证（高风险设备指令，D-423）：由调用方就地弹口令并重放，禁止走登出或全局报错
   forbidden = 403, // 禁止访问
   notFound = 404, // 未找到
   methodNotAllowed = 405, // 方法不允许

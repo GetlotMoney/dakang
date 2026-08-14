@@ -51,6 +51,9 @@ import java.util.List;
 @Service
 public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
 
+    /** 绑号闸：卡资金流出前要求发起人已绑手机号（游客态账号可无手机号）。 */
+    @Autowired
+    private com.jbk.serve.service.mini.auth.MiniPhoneGate phoneGate;
     @Autowired
     private TradeCardMapper tradeCardMapper;
     @Autowired
@@ -86,13 +89,13 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
         Long actorUserId = order.getUserId();
         boolean byBalance = ObjectUtil.equal(order.getPayWay(), TradeEnum.PayWay.CARD_BALANCE.getValue());
 
-        // ①② 以服务端铸造的会话为唯一设备来源，事务内重核二维码/档案共键（CARD-SCOPE）。
-        // 预检不是安全边界：预检到下单之间码可被改绑、档案可被停用，这里不重核就会照单扣款。
-        // P1-A：重核通过后产出唯一权威三元组，后续范围判定只吃该值，不再采信会话铸造值。
-        // 共键、档案状态、会话三元组与设备运行可用性全在这一步用同一批权威当前数据判完（B20）：
-        // 编排层 eligibility 在扣款之前，两者之间隔着装配与锁卡等待，期间设备离线/维护/锁定/
-        // 出水中/上报阻断故障码、迁站、出水口改绑都不会回滚已通过的预检结论。判定必须在锁卡与
-        // 扣款之前完成——判定不过就整体回滚，卡、订单、流水、分摊、指令一概不产生。
+        // 绑号闸：拦 actorUserId（订单/流水/UPDATE_BY 的责任主体）而非卡主；
+        // 位置在任何写操作之前（settleExpired 会扣卡），拒绝路径零副作用。
+        phoneGate.requirePhoneBound(actorUserId, "扫码取水扣款");
+
+        // ①② 以服务端铸造会话为唯一设备来源，事务内重核共键（CARD-SCOPE）——预检不是安全边界，
+        // 预检到下单之间码可被改绑、档案可被停用。重核产出唯一权威三元组（P1-A/B20），
+        // 后续范围判定只吃该值；判定不过整体回滚，卡、订单、流水、分摊、指令一概不产生。
         VerifiedWaterResource verified = verifyArchiveCoKeys(order, session);
 
         // ③~⑦ SELECT ... FOR UPDATE 锁卡后按固定顺序校验归属（卡主或有效成员）/状态/范围/日限额
@@ -100,9 +103,8 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
         WsCard lockedCard = verifyLockedCard(order, verified, now);
         Long cardOwnerUserId = lockedCard.getUserId();
 
-        // ⑦b 批次到期清算（审计 P0-1）：扣减前作废已到期批次并同步扣卡（唯一入口，禁止复制算法）。
-        //    带期批次可能挂在永久卡上（D-415 合并），卡级过期校验兜不住批次级过期；
-        //    清算后余量若不足，⑧ 的 CAS 会正确拒绝——过期权益不得再参与支付。
+        // ⑦b 批次到期清算（审计 P0-1，唯一入口）：带期批次可挂在永久卡上（D-415），
+        //    卡级过期校验兜不住批次级；清算后余量不足由 ⑧ 的 CAS 正确拒绝。
         entitlementLedger.settleExpired(lockedCard, actorUserId, now);
 
         // ⑧ 原子扣减：单条 UPDATE ... WHERE 余量>=X 且 USER_ID=卡主，校验影响行数
@@ -121,16 +123,14 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
             throw new JbkException("水卡数据异常，请重试");
         }
 
-        // ⑨ 先落订单拿自增 ID（uk_order_no 冲突在此抛 DuplicateKey，由编排层做 M1 归属校验），
-        //    再落流水，ORDER_ID 关联订单，AFTER 记扣减后快照（流水只插不改）。
+        // ⑨ 先落订单拿自增 ID（uk_order_no 冲突抛 DuplicateKey，编排层做 M1 归属校验）再落流水；
         //    ⑩ 扫码会话消费与设备指令由编排层在本事务提交成功后才执行。
         wsOrderMapper.insert(order);
         WsWalletFlow consumeFlow = buildConsumeFlow(order, after, byBalance);
         walletFlowMapper.insert(consumeFlow);
 
-        // ⑪ 权益批次分摊（E2E-04 包D-4，REQ-061）：与卡扣减同事务落到具体批次。
-        //    不摊到批次，「这笔充值的权益被用掉了多少」就只能靠卡聚合值去猜，而退款正按它折算。
-        //    额度与 ⑧ 的扣减逐维相等：payWay=2 扣余额、payWay=3 扣水量，绝不换算。
+        // ⑪ 权益批次分摊（E2E-04 包D-4，REQ-061）：与卡扣减同事务落到具体批次；
+        //    额度与 ⑧ 逐维相等：payWay=2 扣余额、payWay=3 扣水量，绝不换算。
         entitlementLedger.allocateOnConsume(
                 new EntitlementLedger.ConsumeRef(cardId, cardOwnerUserId, order.getId(),
                         consumeFlow.getId(), EntitlementLedger.consumeKey(order)),
@@ -141,32 +141,26 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * P1-A：事务内重读并核验后的唯一权威「站-设备-出水口」三元组（不可变）。
-     * 值只来自 {@link #verifyArchiveCoKeys} 锁内重读并逐项核验后的 station/device/outlet/qrcode 档案，
-     * 范围判定（{@link WaterCardScope#allows}）只吃本三元组——会话铸造值在预检到下单之间
-     * 可能已过期（如设备迁站），拿旧语境放行新档案就是范围绕过。
+     * P1-A：事务内重读核验后的唯一权威「站-设备-出水口」三元组；范围判定只吃本值——
+     * 会话铸造值在预检到下单之间可能已过期（如设备迁站），拿旧语境放行新档案即范围绕过。
      */
     record VerifiedWaterResource(Long stationId, Long deviceId, Long outletId) {
     }
 
     /**
-     * ② 共键重核：qrcode/station/device/outlet 存在、未删除、档案状态可用，且
-     * qrcode.deviceId==device.id、qrcode.outletId==outlet.id、outlet.deviceId==device.id、
-     * device.stationId==station.id，并与订单/会话铸造值逐一对齐。任一错位 fail-closed 不建单——
-     * 少一条对齐就存在「扫 A 码、扣 B 口」的错位扣款窗口。
+     * ② 共键重核：qrcode/station/device/outlet 存在、未删除、状态可用，四方共键并与订单/会话
+     * 铸造值逐一对齐；任一错位 fail-closed 不建单——少一条对齐就有「扫 A 码、扣 B 口」的窗口。
      *
      * @return 事务内核验后的唯一权威三元组（P1-A），供范围判定与拒绝审计使用
      */
     private VerifiedWaterResource verifyArchiveCoKeys(WsOrder order, ScanSessionInfo session) {
         if (ObjectUtil.isNull(session) || ObjectUtil.isNull(session.getQrcodeId())
                 || ObjectUtil.isNull(session.getDeviceId()) || ObjectUtil.isNull(session.getOutletId())) {
-            // 旧版本铸造的会话缺 qrcodeId：宁可让用户重扫一次，也不跳过共键重核。
+            // 旧版本铸造的会话缺 qrcodeId：宁可要求重扫，也不跳过共键重核
             throw new JbkException("扫码会话数据不完整，请重新扫码");
         }
-        // 权威当前读一次读齐（锁序 设备X → 出水口X → 故障字典S → 二维码S → 水站S，随后才锁卡）。
-        // 全部判定——共键、档案状态、会话三元组、运行可用性、以及下游的水卡范围——只吃这一批数据。
-        // 用普通 selectById 会读到事务首次一致性读的快照：设备迁站、出水口改绑、字典改判在快照里
-        // 根本不存在，判了也白判。逻辑删除行由各当前读语句的 DATA_STATUS=0 条件排除。
+        // 权威当前读一次读齐（锁序 设备X → 出水口X → 故障字典S → 二维码S → 水站S，随后才锁卡），
+        // 全部判定只吃这一批数据；普通 selectById 读的是事务首次一致性读快照，迁站/改绑在快照里不存在。
         DeviceAvailabilityGuard.CheckedDeviceContext checked =
                 availabilityGuard.loadForUpdate(session.getDeviceId(), session.getOutletId());
         WsQrcode qrcode = qrcodeMapper.selectByIdForShare(session.getQrcodeId());
@@ -200,22 +194,18 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
         if (!aligned) {
             throw coKeyRejected(order, "二维码与设备/出水口档案共键错位");
         }
-        // P1-A：会话铸造三元组必须与事务内重读核验后的档案完全一致（fail-closed）。
-        // deviceId/outletId 因按会话值回查而天然相等，仍显式核对以防未来查询口径漂移；
-        // stationId 是真正的活口——设备在预检后被迁站时，会话仍带旧站，若继续放行
-        // 就会拿「用户扫码时看到的旧站授权」判定「新站的扣款」。任一不等一律要求重扫。
+        // P1-A：会话铸造三元组与锁内档案完全一致才放行（fail-closed）；stationId 是真正的活口——
+        // 预检后设备被迁站时会话仍带旧站，放行即拿旧站授权判新站扣款。任一不等要求重扫。
         boolean sessionAligned = ObjectUtil.equal(session.getStationId(), station.getId())
                 && ObjectUtil.equal(session.getDeviceId(), device.getId())
                 && ObjectUtil.equal(session.getOutletId(), outlet.getId());
         if (!sessionAligned) {
             throw coKeyRejected(order, "扫码会话三元组与当前档案不一致");
         }
-        // 冻结快照核验：下单当时用户认可的交易身份（水量/支付方式/金额/水种）必须与此刻的档案一致。
-        // 水种是出水口的业务身份——同一个口把水种从 8 改成 9，共键全都对得上，但用户买的已经不是
-        // 他确认的那种水了；不核这一条，改水种就成了无痕换货。
+        // 冻结快照核验：水种是出水口的业务身份，共键全对得上但水种被改，用户买的已不是
+        // 他确认的水——不核这条，改水种就成了无痕换货
         verifyFrozenSnapshot(order, outlet, session);
-        // 运行可用性：与上面的共键判定同一批权威数据（同一次当前读的 device/outlet/fault），
-        // 不再另读一份——判定用一个版本、落库用另一个版本，中间的改绑与迁站就是从那条缝里漏的。
+        // 运行可用性与共键判定用同一批当前读数据，不另读一份（防判定/落库版本分叉）
         if (!checked.available()) {
             String reason = StrUtil.blankToDefault(checked.reason(), "设备当前不可用");
             // REQUIRES_NEW 独立留痕：主事务随后回滚正是拒绝的业务结果，同事务写会连证据一起滚掉
@@ -238,10 +228,9 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
         if (ObjectUtil.isNull(card) || ObjectUtil.notEqual(card.getDataStatus(), 0)) {
             throw new JbkException("水卡不存在或不属于当前用户");
         }
-        // ④ 使用人判定（CARD-MEMBER）：卡主直通；非卡主必须持有当前有效的成员授权。
-        //    成员关系行必须 FOR UPDATE 锁定（uk_card_member_user 单行锁）——日限额没有独立统计表，
-        //    这把锁是同成员同卡并发下单的唯一串行化点，撤销/改限额与下单也靠它互斥。
-        //    无关用户、已撤销、未生效、已失效与不存在卡统一口径拒绝，不泄露他人卡与授权历史。
+        // ④ 使用人判定（CARD-MEMBER）：卡主直通；非卡主须持当前有效成员授权。成员关系行必须
+        //    FOR UPDATE——日限额无独立统计表，这把单行锁是同成员同卡并发下单的唯一串行化点。
+        //    无关用户/已撤销/未生效/已失效统一口径拒绝，不泄露他人卡与授权历史。
         WsCardMember member = null;
         if (ObjectUtil.notEqual(card.getUserId(), order.getUserId())) {
             member = cardMemberMapper.selectByCardAndUserForUpdate(order.getCardId(), order.getUserId());
@@ -265,9 +254,8 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
             // 未知状态一律 fail-closed：新增状态必须显式登记后才可取水
             throw new JbkException("水卡状态异常，暂不可取水");
         }
-        // ⑥ 范围放行：与预检同一解析器（全仓唯一），空/非法 JSON 即默认拒绝。
-        //    成员继承主卡范围（无独立成员 SCOPE_JSON），故成员与卡主走同一判定。
-        //    P1-A：判定只吃事务内核验后的权威三元组；P1-C：真实提交被拒时落可靠审计。
+        // ⑥ 范围放行：与预检同一解析器（全仓唯一），空/非法 JSON 默认拒绝；成员继承主卡范围。
+        //    P1-A：判定只吃事务内权威三元组；P1-C：真实提交被拒时落可靠审计。
         WaterCardScope scope;
         try {
             scope = WaterCardScope.normalize(card.getScopeJson(), "水卡");
@@ -288,9 +276,8 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * 成员单日限额闸（⑦）：判定「当天已占用 + 本次计划量 <= DAY_LIMIT_ML」。
-     * 占用口径与溢出语义见 {@link MemberDayLimitMath}；统计跨全部 DATA_STATUS 的取水订单，
-     * 删单不得成为绕过限额的后门。
+     * 成员单日限额闸（⑦）：当天已占用 + 本次计划量 <= DAY_LIMIT_ML（口径见 {@link MemberDayLimitMath}）；
+     * 统计跨全部 DATA_STATUS，删单不得成为绕过限额的后门。
      */
     private void enforceMemberDayLimit(WsOrder order, WsCardMember member, String now) {
         long planMl;
@@ -299,8 +286,7 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
         } catch (JbkException invalid) {
             throw new JbkException("计划水量非法，无法进行成员日限额校验");
         }
-        // 必须用锁定读：普通 SELECT 在 REPEATABLE READ 下读的是等锁前的快照，
-        // 拿到成员关系行锁后仍看不见前序并发事务刚提交的订单，限额会被并发突破。
+        // 必须锁定读：普通 SELECT 读的是等锁前的快照，看不见并发刚提交的订单，限额会被突破
         List<WsOrder> todayOrders = wsOrderMapper.selectMemberDayWaterOrdersForUpdate(
                 order.getCardId(), order.getUserId(),
                 MemberDayLimitMath.dayStart(now), MemberDayLimitMath.dayEnd(now));
@@ -317,17 +303,10 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * P1-C 范围拒绝审计：仅在用户真实提交（本下单事务）内因 CARD_SCOPE_INVALID / CARD_SCOPE_DENIED
-     * 被拒时落一条可靠领域事件。要点：
-     * <ul>
-     *   <li>recordReliableOnceIndependent（REQUIRES_NEW）独立提交——主事务随后回滚正是拒绝的
-     *       业务结果，证据必须存活；用同事务的 recordReliableOnce 会连审计一起滚掉，拒绝成无痕事件；</li>
-     *   <li>幂等键取既定确定性单号（ORDER_NO 由 userId+requestId 派生）：同一请求的重复强提交
-     *       命中 {@code uk_domain_event_biz_key} 唯一键，数据库层保证最多一条、不重复刷
-     *       （证据含 decidedAt，跨次重试报文不同，故撞键按已留痕处理、不做读回核验）；</li>
-     *   <li>事件只含判定要素（actorUserId/cardId/权威三元组/拒绝码/判断时间），不存 SCOPE_JSON 原文；</li>
-     *   <li>预检（eligibility）不经过本方法，天然零审计；卡/订单/流水/指令零业务副作用由整体回滚保证。</li>
-     * </ul>
+     * P1-C 范围拒绝审计：仅真实提交内 CARD_SCOPE_INVALID/DENIED 时落一条可靠事件。
+     * REQUIRES_NEW 独立提交（主事务回滚正是拒绝的业务结果，证据必须存活）；幂等键取确定性单号，
+     * 重复强提交撞 uk_domain_event_biz_key 最多一条；事件只含判定要素不存 SCOPE_JSON 原文；
+     * 预检不经过本方法，天然零审计。
      */
     private JbkException scopeRejected(WsOrder order, VerifiedWaterResource verified,
                                        String rejectCode, String now, String message) {
@@ -345,10 +324,8 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * 冻结快照与当前档案的一致性核验（唯一解析实现在 {@link WaterOrderSnapshot}）。
-     *
-     * <p>核三件事：快照本身合法；订单落库的水量/支付方式/金额与快照自洽（防编排层装配漂移）；
-     * 快照水种与当前锁定出水口的水种完全一致（防预检到扣款之间改水种）。任一不符整体回滚。</p>
+     * 冻结快照与当前档案一致性核验（唯一解析在 {@link WaterOrderSnapshot}）：快照合法、
+     * 订单落库值与快照自洽（防装配漂移）、快照水种与锁内出水口一致（防改水种）。任一不符整体回滚。
      */
     private void verifyFrozenSnapshot(WsOrder order, WsDeviceOutlet outlet, ScanSessionInfo session) {
         WaterOrderSnapshot.Frozen frozen;
@@ -369,8 +346,7 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
         if (ObjectUtil.notEqual(frozen.waterTypeId(), outlet.getWaterTypeId())) {
             throw quoteChanged(order, "出水口水种已变更，请重新扫码确认");
         }
-        // S2 三方一致：Redis 会话报价 == 订单快照 == 锁内当前出水口。少核任何一边都留着一条缝——
-        // 只核快照与档案，装配层就能拿别的会话装单；只核会话与快照，调价仍会照旧价扣款。
+        // S2 三方一致：Redis 会话报价 == 订单快照 == 锁内当前出水口，少核任何一边都留着一条缝
         if (ObjectUtil.notEqual(frozen.requestId(), session.getScanSessionId())) {
             throw quoteChanged(order, "下单快照与本次扫码会话不一致，请重新扫码");
         }
@@ -391,11 +367,8 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * 报价漂移拒绝（S2）：稳定拒绝码 SCAN_QUOTE_CHANGED，与「快照本身非法」区分开——
-     * 前者是价格/水种变了要用户重扫，后者是数据被篡改要运维查。
-     *
-     * <p>留痕走 recordReliableOnceIndependent：幂等键取确定性单号，用户连点多次也只落一条，
-     * 不会把一次调价刷成一串事件；主事务随后回滚，证据仍独立存活。</p>
+     * 报价漂移拒绝（S2）：稳定拒绝码 SCAN_QUOTE_CHANGED，与「快照非法」区分（前者要用户重扫，
+     * 后者要运维查）；留痕走 recordReliableOnceIndependent，连点多次只落一条，主事务回滚证据仍存活。
      */
     private JbkException quoteChanged(WsOrder order, String reason) {
         domainEventService.recordReliableOnceIndependent(OpsEnum.EventType.ORDER_STATUS, order.getOrderNo(),
@@ -411,8 +384,7 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     private JbkException coKeyRejected(WsOrder order, String reason) {
-        // 共键错位是档案被改绑/停用或会话被篡改的信号，用 REQUIRES_NEW 独立留痕——
-        // 主事务随后回滚，用 record 会连审计一起滚掉，错位就成了无痕事件。
+        // 共键错位是档案被改绑/停用或会话被篡改的信号：REQUIRES_NEW 独立留痕，主事务回滚不带走证据
         domainEventService.recordReliable(OpsEnum.EventType.ORDER_STATUS, order.getOrderNo(), null,
                 "取水下单事务共键重核拒绝：" + reason);
         return new JbkException("设备信息已变化，请重新扫码（" + reason + "）");
@@ -421,12 +393,9 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     @Override
     public int claimCommandSlot(Long orderId, Long commandId,
                                 Long stationId, Long deviceId, Long outletId) {
-        // 原子闸：单条条件 UPDATE，影响行数=1 才算抢到。谓词逐条都是安全边界，缺一条就有下发窗口：
-        //   CMD_ID IS NULL —— 一个订单只绑定一条有效出水指令（铁律4 配套）；
-        //   ORDER_TYPE=1 / ORDER_STATUS=2 —— 只有已支付的取水订单可下发，
-        //     调用方读单到这一行之间订单可能已被并发转 6异常/7退款/4完成；
-        //   三共键 —— 调用方判定所依据的档案必须仍是订单当前指向的档案，
-        //     期间设备迁站或出水口改绑一律不发。
+        // 原子闸：单条条件 UPDATE，影响行数=1 才算抢到。谓词逐条都是安全边界：
+        //   CMD_ID IS NULL=一单一条有效指令（铁律4）；ORDER_TYPE=1/ORDER_STATUS=2=只有已支付
+        //   取水单可下发（期间可能并发转 6/7/4）；三共键=期间迁站或出水口改绑一律不发。
         return wsOrderMapper.update(null, Wrappers.lambdaUpdate(WsOrder.class)
                 .set(WsOrder::getCmdId, commandId)
                 .set(WsOrder::getUpdateTime, DateUtils.time())
@@ -451,14 +420,11 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
             // 幂等：已结算（4/6/7/8）或非可结算态 → 跳过不重复补偿
             return false;
         }
-        // ② 锁序对齐 createWaterOrder（卡 → 订单）：本事务后续要写 ws_card（退差/退款补偿），
-        // 若等到那时才取卡锁，锁序就是「订单 → 卡」，与下单事务的「卡 → 成员日限额订单范围(FOR UPDATE)」
-        // 构成 ABBA——成员卡配了 DAY_LIMIT_ML 且同卡同成员当日已有订单在结算时必然互等。
-        // 必须无条件前置：只在有退差的分支里锁，反向路径原封不动还在。
+        // ② 锁序对齐 createWaterOrder（卡 → 订单）：等到退差分支才锁卡就成「订单 → 卡」，
+        // 与下单事务构成 ABBA（成员卡配日限额且当日已有订单时结算必然互等），必须无条件前置。
         WsCard lockedCard = lockCardForSettlement(routing);
-        // ③ 订单当前读并锁定：等卡锁期间订单可能已被并发推进，全部结算口径
-        //（planMl/orderAmount/payWay/packageSnap/cardId 与可结算态）必须取自锁内行，
-        // 否则拿的是等锁之前的旧快照，而 CAS 只复核 ORDER_STATUS 一项，兜不住其余字段。
+        // ③ 订单当前读并锁定：全部结算口径必须取自锁内行——等锁期间订单可能已被并发推进，
+        // 而 CAS 只复核 ORDER_STATUS 一项，兜不住其余字段。
         WsOrder order = wsOrderMapper.selectByIdForUpdate(orderId);
         if (order == null) {
             return false;
@@ -486,11 +452,9 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
         if (!byBalance && !byMl) {
             throw settlementRejected(order, "订单支付方式不支持取水结算");
         }
-        // REQ-035 超量出水：设备报回的量超过计划量，账实不符，业务终态必须是「待人工核实」。
-        // 此前按 min(actual, plan) 静默封顶后仍落 4已完成——超量在库里查不出、也没人处理。
-        // 本包冻结的模拟口径：不追加扣款、不生成退款/退差流水、保留设备原始 actualMl，
-        // 订单精确 CAS 到 6异常待补偿并留可靠审计。指令 result 可以是执行成功，
-        // 那是设备侧事实；订单业务终态与它是两回事，不得混为一谈。
+        // REQ-035 超量出水：账实不符，终态必须是 6异常待人工核实（静默封顶落 4已完成会查不出）。
+        // 冻结口径：不追加扣款、不生成退款/退差流水、保留设备原始 actualMl；
+        // 指令 result 可以是执行成功——那是设备侧事实，与订单业务终态是两回事。
         if (success && actual > plan) {
             return settleOverDispensed(order, plan, actual, now);
         }
@@ -558,8 +522,7 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
         }
 
         // 补偿入账（退差/退款）：原子 UPDATE 加回 + 流水（铁律1）；refund=0 不写流水。
-        // CARD-MEMBER：order.USER_ID 是实际使用人（可能是成员），退差必须回到同一张卡主的卡——
-        // 卡归属条件用当前卡主，UPDATE_BY 记实际使用人；流水 USER_ID 仍写实际使用人。
+        // CARD-MEMBER：退差回到卡主的卡（归属条件用锁内卡主），流水与 UPDATE_BY 记实际使用人。
         if (byBalance && refundFen > 0) {
             Long ownerUserId = requireLockedCardOwner(lockedCard);
             if (tradeCardMapper.compensateBalance(order.getCardId(), refundFen, ownerUserId, order.getUserId(), now) != 1) {
@@ -578,9 +541,8 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
             restoreEntitlement(order, after, ownerUserId, 0L, refundMl, now);
         }
 
-        // E2E-08 分账挂点（任务书口径1/2）：终态=已完成且余额支付才产分账，基数=实扣（预扣-退差）。
-        // 水量支付 ORDER_AMOUNT=0 不分账——其水费在充值环节结算（与 E2E-06 预付披露同口径）；
-        // 异常(6)/零出水退款(7) 不分账。同事务插「待分账」行，完成回滚分账同灭。
+        // E2E-08 分账挂点：终态=已完成且余额支付才产分账，基数=实扣（预扣-退差）；
+        // 水量支付 ORDER_AMOUNT=0 不分账（水费在充值环节结算），6/7 不分账；同事务插行，回滚同灭。
         if (target == TradeEnum.OrderStatus.FINISHED.getValue() && byBalance) {
             splitService.enqueueForOrder(order.getId(), order.getOrderNo(),
                     order.getOrderAmount() - refundFen,
@@ -592,13 +554,9 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * 超量出水收口（REQ-035）：订单从可结算态精确 CAS 到 6异常待补偿，落设备原始 actualMl。
-     *
-     * <p>零资金动作——本包不新增补收、罚款或用户补偿规则，超出部分的计费口径属外部待确认项；
-     * 在规则明确前，平台只负责把账实不符标出来交人工，不擅自替甲方定价。</p>
-     *
-     * <p>幂等：CAS 影响行数为 0 说明已被并发结算，直接跳过且不落审计，避免重投刷出多条证据。
-     * {@code plan}/{@code actual} 均已过非负校验，差值不会溢出。</p>
+     * 超量出水收口（REQ-035）：可结算态精确 CAS 到 6异常待补偿，落设备原始 actualMl。
+     * 零资金动作——超出部分计费口径属外部待确认项，规则明确前只标账实不符交人工。
+     * CAS 影响行数 0 即已被并发结算，跳过且不落审计（避免重投刷证据）。
      */
     private boolean settleOverDispensed(WsOrder order, long plan, long actual, String now) {
         long overMl = actual - plan;
@@ -627,13 +585,9 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * 退差回补权益批次（E2E-04 包D-4）：卡加回多少，批次就补回多少。
-     *
-     * <p>只加卡不回补批次，这张卡的聚合值会永久高于批次剩余合计，多出来的那部分余额
-     * 在下一次取水时凑不出批次额度，用户看得见却花不掉（{@link EntitlementLedger} 的不变式）。</p>
-     *
-     * <p>回补目标由本单的消费分摊键定位——退的是这一单的差额，就只还这一单扣过的批次，
-     * 不去碰同卡别的消费。上线前的历史单没有分摊行，由台账按真实缺口并入不可退桶。</p>
+     * 退差回补权益批次（E2E-04 包D-4）：卡加回多少批次就补回多少，否则卡聚合值永久高于批次
+     * 剩余合计，余额看得见花不掉（{@link EntitlementLedger} 的不变式）；
+     * 回补按本单消费分摊键定位，不碰同卡别的消费。
      */
     private void restoreEntitlement(WsOrder order, WsCard after, Long ownerUserId,
                                    long refundFen, long refundMl, String now) {
@@ -650,20 +604,15 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * 结算入口处无条件锁卡（{@code SELECT ... FOR UPDATE}），确立本事务的「卡 → 订单」锁序。
-     *
-     * <p>两个作用：① 与下单事务同向取锁，消除 ABBA；② 补偿 SQL 的归属条件取自锁内卡行，
-     * 不再另做一次无锁读——同一事务里「无锁读卡主、有锁写卡」是两个时点的两份事实。
-     * 锁定读跨全部 DATA_STATUS（见 TradeCardMapper），删除态必须锁到后显式拒绝，
-     * 否则「已删除」在锁语义上等于「不存在」，并发恢复/删除窗口会漏判。</p>
+     * 结算入口处无条件锁卡，确立「卡 → 订单」锁序（与下单事务同向，消除 ABBA）；
+     * 补偿 SQL 的归属条件取自锁内卡行。锁定读跨全部 DATA_STATUS，删除态锁到后显式拒绝。
      */
     private WsCard lockCardForSettlement(WsOrder order) {
         if (ObjectUtil.isNull(order.getCardId())) {
             return null;
         }
         WsCard card = tradeCardMapper.selectByIdForUpdate(order.getCardId());
-        // 卡缺失/已删除不在此提前拒绝：零退差结算原本就不碰卡，提前抛会把这类单拦死在 2/3。
-        // 拒绝时机仍留在真正要补偿的分支（requireLockedCardOwner），与既有语义逐字一致。
+        // 卡缺失/已删除不提前拒绝（零退差结算不碰卡）；拒绝时机留在补偿分支 requireLockedCardOwner
         return ObjectUtil.isNull(card) || ObjectUtil.notEqual(card.getDataStatus(), 0) ? null : card;
     }
 
@@ -689,9 +638,8 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
     }
 
     /**
-     * 从 PACKAGE_SNAP 读取下单单价快照（分/升）。解析规则唯一实现在 {@link WaterOrderSnapshot}；
-     * 本方法只负责把「回退」这件事按结算口径留痕：缺失按既有产品 A 回退单价 0 并独立提交事件，
-     * 数值存在但非法则由解析侧抛出，禁止全额退款掩盖篡改。
+     * 从 PACKAGE_SNAP 读单价快照（唯一解析在 {@link WaterOrderSnapshot}）：缺失按产品 A
+     * 回退单价 0 并独立留痕；存在但非法由解析侧抛出，禁止全额退款掩盖篡改。
      */
     private UnitPriceSnapshot parseUnitPriceFromSnap(WsOrder order) {
         WaterOrderSnapshot.UnitPriceRead read;
@@ -759,8 +707,7 @@ public class TradeOrderTxServiceImpl implements ITradeOrderTxService {
                 .setAmountAfter(after.getBalanceAmount())
                 .setMlAfter(after.getBalanceMl())
                 .setOrderId(order.getId())
-                // 幂等键（E2E-08 包A 补齐）：日对账维度2 按 CONSUME:<orderNo> 判「恰一条扣减流水」；
-                // 存量行由 settlement-e2e08-a 迁移回填，此处保证新单同键（同事务插入，天然一单一条）
+                // 幂等键（E2E-08 包A）：日对账按 CONSUME:<orderNo> 判恰一条扣减流水；存量行由迁移回填
                 .setBizIdempotencyKey("CONSUME:" + order.getOrderNo())
                 .setFlowRemark("扫码取水 " + order.getOrderNo());
     }

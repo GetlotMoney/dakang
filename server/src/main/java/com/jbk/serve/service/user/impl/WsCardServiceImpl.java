@@ -21,6 +21,7 @@ import com.jbk.tool.data.user.vo.WsCardMemberVo;
 import com.jbk.tool.data.user.vo.WsCardVo;
 import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.utils.OptionalUtils;
+import com.jbk.tool.utils.PhoneMask;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -212,7 +213,8 @@ public class WsCardServiceImpl extends ServiceImpl<WsCardMapper, WsCard> impleme
                 WsUser user = userMap.get(vo.getMemberUserId());
                 if (ObjectUtil.isNotNull(user)) {
                     vo.setMemberUserName(user.getUserName());
-                    vo.setMemberUserPhone(user.getUserPhone());
+                    // 号码只用于人工核对身份，脱敏后仍足够辨认；管理端没有拨号或外呼场景需要明文
+                    vo.setMemberUserPhone(PhoneMask.mask(user.getUserPhone()));
                 }
             });
         }
@@ -236,7 +238,7 @@ public class WsCardServiceImpl extends ServiceImpl<WsCardMapper, WsCard> impleme
                 WsUser user = userMap.get(vo.getUserId());
                 if (ObjectUtil.isNotNull(user)) {
                     vo.setUserName(user.getUserName());
-                    vo.setUserPhone(user.getUserPhone());
+                    vo.setUserPhone(PhoneMask.mask(user.getUserPhone()));
                 }
             });
         }

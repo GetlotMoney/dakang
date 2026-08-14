@@ -32,21 +32,11 @@ import java.security.NoSuchAlgorithmException;
 import java.util.List;
 
 /**
- * 首次购卡发卡事务（决策 A2/A3/A4）——{@link RechargeCreditTxImpl} 的姊妹实现。
- *
- * <p>固定顺序（锁序 payment → order → 用户行 → 发行锚点卡 → 同单事件组 → 卡流水，
- * 与事务 B 的 payment → order → card → events → flows 保持「卡先于事件」一致，避免交叉锁序死锁）：</p>
- * <ol>
- *   <li>锁 payment、order 并逐项核验共键、快照与付款资格；</li>
- *   <li>锁 {@code ws_user} 行——同一用户的发卡在数据库层串行化（决策 A4）；</li>
- *   <li>发行锚点 {@code ISSUE_ORDER_ID} 命中即只做幂等核验，绝不建第二张（决策 A3）；</li>
- *   <li>复查资格：存在任意 DATA_STATUS=0 的卡即不可恢复（钱已收但不能再发卡，转人工）；</li>
- *   <li>建零余额零水量虚拟卡 → 复用 credit CAS 原子加权益（前态 0,0）→ 唯一流水
- *       → 回填 CARD_ID CAS → 订单 2→4 → 事件组收敛。</li>
- * </ol>
- *
- * <p>任一步失败抛异常整体回滚：不留卡、不留流水、订单不动（决策 A2）。
- * 权益取值只来自订单快照；新卡有效期只从权威 paySuccessTime 起算（{@link NewCardExpiry}，决策 A1）。</p>
+ * 首次购卡发卡事务（决策 A2/A3/A4），{@link RechargeCreditTxImpl} 的姊妹实现。
+ * 锁序 payment → order → 用户行 → 锚点卡 → 事件组 → 卡流水，与事务 B「卡先于事件」一致，防交叉死锁；
+ * 同一用户发卡由 ws_user 行锁串行化（A4）；发行锚点命中只做幂等核验、绝不建第二张（A3）。
+ * 任一步失败整体回滚：不留卡、不留流水、订单不动（A2）；权益只取订单快照，
+ * 新卡有效期只从权威 paySuccessTime 起算（{@link NewCardExpiry}，A1）。
  */
 @Slf4j
 @Service
@@ -69,19 +59,10 @@ public class RechargeIssueTxImpl implements IRechargeIssueTx {
 
     @Override
     /**
-     * N-15 修复：本事务用 READ_COMMITTED。
-     *
-     * <p>REPEATABLE READ 下，资格复查 {@code countLiveCardsByUser} 是普通一致性读，读视图在
-     * 事务首条 SELECT 时已建立——后到者在 ws_user 行锁上醒来后，读到的仍是先行者提交前的快照，
-     * 于是同用户两笔已支付购卡单并发时各发一张卡（真库复现见 RechargeIssueTxDbTest）。
-     * READ_COMMITTED 让每条语句读最新已提交版本：拿到用户行锁后复查即可看见赢家刚提交的卡。</p>
-     *
-     * <p>刻意不用 FOR SHARE/FOR UPDATE 复查：对无卡用户在二级索引 idx_card_user 上做锁定读会留
-     * gap 锁，两个落在同一索引间隙的<b>无关</b>用户并发发卡会插入意向互等死锁
-     * （selectCardByIssueOrderId 的注释已记录过同型教训）。降隔离级别零新增锁面。</p>
-     *
-     * <p>同用户串行化仍由步骤 b 的 ws_user 行 X 锁保证；本事务内 payment/order/user 等关键读
-     * 本就全是 FOR UPDATE（当前读），不受隔离级别变化影响。</p>
+     * N-15：必须 READ_COMMITTED——REPEATABLE READ 下资格复查是普通一致性读，后到者在
+     * ws_user 行锁上醒来后仍读旧快照，同用户两笔已支付购卡单会各发一张卡（RechargeIssueTxDbTest 复现）。
+     * 刻意不用 FOR SHARE/FOR UPDATE 复查：对无卡用户在 idx_card_user 上锁定读会留 gap 锁，
+     * 无关用户并发发卡互等死锁。同用户串行化由 ws_user 行 X 锁保证，关键读全是 FOR UPDATE 不受影响。
      */
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public IRechargeCreditTx.CreditResult issue(Long eventId, String processingTime) {
@@ -90,13 +71,9 @@ public class RechargeIssueTxImpl implements IRechargeIssueTx {
         WsPayment payment = locked.payment();
         RechargeSnapshot.Parsed snap = locked.snapshot();
 
-        // ── 步骤 c：幂等锚点（决策 A3）。命中只核验，绝不建第二张。
-        // 锚点的存在性由**锁内订单状态**分流，而不是先无差别地按 ISSUE_ORDER_ID 查一把：
-        // 锚点卡与订单 2→4 在同一事务写入（决策 A2 的原子性保证），因此锁内订单仍为 2
-        // ⟹ 锚点必不存在（若有人绕过本事务手工插了锚点卡，步骤 e 的 uk_card_issue_order
-        // 会在插入时兜底回滚）。这样 fresh 路径完全不对空的唯一索引做锁定查询——
-        // 对不存在的行加 FOR UPDATE 会留下 gap 锁，两笔不相关的并发发卡会在相邻空隙上互等死锁；
-        // 而不加锁的普通读在 REPEATABLE READ 下又可能读到过期快照，把并发方刚发的卡看成不存在。
+        // ── 步骤 c：幂等锚点（A3）。锚点存在性由锁内订单状态分流，不直接按 ISSUE_ORDER_ID 查：
+        // fresh 路径对空唯一索引做锁定读会留 gap 锁（无关并发发卡互等死锁），普通读又可能读到过期快照；
+        // 锚点卡与订单 2→4 同事务写入，锁内订单为 2 ⟹ 锚点必不存在，绕过者由 uk_card_issue_order 兜底
         if (ObjectUtil.equals(order.getOrderStatus(), ORDER_FINISHED)) {
             // 订单终态分支：锚点卡此刻应当存在（FOR UPDATE 命中的是既有行，只加行锁不留 gap 锁）
             WsCard issued = mapper.selectCardByIssueOrderId(order.getId());
@@ -175,11 +152,9 @@ public class RechargeIssueTxImpl implements IRechargeIssueTx {
             throw new JbkException("首充流水插入影响行数异常");
         }
 
-        // ── 步骤 g2：建立权益批次（E2E-04 包D，REQ-061）──
-        // 必须在<b>本事务内</b>、紧跟权益写入与流水之后：批次与卡权益同生共死。
-        // 卡加了权益而批次没建，这笔充值将永远无法退款（退款折算没有基准）；
-        // 批次建了而卡没加，退款会退出根本没发放的权益。
-        // 撞 uk_batch_order 即同一笔充值重放，整事务回滚，与流水的幂等口径一致。
+        // ── 步骤 g2：权益批次（E2E-04 包D，REQ-061）必须本事务内建立——批次与卡权益同生共死
+        // （只加权益不建批次=这笔充值永远无法退款；只建批次不加权益=退不存在的权益）。
+        // 撞 uk_batch_order 即重放，整事务回滚，与流水幂等口径一致。
         EntitlementBatchWriter.createOnCredit(batchMapper, order, card.getId(), order.getUserId(), payment.getId(),
                 EntitlementBatchOrder.SourceType.FIRST_PURCHASE,
                 snap.payAmount(),
@@ -496,11 +471,9 @@ public class RechargeIssueTxImpl implements IRechargeIssueTx {
     }
 
     /**
-     * 虚拟卡卡号派生（<b>工程决定，非业务决策</b>——业务只要求卡号唯一且与现有 16 位卡号等长）：
-     * {@code "VC" + SHA-256(orderNo) 前 14 位十六进制大写}，共 16 位。
-     * 由订单号确定性派生：同一订单无论重放多少次算出的都是同一个卡号，
-     * 配合 {@code uk_card_no} 与 {@code uk_card_issue_order} 双唯一键，并发建卡在数据库层天然幂等；
-     * 不含日期/序列/随机数，跨重启、跨进程稳定可复算，对账时可由订单号独立验证卡号归属。
+     * 虚拟卡卡号确定性派生：{@code "VC" + SHA-256(orderNo) 前 14 位十六进制大写}，共 16 位。
+     * 同一订单重放恒同一卡号，配合 uk_card_no / uk_card_issue_order 双唯一键在数据库层天然幂等；
+     * 不含日期/序列/随机数，可由订单号独立复算验证归属。
      */
     public static String deriveCardNo(String orderNo) {
         if (StrUtil.isBlank(orderNo)) {

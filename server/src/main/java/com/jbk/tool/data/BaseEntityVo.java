@@ -10,12 +10,6 @@ import lombok.Setter;
 
 import java.io.Serializable;
 
-/**
- * @ClassName BaseEntity
- * @Author xs
- * @Date 2024/6/7 14:35
- * @Version 1.0
- */
 @Data
 @Getter
 @Setter

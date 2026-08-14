@@ -44,7 +44,7 @@
       @success="refreshData"
     />
 
-    <!-- 菜单权限弹窗 -->
+    <!-- 角色授权弹窗（菜单权限 / 操作权限分栏） -->
     <RolePermissionDialog
       v-model="permissionDialog"
       :role-data="currentRoleData"
@@ -71,15 +71,14 @@
   }
 
   type RoleListItem = Api.SystemManage.RoleListItem
-  type RoleSearchFormParams = Api.SystemManage.RoleSearchParams & {
-    daterange?: string[]
-  }
+  // 创建日期筛选已撤：控件提交 startTime/endTime，而角色查询根本不过滤这两个参数——
+  // 选了不生效也不报错的筛选比没有筛选更误事
+  type RoleSearchFormParams = Api.SystemManage.RoleSearchParams
 
   // 搜索表单
   const searchForm = ref<RoleSearchFormParams>({
     roleName: undefined,
-    roleCode: undefined,
-    daterange: undefined
+    roleCode: undefined
   })
 
   const showSearchBar = ref(false)
@@ -108,8 +107,6 @@
         current: 1,
         size: 20
       },
-      // 排除 apiParams 中的属性
-      excludeParams: ['daterange'],
       columnsFactory: () => [
         {
           prop: 'id',
@@ -207,11 +204,7 @@
    * @param params 搜索参数
    */
   const handleSearch = (params: RoleSearchFormParams) => {
-    // 处理日期区间参数，把 daterange 转换为 startTime 和 endTime
-    const { daterange, ...filtersParams } = params
-    const [startTime, endTime] = Array.isArray(daterange) ? daterange : [null, null]
-
-    replaceSearchParams({ ...filtersParams, startTime, endTime })
+    replaceSearchParams({ ...params })
     getData()
   }
 

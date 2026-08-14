@@ -52,7 +52,7 @@ public class WsStationVo extends BaseEntityVo implements Serializable {
     @Schema(description = "机主姓名（关联 ws_user 派生）")
     private String ownerUserName;
 
-    @Schema(description = "机主手机号（关联 ws_user 派生）")
+    @Schema(description = "机主脱敏手机号（关联 ws_user 派生，服务端 PhoneMask 脱敏；号码异常为空串）")
     private String ownerUserPhone;
 
     @Schema(description = "站内设备数（关联 ws_device 派生）")

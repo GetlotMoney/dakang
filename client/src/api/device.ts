@@ -478,6 +478,8 @@ export interface BatchPreviewResult {
   paramDigest: string
   /** 紧急停止锚定的活动订单号（仅紧急停止返回） */
   activeOrderNo?: string
+  /** 是否需二级认证（服务端按 D-423 判据算出）；前端只做提前告知，读到 false 也可能被拒。 */
+  requireSafe?: boolean
 }
 
 export interface BatchItem {

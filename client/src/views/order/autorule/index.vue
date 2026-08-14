@@ -1,7 +1,7 @@
 <!-- 自动补货规则（S2）：只读——客服追踪用户规则与状态；启停与取消是用户小程序自助动作，后台不代操作 -->
 <template>
   <div class="art-full-height">
-    <BusinessModuleNav module-key="order" />
+    <BusinessModuleNav module-key="deliveryOps" />
 
     <ElAlert
       type="info"

@@ -18,8 +18,10 @@ import com.jbk.serve.service.delivery.DeliveryPricing;
 import com.jbk.serve.service.delivery.IDeliveryOrderService;
 import com.jbk.serve.service.delivery.IDeliveryOrderTxService;
 import com.jbk.serve.service.mini.recharge.RechargeOrderNo;
+import com.jbk.serve.service.mini.notify.WechatNotifyEnqueue;
 import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.tool.consts.delivery.DeliveryEnum;
+import com.jbk.tool.consts.mini.WechatNotifyEnum;
 import com.jbk.tool.consts.ops.OpsEnum;
 import com.jbk.tool.consts.trade.TradeEnum;
 import com.jbk.tool.data.delivery.bo.DeliveryCreateBo;
@@ -60,6 +62,9 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
     private static final int AUTO_REFILL_MIN_DAYS = 3;
     private static final int AUTO_REFILL_MAX_DAYS = 90;
 
+    /** 订阅通知登记。失败路径走 enqueueIndependent，理由见调用点注释。 */
+    @Autowired
+    private WechatNotifyEnqueue notifyEnqueue;
     @Autowired
     private IInviteService inviteService;
     @Autowired
@@ -89,9 +94,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         long waterTypeId = decimalId(bo.getWaterTypeId(), "waterTypeId");
 
         String orderNo = DeliveryOrderNo.derive(userId, requestId);
-        // 幂等预检：同号订单已存在 → 核验归属/类型/冻结参数后返回既有订单+任务（不重复扣款）。
-        // 必须先于预约时效校验：同参重放是回看历史动作，预约时间早已过去是常态，
-        // 拿「新建单时效」拦重放会把合法幂等重试打成 540（预约时间必须晚于当前时间）。
+        // 幂等预检：同号订单已存在 → 核验冻结参数后返回既有单（不重复扣款）。必须先于预约时效
+        // 校验——重放是回看历史动作，拿「新建单时效」拦重放会把合法重试打成 540
         WsOrder existing = orderMapper.selectOne(Wrappers.lambdaQuery(WsOrder.class)
                 .eq(WsOrder::getOrderNo, orderNo));
         if (ObjectUtil.isNotNull(existing)) {
@@ -117,6 +121,7 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         WsDeliveryAutoRule autoRule = null;
         if (bo.getDeliveryMode() == MODE_AUTO_REFILL) {
             autoRule = buildAutoRule(bo, userId, cardId, stationId, waterTypeId, planReturn, requestId, now);
+            requireNoAliveSameShapeRule(autoRule);
         }
         String scheduledTime = bo.getDeliveryMode() == MODE_SCHEDULED ? bo.getScheduledTime() : null;
 
@@ -129,6 +134,11 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
             WsOrder saved = orderTxService.createPaidDeliveryOrder(order, task, autoRule, now);
             return new CreatedDelivery(saved, task);
         } catch (DuplicateKeyException e) {
+            // 撞同款去重键而非订单号：库层唯一索引裁出赢家，输方按业务语义拒绝，
+            // 不能当幂等命中（那会把「已有同款规则」说成「这单已下过」）
+            if (isSameShapeConflict(e)) {
+                throw new JbkException(SAME_SHAPE_RULE_RACE_REJECT);
+            }
             // 并发同请求穿透预检：事务已整体回滚（扣减一并撤销），按幂等命中处理
             WsOrder concurrent = orderMapper.selectOne(Wrappers.lambdaQuery(WsOrder.class)
                     .eq(WsOrder::getOrderNo, orderNo));
@@ -152,9 +162,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
                 }
             }
             catch (RuntimeException isolated) {
-                // 逐规则隔离（B08-S1）：任何一条规则的异常——包括它自己那条失败留痕的写入异常——
-                // 都不得阻断后续规则。这是定时扫描，不是用户请求：一条脏规则若能中断循环，
-                // 排在它后面的所有用户当期都收不到水，而且症状是「静悄悄地少了几单」。
+                // 逐规则隔离（B08-S1）：任何一条规则的异常都不得阻断后续规则——
+                // 一条脏规则中断循环，排在后面的用户当期都收不到水
                 log.error("自动补货规则处理异常，跳过该规则 ruleId={} now={}", rule.getId(), now, isolated);
             }
         }
@@ -191,13 +200,18 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
             return false;
         }
         catch (JbkException e) {
-            // 卡不足/档案停用等业务失败：留痕后继续其他规则。
-            // 幂等键按「规则+期序」而不是订单号+报文：本期条件不恢复的话每一轮扫描都会再失败一次，
-            // 无键的 recordReliable 会把事件表刷成按扫描频率增长的日志。撞键即视为已留痕。
-            // 键只覆盖留痕，不覆盖生成——本期失败后条件恢复，下一轮仍会正常生成这一期的单。
+            // 业务失败留痕后继续其他规则。幂等键按「规则+期序」：无键留痕会按扫描频率刷爆事件表；
+            // 键只覆盖留痕不覆盖生成，条件恢复后下一轮仍正常生成本期。
             domainEventService.recordReliableOnceIndependent(OpsEnum.EventType.ORDER_STATUS, orderNo,
                     autoRefillFailKey(rule.getId(), period), null,
                     "自动补货第" + period + "期创单失败（规则" + rule.getId() + "）：" + e.getMsg());
+            // 失败通知走独立事务：将来扫描循环若被套上事务，跟随传播的登记会随回滚消失——
+            // 成功通知必须随回滚消失，失败通知必须在回滚后活着，方向相反。
+            notifyEnqueue.enqueueIndependent(WechatNotifyEnum.EventType.AUTO_REFILL_FAILED,
+                    WechatNotifyEnum.BizObjectType.REFILL_RULE,
+                    // 对象编号带期序：同一规则不同期是不同的失败，各自该通知一次
+                    rule.getId() + ":" + period, rule.getUserId(),
+                    JSONUtil.createObj().set("period", period).set("reason", e.getMsg()));
             return false;
         }
     }
@@ -245,9 +259,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
     // ==================== 装配与校验 ====================
 
     /**
-     * 支付方式归一化（D-214 结构校验，形态级、无时钟）：null 按 2 兼容老验收包
-     * （E2E-03 封板前的调用方无 payWay 字段）；白名单外一律拒绝——1（微信）不是
-     * 配送资金链的合法入参，收进来就等于放任「未接入的支付方式」建成已支付单。
+     * 支付方式归一化（D-214 结构校验）：null 按 2 兼容封板前无 payWay 的老调用方；
+     * 白名单外一律拒绝——1（微信）不是配送资金链的合法入参。
      */
     private int normalizePayWay(DeliveryCreateBo bo) {
         Integer payWay = bo.getPayWay();
@@ -283,9 +296,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
             if (ObjectUtil.isNull(interval) || interval < AUTO_REFILL_MIN_DAYS || interval > AUTO_REFILL_MAX_DAYS) {
                 throw new JbkException("自动补货需配置 3~90 天的固定周期");
             }
-            // D-214 边界：ws_delivery_auto_rule 无支付方式列，周期生成恒走全余额；
-            // 若放行首单水量抵扣，会形成「首单扣水量、后续悄悄扣钱」的口径漂移，
-            // fail-closed 拒绝，待规则表扩列并独立评审后再放开。
+            // D-214：规则表无支付方式列，周期生成恒走全余额；放行首单水量抵扣会形成
+            // 「首单扣水量、后续悄悄扣钱」的口径漂移，fail-closed 待扩列评审后再放开
             if (payWay == TradeEnum.PayWay.CARD_ML.getValue()) {
                 throw new JbkException("自动补货暂仅支持水卡余额支付");
             }
@@ -311,14 +323,10 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
     }
 
     /**
-     * 幂等命中核验（E2E-03 验收 P1-1，写法与文案口径对齐 MiniRechargeServiceImpl#verifyIdempotent）：
-     * 订单必须属于当前会话用户且确为配送单，任务必须存在（一单一任务），且本次重放的
-     * 关键参数必须与创单时冻结的服务端快照逐字段一致——同 requestId 是同一次购买动作，
-     * 改数量/地址/水种等任何关键参数都是冲突而不是重放，拒绝且零副作用（不扣款不建单）。
-     *
-     * <p>冻结位置复用既有列，不造第二套快照格式：水种/数量/回收数/配送方式/预约时间/
-     * 自动补货周期/支付方式/水费/配送费在创单 PACKAGE_SNAP（见 {@link #buildSnap}），
-     * 地址/电话在任务行 RECEIVE_ADDRESS/RECEIVE_PHONE，水站/水卡在订单行列。</p>
+     * 幂等命中核验（E2E-03 P1-1，口径对齐 MiniRechargeServiceImpl#verifyIdempotent）：
+     * 归属/类型/任务在位，且重放关键参数与创单冻结快照逐字段一致——同 requestId 换任何关键参数
+     * 是冲突而非重放，拒绝且零副作用。冻结位置复用既有列（PACKAGE_SNAP/任务行/订单行），
+     * 不造第二套快照格式。
      */
     private CreatedDelivery verifyIdempotentHit(WsOrder existing, Long userId, String requestId,
                                                 DeliveryCreateBo bo, int payWay, long cardId, long stationId,
@@ -372,10 +380,8 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
         if (conflict) {
             throw new JbkException("同一 requestId 不可更换配送参数");
         }
-        // 水费/配送费冻结自洽：快照、任务行与订单总额三方恒等（快照被改写即拒绝）。
-        // D-214 金额口径下 waterAmountFen 是「本单实际应扣水费」（payWay=3 恒 0，价目参考
-        // 另存 priceWaterAmountFen），恒等式 ORDER_AMOUNT = waterAmountFen + deliveryFeeFen
-        // 对两种支付方式与全部历史单一体成立，无需按 payWay 分叉。
+        // 水费/配送费冻结自洽：快照、任务行与订单总额三方恒等（快照被改写即拒绝）；
+        // D-214 下 ORDER_AMOUNT = waterAmountFen + deliveryFeeFen 对两种支付方式一体成立
         Long snapWater = snap.getLong("waterAmountFen");
         Long snapFee = snap.getLong("deliveryFeeFen");
         boolean amountConsistent = ObjectUtil.isNotNull(snapWater) && ObjectUtil.isNotNull(snapFee)
@@ -386,6 +392,40 @@ public class DeliveryOrderServiceImpl implements IDeliveryOrderService {
             throw new JbkException("订单金额与快照不一致，拒绝");
         }
         return new CreatedDelivery(existing, task);
+    }
+
+    /** 预检拒因：库里已经有一条同款规则，用户自己去取消。 */
+    private static final String SAME_SHAPE_RULE_REJECT =
+            "您已有一条相同水种、规格与收货地址的自动补货规则，请先在补货规则页取消后再新建";
+    /**
+     * 并发输方拒因，与预检拒因刻意分成两句：「你早就有一条」要去取消、「刚刚被抢先」刷新即可；
+     * 两句也让两层判据各自可被用例钉住。
+     */
+    private static final String SAME_SHAPE_RULE_RACE_REJECT =
+            "自动补货规则刚刚被创建，请刷新后查看已有规则";
+
+    /**
+     * 同款补货规则预检：只负责可读拒因；并发安全由库层唯一索引 uk_dauto_active_shape 负责——
+     * 仅应用层判重时两个并发请求会各建一条，Worker 每期各扣一次款。
+     */
+    private void requireNoAliveSameShapeRule(WsDeliveryAutoRule candidate) {
+        Long alive = autoRuleMapper.selectCount(Wrappers.lambdaQuery(WsDeliveryAutoRule.class)
+                .eq(WsDeliveryAutoRule::getUserId, candidate.getUserId())
+                .eq(WsDeliveryAutoRule::getWaterTypeId, candidate.getWaterTypeId())
+                .eq(WsDeliveryAutoRule::getContainerSpec, candidate.getContainerSpec())
+                .eq(WsDeliveryAutoRule::getReceiveAddress, candidate.getReceiveAddress())
+                .in(WsDeliveryAutoRule::getRuleStatus,
+                        DeliveryEnum.AutoRuleStatus.ENABLED.getValue(),
+                        DeliveryEnum.AutoRuleStatus.DISABLED.getValue()));
+        if (alive != null && alive > 0) {
+            throw new JbkException(SAME_SHAPE_RULE_REJECT);
+        }
+    }
+
+    /** 区分撞的是哪一把唯一键：订单号冲突是幂等，同款键冲突是业务拒绝。 */
+    private static boolean isSameShapeConflict(DuplicateKeyException e) {
+        String text = e.getMessage() == null ? "" : e.getMessage();
+        return text.contains("uk_dauto_active_shape");
     }
 
     private WsDeliveryAutoRule buildAutoRule(DeliveryCreateBo bo, Long userId, long cardId, long stationId,

@@ -50,6 +50,7 @@ import com.jbk.tool.utils.DateUtils;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.mapper.MapperFactoryBean;
@@ -119,6 +120,19 @@ class DeliveryFulfillmentTxDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -151,6 +165,7 @@ class DeliveryFulfillmentTxDbTest {
                     .getResources("classpath:mapper/*/*.xml"));
             return new SqlSessionTemplate(factory.getObject());
         }
+
 
         @Bean
         MapperFactoryBean<TradeCardMapper> tradeCardMapper(SqlSessionTemplate t) {
@@ -249,6 +264,23 @@ class DeliveryFulfillmentTxDbTest {
             return new WsDomainEventServiceImpl();
         }
 
+
+        /** 通知登记用真实实现：要验「回滚后库里没有那一行」，mock 证不了。 */
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper>
+                wechatNotifyOutboxMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue(
+                com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper m) {
+            return new com.jbk.serve.service.mini.notify.WechatNotifyEnqueue(m);
+        }
+
         @Bean
         IWsMessageService messageService() {
             return new WsMessageServiceImpl();
@@ -298,11 +330,7 @@ class DeliveryFulfillmentTxDbTest {
             return new DeliveryTaskTxServiceImpl();
         }
 
-        /**
-         * E2E-04 包C：签收事务在成功后会调用它把补送售后动作推成完成。
-         * 普通配送任务签收时它恒返回 false、不产生写入，但 Bean 必须存在——
-         * 缺它整个上下文起不来，这也正是本类此前一次性红掉 14 条的原因。
-         */
+        /** E2E-04 包C：签收成功后推补送售后动作；普通签收恒 false 零写入，但缺此 Bean 上下文起不来。 */
         @Bean
         IResendFulfillmentTxService resendFulfillmentTxService(WsAfterSaleActionMapper a,
                                                                WsDeliveryAppealMapper ap,

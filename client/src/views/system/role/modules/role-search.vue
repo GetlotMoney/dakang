@@ -12,9 +12,7 @@
 </template>
 
 <script setup lang="ts">
-  type RoleSearchFormParams = Api.SystemManage.RoleSearchParams & {
-    daterange?: string[]
-  }
+  type RoleSearchFormParams = Api.SystemManage.RoleSearchParams
 
   interface Props {
     modelValue: RoleSearchFormParams
@@ -31,22 +29,13 @@
 
   const searchBarRef = ref()
 
-  /**
-   * 表单数据双向绑定
-   */
   const formData = computed({
     get: () => props.modelValue,
     set: (val) => emit('update:modelValue', val)
   })
 
-  /**
-   * 表单校验规则
-   */
   const rules = {}
 
-  /**
-   * 搜索表单配置项
-   */
   const formItems = computed(() => [
     {
       label: '角色名称',
@@ -61,39 +50,13 @@
       type: 'input',
       placeholder: '请输入角色编码',
       clearable: true
-    },
-    {
-      label: '创建日期',
-      key: 'daterange',
-      type: 'datetime',
-      props: {
-        style: { width: '100%' },
-        placeholder: '请选择日期范围',
-        type: 'daterange',
-        rangeSeparator: '至',
-        startPlaceholder: '开始日期',
-        endPlaceholder: '结束日期',
-        valueFormat: 'YYYY-MM-DD',
-        shortcuts: [
-          { text: '今日', value: [new Date(), new Date()] },
-          { text: '最近一周', value: [new Date(Date.now() - 604800000), new Date()] },
-          { text: '最近一个月', value: [new Date(Date.now() - 2592000000), new Date()] }
-        ]
-      }
     }
   ])
 
-  /**
-   * 处理重置事件
-   */
   const handleReset = () => {
     emit('reset')
   }
 
-  /**
-   * 处理搜索事件
-   * 验证表单后触发搜索
-   */
   const handleSearch = async (params: RoleSearchFormParams) => {
     await searchBarRef.value.validate()
     emit('search', params)

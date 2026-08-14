@@ -8,17 +8,10 @@ import lombok.experimental.Accessors;
 import java.io.Serializable;
 
 /**
- * PC 取水异常核账依据（E2E-04 包A，只读预览）。
- *
- * <p>状态 6异常待补偿 有两条语义完全相反的来源，运营在页面上看到的都是同一个「6」：
- * 一条已经退过差（结算路径判定出水失败，退差流水已落，落 6 只是等复核），
- * 一条一分钱没退（出水指令链异常直接置位，只写了状态与原因）。把两者当成同一件事处理，
- * 前者会被二次退款、后者会被无偿完结。本 Vo 的存在就是把这条判别摊开给运营看，
- * 而不是让页面按订单状态自行猜测。</p>
- *
- * <p>{@code suggestTargetStatus} 是<b>服务端派生的建议值，仅供展示</b>：确认接口不接受
- * 前端回传目标状态，仍会在事务内按同一份规则重算。
- * {@code confirmable=false} 时 {@code blockReason} 必非空，是可直接展示给运营的精确原因。</p>
+ * PC 取水异常核账依据（E2E-04 包A，只读预览）。状态 6 有两条语义相反的来源（已退过差待复核 / 一分未退），
+ * 混同会导致二次退款或无偿完结，本 Vo 把判别摊开给运营。
+ * {@code suggestTargetStatus} 仅供展示：确认接口不接受回传目标状态，事务内按同一规则重算；
+ * {@code confirmable=false} 时 {@code blockReason} 必非空。
  *
  * @author dakang
  * @since 2026-07-29

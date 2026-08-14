@@ -5,6 +5,7 @@ import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import {
   ONLINE_STATUS_LABELS,
   ONLINE_STATUS_TONES,
@@ -79,20 +80,18 @@ async function refresh() {
   <view class="page-shell">
     <AppNavbar title="设备详情" back-to="O02" />
 
-    <view v-if="loading" class="page-section muted-text">
-      加载中…
+    <view v-if="loading" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
     </view>
 
     <view v-else-if="errorMessage" class="page-section">
-      <wd-status-tip image="network" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain size="small" @click="backOr('O02')">
-              返回
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain size="small" @click="backOr('O02')">
+            返回
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else-if="detail">
@@ -196,17 +195,10 @@ async function refresh() {
 </template>
 
 <style scoped lang="scss">
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  width: 100%;
-}
-
 .detail-header {
   padding: 16px;
   border-radius: 12px;
-  background: #fff;
+  background: var(--app-bg-card);
 }
 
 .detail-title-row {
@@ -235,7 +227,7 @@ async function refresh() {
   gap: 6px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(100, 106, 115, 0.08);
+  background: var(--tint-neutral);
   color: var(--app-text-secondary);
   font-size: 13px;
 }
@@ -251,7 +243,7 @@ async function refresh() {
   padding: 10px 0;
 
   & + & {
-    border-top: 1px solid rgba(0, 0, 0, 0.05);
+    border-top: 1px solid var(--line-1);
   }
 }
 

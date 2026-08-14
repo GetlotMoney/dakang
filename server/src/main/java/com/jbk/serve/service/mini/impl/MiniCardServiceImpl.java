@@ -218,9 +218,7 @@ public class MiniCardServiceImpl implements IMiniCardService {
                 wsUserIdentityMapper.selectByPhoneIncludingDeleted(bo.getPhone()),
                 "该手机号身份数据异常，请联系客服处理");
         if (ObjectUtil.isNull(target)) {
-            // 「仅微信身份建号」后查不到号有两种可能：对方从未登录，或已登录但尚未绑手机号。
-            // 服务端按号码查不区分二者，文案必须同时给出这两条出路——旧文案只说「先登录」，
-            // 会让一个明明已经登录过的人反复重登，永远解决不了。
+            // 查不到号=从未登录或已登录未绑手机号，文案必须同时给出两条出路（只说「先登录」会让已登录者反复重登）
             throw new JbkException("该手机号未绑定任何账号。请对方先登录小程序，并在「我的」中完成手机号绑定后再试");
         }
         MiniUserIdentitySupport.assertUsable(target);
@@ -370,10 +368,8 @@ public class MiniCardServiceImpl implements IMiniCardService {
         vo.setExpireTime(card.getExpireTime());
         boolean owner = MiniUsableCardVo.ROLE_OWNER.equals(role);
         vo.setAccessRole(role);
-        // 带有效期的卡=活动赠卡（D-213）。D-416（2026-08-06）后充值入口分两类：
-        //   永久付费卡：恒可充值（原口径）；
-        //   赠卡：仅当权益用完或已到期、且名下无其他付费卡时开放——那笔充值会把它转为正式水卡。
-        // 有效期内且有权益的赠卡仍无入口（付费余额会被到期日绑架，原口径不变）。
+        // 充值入口（D-416）：永久付费卡恒可充；赠卡仅当权益用完或已到期且名下无其他付费卡时开放
+        // （该笔充值即转正）；有效期内且有权益的赠卡无入口（付费余额会被到期日绑架）
         boolean gift = CardEligibility.isGiftCard(card);
         boolean giftPromotable = gift && !hasOtherPaidCard
                 && ((nvl(card.getBalanceAmount()) == 0L && nvl(card.getBalanceMl()) == 0L)
@@ -420,9 +416,8 @@ public class MiniCardServiceImpl implements IMiniCardService {
     }
 
     /**
-     * SCOPE_JSON → 用户可读描述。解析统一走 {@link WaterCardScope}（全仓唯一 SCOPE_JSON 解析器）；
-     * 按 CARD-SCOPE 规则，任何空值、非法 JSON、未知字段或非法 ID 均返回“未配置（默认拒绝）”，
-     * 不抛出 500，也不把不可解析范围解释为“全场通用”。
+     * SCOPE_JSON → 用户可读描述。解析统一走 {@link WaterCardScope}；空值/非法一律返回
+     * “未配置（默认拒绝）”，绝不把不可解析范围解释为“全场通用”。
      */
     private String describeScope(String scopeJson) {
         try {

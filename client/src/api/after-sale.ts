@@ -1,27 +1,10 @@
 /**
- * 售后退款与补偿 API 契约（E2E-04 包E：PC 管理端接真）。
- *
- * 本文件是 PC 售后域的唯一 API 出处，刻意不并入 order.ts —— 后者已经承载订单/配送/申诉三域
- * 两千余行，再叠一域只会让「哪个函数打哪个后端」彻底失去可读性。
- *
- * ============ 接口面约束（改本文件前先读 AdminAfterSaleController 类注释） ============
- * 请求体里没有任何金额、水量、批准数量或目标状态字段：
- *   · 四元额度（水品分 / 配送费分 / 水品毫升 / 合计分）在售后动作登记时按订单快照算定并冻结，
- *     执行事务只读它，并把四列写进 CAS 的 WHERE 二次钉死；
- *   · 取水核账的终态由服务端在事务内按账本重算，连预览接口给出的 suggestTargetStatus 都不作数。
- * 因此本文件只声明「定位键 + 运营说明」型入参。任何在前端推算返还额度、补偿水量或订单终态的
- * 代码都是第二份资金真相，一律禁止；页面只做「分→元、毫升→升」的展示换算。
- *
- * ============ 脱敏 ============
- * 用户手机号只有服务端 PhoneMask 处理过的 userMaskedPhone 一列。原值在 Vo 上带 @JsonIgnore、
- * 且 Service 已置空，不出接口，本文件也不声明该字段。openid / session_key / 原始退款报文
- * 均不在本模块的任何接口面上，页面不得展示或提交。
- *
- * ============ 口径 ============
- * 字段集严格对齐 server 的 AdminAfterSaleActionItemVo，别名由
- * WsAfterSaleActionMapper.xml 的 Admin_Action_Columns 决定）与 AdminWaterAbnormalPreviewVo。
- * 金额一律「分」，水量一律「毫升」，时间为 varchar(14) 的 yyyyMMddHHmmss。
- * 数据库 Long 型 ID 一律保持 string：Number 超过 2^53 会丢精度，进而查错行或查不到行。
+ * 售后退款与补偿 API 契约（PC 售后域唯一 API 出处，接口面见 AdminAfterSaleController）。
+ * 请求体不含任何金额、水量、批准数量或目标状态字段：额度在动作登记时冻结、终态由服务端重算，
+ * 前端推算返还额度/补偿水量/订单终态即第二份资金真相，一律禁止；页面只做「分→元、毫升→升」展示换算。
+ * 手机号只有服务端脱敏的 userMaskedPhone；openid / session_key / 原始退款报文不出接口面。
+ * 字段集对齐 AdminAfterSaleActionItemVo / AdminWaterAbnormalPreviewVo；金额「分」，水量「毫升」，
+ * 时间 varchar(14) yyyyMMddHHmmss；Long ID 一律保持 string（超 2^53 丢精度会查错行）。
  */
 
 import request from '@/utils/http'
@@ -29,11 +12,8 @@ import type { PageResult } from '@/api/order'
 export * from './after-sale-entry'
 
 /**
- * 售后台账行全部来自服务端，前端不推导资金事实。
- *
- * 手机号只有 userMaskedPhone：原值 userPhoneRaw 带 @JsonIgnore，接口上不存在，此处也不声明。
- * 四元额度分列下发是刻意的：payWay=2 时水费与配送费都从余额扣，只看合计 refundAmount 无法
- * 判断「这笔退的是水品还是服务费」，运营对账与累计封顶都会失真，因此页面也必须分列展示。
+ * 售后台账行全部来自服务端，前端不推导资金事实。四元额度分列下发：payWay=2 时只看合计
+ * refundAmount 无法区分退的是水品还是服务费，页面必须分列展示。
  */
 export interface AfterSaleActionItem {
   /** 售后动作ID（台账行主键，执行类接口的定位键） */
@@ -108,22 +88,15 @@ export interface AfterSaleActionPageParams {
   keyword?: string
 }
 
-/**
- * 执行类入参。只承载「执行哪一行」，不承载「执行成什么样」。
- *
- * 三个执行入口都逐一比对 ID 与售后号；指向不同行即拒绝，避免浏览器旧列表把操作落到另一笔动作。
- */
+/** 执行类入参：只承载定位键。服务端逐一比对 ID 与售后号，指向不同行即拒绝（防旧列表误操作）。 */
 export interface AfterSaleExecuteParams {
   id: string
   afterSaleNo: string
 }
 
 /**
- * 取水异常核账依据（只读预览）。
- *
- * 状态 6异常待补偿 有两条语义相反的来源：A 已退过差只等复核，B 一分钱没退。
- * 两者在订单列表上长得一模一样，按同一件事处理会导致前者被二次退款、后者被无偿完结，
- * 所以判别结论必须由服务端下发并原样展示，页面不得按订单状态自行猜测。
+ * 取水异常核账依据（只读预览）。状态 6异常待补偿 有两条语义相反来源（A 已退差待复核 / B 未退差），
+ * 混同会导致二次退款或无偿完结：判别结论由服务端下发并原样展示，页面不得按订单状态自行猜测。
  */
 export interface WaterAbnormalPreview {
   orderId?: string
@@ -165,12 +138,8 @@ export interface WaterAbnormalConfirmParams {
 export const WATER_REMARK_MAX_LENGTH = 200
 
 /**
- * 充值/购卡退款依据（只读预览，E2E-04 包D-5 / REQ-061）。
- *
- * 页面一列不推导：可退金额按冻结公式折算、冲减量取批次剩余、卡是否注销由服务端判定。
- * 两个金额是<b>不同维度</b>，展示时必须分开说清楚——
- * refundableFen 是退回支付账户的钱（按实付折算，赠送与已用部分不退），
- * reverseFen/reverseMl 是从卡上收回的权益（批次剩余，含赠送）。混为一谈会让运营误判。
+ * 充值/购卡退款依据（只读预览，REQ-061）。页面一列不推导。两个金额是不同维度，必须分开展示：
+ * refundableFen=退回支付账户的钱（按实付折算，赠送与已用不退），reverseFen/reverseMl=从卡上收回的权益（批次剩余，含赠送）。
  */
 export interface RechargeRefundPreview {
   orderId?: string
@@ -457,9 +426,7 @@ export async function fetchRechargeRefundPreview(orderId: string): Promise<Recha
 
 /**
  * 受理并发起充值退款（/order/after-sale/refund/recharge，权限 order:aftersale:refund）。
- *
- * 返回本地退款单ID。<b>不代表退款已成功</b>：服务方事实进收件箱后由服务端收口，
- * 权益冲正、卡处置与订单终态都在那时才发生，页面不得据此宣告退款完成。
+ * 返回本地退款单ID，不代表退款已成功：权益冲正、卡处置与订单终态在服务端收口时才发生。
  */
 export async function requestRechargeRefund(params: RechargeRefundParams): Promise<string> {
   const res = await request.post<unknown>({

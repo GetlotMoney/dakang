@@ -17,7 +17,12 @@
         @refresh="refreshData"
       >
         <template #left>
-          <ElSpace wrap> </ElSpace>
+          <BusinessTableSummary :total="pagination.total" :page-size="data.length" />
+        </template>
+        <template #right>
+          <ElButton v-if="canAuditExport" type="primary" plain @click="openAuditExport">
+            申请导出
+          </ElButton>
         </template>
       </ArtTableHeader>
 
@@ -49,10 +54,18 @@
   import { DictTypeEnum } from '@/constants/dict'
   import LoginLogSearch from './modules/login-log-search.vue'
   import LoginLogDetailDrawer from './modules/login-log-detail.vue'
+  import BusinessTableSummary from '@/components/business/business-table-summary/index.vue'
+  import { useUserStore } from '@/store/modules/user'
   import { ElSpace } from 'element-plus'
   import dayjs from 'dayjs'
 
   defineOptions({ name: 'LoginLog' })
+
+  const router = useRouter()
+  const userStore = useUserStore()
+  const canAuditExport = computed(() =>
+    userStore.rbacMenuList.some((item) => item.menuWebPerms === 'system:audit:export')
+  )
 
   type LogLoginItem = Api.Log.LogLoginItem
   type LogLoginSearchParams = Api.Log.LogLoginSearchParams & {
@@ -168,5 +181,9 @@
   const showDetail = (row: LogLoginItem) => {
     currentLogId.value = row.id
     detailVisible.value = true
+  }
+
+  const openAuditExport = () => {
+    router.push({ path: '/system/compliance', query: { applyScope: '登录日志' } })
   }
 </script>

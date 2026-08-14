@@ -475,7 +475,7 @@ async function verifyEnvironment() {
   fingerprint.jarSha256 = sha256File(path.join(JAR_GLOB_DIR, jar))
 
   const { parsed } = await api('/mini/test-login/by-phone', { phone: OWNER_PHONE })
-  ok(parsed && parsed.code === 0, '测试登录不可用——Pay-Sim 未开或环境错误')
+  ok(parsed && parsed.code === 0, '测试登录不可用——mini.test-login.enabled 未开或环境错误')
   return fingerprint
 }
 

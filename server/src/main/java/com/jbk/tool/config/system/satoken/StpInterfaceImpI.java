@@ -10,12 +10,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/**
- * @ClassName StpInterfaceImpI
- * @Author xs
- * @Date 2024/7/25 9:30
- * @Version 1.0
- */
 @Component
 public class StpInterfaceImpI implements StpInterface {
 

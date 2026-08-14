@@ -67,13 +67,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * PC 管理端配送域服务实现（E2E-03 包C）。
- *
- * <p>只做两件事：把包A 落库结果投影成 PC 契约 Vo；把裁决透传给包A 裁决事务。
- * 状态机、金额、幂等、窗口规则一律不在本层重复实现——这里出现第二份判定，
- * 就会与包A 的条件 UPDATE 漂移。追溯共键核验沿用订单-指令区块的 fail-closed 口径：
- * 履约链（任务共键+状态时间矩阵+总额恒等式）与资金链（DELIVERY:orderNo 流水）
- * 分层独立核验，任一不一致只呈现数据异常，不把断链数据拼成履约证据。</p>
+ * PC 管理端配送域服务实现（E2E-03 包C）：把包A 落库结果投影成 PC 契约 Vo、把裁决透传给包A
+ * 裁决事务；状态机/金额/幂等/窗口规则不在本层重复实现。追溯核验 fail-closed：
+ * 履约链与资金链分层独立核验，任一不一致只呈现数据异常，不把断链数据拼成履约证据。
  *
  * @author dakang
  * @since 2026-07-24
@@ -127,9 +123,8 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
     }
 
     /**
-     * 申诉列表（D-215）：分页单位是<b>案件（TASK_ID）</b>而非申诉条数，聚合在 SQL 层完成——
-     * 前端聚合会被分页边界把同任务的申诉切到两页，案件残缺。本层只做脱敏与原因中文名映射，
-     * 代表申诉的选取口径、状态筛选语义与排序全部由 mapper 收口。
+     * 申诉列表（D-215）：分页单位是案件（TASK_ID），聚合在 SQL 层完成（前端聚合会被分页边界
+     * 切残案件）；本层只做脱敏与原因中文名映射。
      */
     @Override
     public PageDataVo<AdminDeliveryAppealItemVo> pageAppeals(AdminDeliveryAppealBo bo) {
@@ -162,8 +157,7 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
             return vo;
         }
         vo.setLinkStatus("ok");
-        // D-215 申诉往来：共键核验通过后才下发同任务全部申诉，裁决时能看到上一轮驳回理由。
-        // 每条同样过 decorateAppealItem（脱敏 + 原因中文名），历史不走另一套投影口径。
+        // D-215：共键核验通过后才下发同任务全部申诉；每条同样过 decorateAppealItem，不走第二套投影
         List<AdminDeliveryAppealItemVo> history = appealMapper.selectAdminAppealsByTaskId(appeal.getTaskId());
         history.forEach(this::decorateAppealItem);
         vo.setAppealHistory(history);
@@ -241,7 +235,9 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
         WsCourier courier = ObjectUtil.isNull(task.getCourierId()) ? null
                 : courierMapper.selectById(task.getCourierId());
         block.setUserName(adminOrder.getUserName());
-        block.setUserMaskedPhone(PhoneMask.mask(adminOrder.getUserPhone()));
+        // 下单人原值在 AdminOrderServiceImpl.decorateActorAndOwner 已脱敏并清空，这里直接取脱敏结果，
+        // 不再对原值列做第二次脱敏——脱敏点只留一个，避免两处规则随时间漂移。
+        block.setUserMaskedPhone(adminOrder.getActorMaskedPhone());
         if (ObjectUtil.isNotNull(courier)) {
             block.setCourierName(courier.getCourierName());
             block.setCourierMaskedPhone(PhoneMask.mask(courier.getCourierPhone()));
@@ -324,9 +320,7 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
     }
 
     /**
-     * 审计事件聚合：订单号 + 任务号双键（创建/状态转移记 ORDER_STATUS@orderNo，
-     * 履约节点/申诉记 DELIVERY_NODE@taskNo）。审计是事实记录而非派生证据，
-     * 共键异常时依然完整下发，供运营排查断链原因。
+     * 审计事件聚合（订单号+任务号双键）。审计是事实记录而非派生证据，共键异常时依然完整下发。
      */
     private List<AdminAuditEventVo> buildAuditEvents(String orderNo, String taskNo) {
         List<String> keys = new ArrayList<>();
@@ -584,13 +578,9 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
     }
 
     /**
-     * 状态-时间矩阵核验：只接受当前配送状态机（1→2→3→4→5⇄7，1→6）能产生的组合。
+     * 状态-时间矩阵核验：只接受当前配送状态机（1→2→3→4→5⇄7，1→6）能产生的组合；
      * 时间单调、状态必备时间、订单-任务耦合、总额恒等式、三照齐全、申诉锁步逐项核对，
-     * 任一不满足即整块 mismatch——宁可显示数据异常，不拼凑履约证据。
-     *
-     * <p><b>6已取消 是 E2E-04 包A 起的合法终态</b>：待接单取消把任务落 6、订单原路返还落 7已退款。
-     * 此前本矩阵把 6 当作「外力改库」整块拒绝，且订单-任务耦合只有「已签收→订单4 / 其余→订单2」两段，
-     * 取消单会在第一行就报 mismatch。放宽仅限取消这一格，其余判定强度一律不动。</p>
+     * 任一不满足即整块 mismatch。6已取消是 E2E-04 包A 起的合法终态，放宽仅限取消这一格。
      */
     static String deliveryStateMismatch(WsOrder order, WsDeliveryTask task, long pendingAppealCount) {
         Integer status = task.getTaskStatus();
@@ -643,9 +633,8 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
                 }
                 break;
             case 6:
-                // 6已取消（E2E-04 包A）：取消只允许发生在 1待接单，因此取消态在履约维度上必须与待接单
-                // 完全一致——没有配送员、没有任何节点时间，也没有签收才会产生的三照与实际数量。
-                // 带着履约痕迹的"取消"意味着有人在履约中途改库，绝不能当成合法取消放行。
+                // 6已取消（E2E-04 包A）：取消只发生在 1待接单，履约维度必须与待接单完全一致——
+                // 带履约痕迹的「取消」意味着履约中途改库，不能当合法取消放行
                 if (hasCourier || hasAccept || hasDepart || hasArrive || hasSign) {
                     return "已取消任务不得携带配送员或任何履约节点时间";
                 }
@@ -691,9 +680,8 @@ public class AdminDeliveryServiceImpl implements IAdminDeliveryService {
             }
             previous = current;
         }
-        // 订单-任务耦合三段：签收事务保证「任务签收 ↔ 订单完成」、取消事务保证「任务取消 ↔ 订单退款」
-        // 同事务推进，脱钩即异常。取消段是 E2E-04 包A 新增的第三段——没有它，取消单会因为
-        // 订单已是 7已退款、任务不在签收侧而被要求订单=2已支付，整块报 mismatch。
+        // 订单-任务耦合三段：签收「任务签收↔订单完成」、取消「任务取消↔订单退款」同事务推进，
+        // 脱钩即异常
         Integer orderStatus = order.getOrderStatus();
         boolean signedSide = status == 5 || status == 7;
         boolean cancelled = status == 6;

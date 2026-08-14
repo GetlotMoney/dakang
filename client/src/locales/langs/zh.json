@@ -183,7 +183,7 @@
     },
     "wsUser": {
       "title": "用户管理",
-      "list": "C端用户",
+      "list": "用户列表",
       "card": "水卡管理",
       "courier": "配送员准入",
       "message": "消息记录"
@@ -196,6 +196,7 @@
       "split": "分账明细",
       "reconcile": "日对账",
       "splitconfig": "分账比例配置",
+      "attribution": "分润归属",
       "autorule": "自动补货规则",
       "waterstats": "水种用量统计"
     },
@@ -214,6 +215,16 @@
         "login": "登录日志",
         "operation": "操作日志"
       }
+    },
+    "mall": {
+      "title": "商城管理",
+      "product": "商品管理",
+      "category": "分类管理",
+      "warehouse": "前置仓管理",
+      "stock": "库存管理",
+      "order": "商城订单",
+      "fulfillment": "商城履约",
+      "aftersale": "商城售后"
     }
   },
   "table": {

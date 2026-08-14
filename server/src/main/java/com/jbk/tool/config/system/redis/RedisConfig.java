@@ -25,12 +25,6 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 import jakarta.annotation.Resource;
 
-/**
- * @ClassName RedisConfig
- * @Author xs
- * @Date 2024/6/7 11:43
- * @Version 1.0
- */
 @Configuration
 //@EnableAutoConfiguration(exclude = {RedisAutoConfiguration.class, RedisReactiveAutoConfiguration.class})
 public class RedisConfig {
@@ -42,8 +36,6 @@ public class RedisConfig {
 
     /**
      * 公共配置缓存库
-     *
-     * @return
      */
     @Bean("redisShareTemplate1")
     public RedisTemplate<String, Object> redisShareTemplate1() {
@@ -75,8 +67,6 @@ public class RedisConfig {
 
     /**
      * 公共配置缓存库
-     *
-     * @return
      */
     @Bean("redisTemplate1")
     @Primary

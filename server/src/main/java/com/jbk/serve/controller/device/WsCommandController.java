@@ -25,8 +25,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 设备中控——指令（下发 + 记录查询）
- * <p>安全边界：仅允许 查询状态/锁机/解锁/参数同步/重启；出水类指令由订单链路触发。
- * 锁机等高风险操作的二次验证（openSafe）属于商业一期范围；一期采用功能点权限与操作日志控制。</p>
+ *
+ * <p>安全边界：本入口只受理「只读 / 单台可逆」两档，类型由 {@code DeviceCommandRisk}
+ * 按 {@code DeviceEnum.CmdType} 的档位派生（不是手写白名单）；出水类由订单链路触发。
+ * 恒加闸档（紧急停机、价格同步）与范围 ≥ 水站的批量操作，其二次验证在
+ * {@code /device/batch/confirm} 执行。口径以 decisions.md **D-423** 为准，此处不复述规则。</p>
  *
  * @author dakang
  * @since 2026-07-12
@@ -59,7 +62,7 @@ public class WsCommandController {
     @LogOperation
     @RepeatSubmit
     @PostMapping("/send")
-    @Operation(summary = "下发指令（查询/锁机/解锁/参数同步/重启）")
+    @Operation(summary = "下发指令（只读/单台可逆档，受理类型按 D-423 档位派生）")
     @MySaCheckOr(
             login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)},
             permission = {@SaCheckPermission(value = "device:command:send", type = StpKit.DRIVER_MANAGE)}

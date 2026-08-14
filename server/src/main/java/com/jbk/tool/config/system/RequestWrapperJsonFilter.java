@@ -7,12 +7,6 @@ import jakarta.servlet.annotation.WebFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 
-/**
- * @ClassName JsonFilter
- * @Author xs
- * @Date 2024/7/24 13:14
- * @Version 1.0
- */
 @WebFilter(urlPatterns = "/**")
 @Component
 public class RequestWrapperJsonFilter implements Filter {

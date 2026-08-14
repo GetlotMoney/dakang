@@ -47,21 +47,13 @@ public final class RechargeLimits {
     }
 
     /**
-     * D-213：正规渠道<b>付费</b>购买的水卡一律永久有效；{@code EXPIRE_DAYS}/{@code EXPIRE_TIME}
-     * 机制仅用于活动赠卡，而赠卡走独立发卡服务（{@code GiftCardServiceImpl}）、不经本表。
-     *
-     * <p>此前该决策<b>只写在 decisions.md 与契约里、代码零守卫</b>：PC 能建出售价&gt;0 且带
-     * expireDays 的套餐，正常上架，小程序判为可购，用户买完即得到一张有限期付费卡——
-     * 与预付卡合规底线直接冲突。这条守卫补的就是那个缺口。</p>
-     *
-     * <p>刻意只加在创建/售卖路径（{@link #validatePackage}），<b>不加在</b>
-     * {@link #validateSnapshotValues}：后者用于历史订单快照回放与权益入账，
-     * 历史有限期数据只做兼容查询，不应因新规则而无法读取或结算。</p>
+     * D-213：付费购买的水卡一律永久有效，EXPIRE_DAYS 机制仅用于活动赠卡（走独立发卡服务）。
+     * 守卫刻意只加在创建/售卖路径、不加在 {@link #validateSnapshotValues}——
+     * 后者用于历史订单快照回放与入账，历史有限期数据不应因新规则无法读取或结算。
      */
     private static void rejectPaidLimitedExpiry(Long payAmount, Integer expireDays) {
         if (payAmount != null && payAmount > 0L && expireDays != null) {
-            // 决策编号（D-213）只写在上面的 javadoc 里：这条消息会原样弹给运营人员，
-            // 内部编号对他们没有意义，只会让人以为撞上了系统故障。
+            // 文案不带决策编号：消息原样弹给运营，内部编号只会被当成系统故障
             throw new JbkException("付费套餐不得设置有效期，付费水卡一律永久有效");
         }
     }

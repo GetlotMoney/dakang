@@ -80,6 +80,8 @@ public class MiniFamilyServiceImpl implements IMiniFamilyService {
         target.setContactName(StrUtil.trim(bo.getContactName()))
                 .setContactPhone(StrUtil.trim(bo.getPhone()))
                 .setRegion(StrUtil.trim(bo.getRegion()))
+                // 区县码留空即存 NULL：商城侧据此提示补选，绝不按 region 文本猜测（E2E-09 S2）
+                .setDistrictCode(StrUtil.emptyToNull(StrUtil.trim(bo.getDistrictCode())))
                 .setAddressDetail(StrUtil.trim(bo.getDetail()))
                 .setLocationAuthorized(Boolean.TRUE.equals(bo.getLocationAuthorized()) ? 1 : 0);
         // 默认位互斥：设默认先清同人全部默认位；取消默认只落本行
@@ -126,6 +128,7 @@ public class MiniFamilyServiceImpl implements IMiniFamilyService {
                 .setContactName(po.getContactName())
                 .setMaskedPhone(PhoneMask.mask(po.getContactPhone()))
                 .setRegion(po.getRegion())
+                .setDistrictCode(po.getDistrictCode())
                 .setDetail(po.getAddressDetail())
                 .setIsDefault(ObjectUtil.equal(po.getIsDefault(), 1))
                 .setLocationAuthorized(ObjectUtil.equal(po.getLocationAuthorized(), 1));

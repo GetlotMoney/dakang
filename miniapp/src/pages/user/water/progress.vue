@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import type { OrderDetail, OrderTraceNode } from '@/api/order'
 import type { TagTone } from '@/utils/format'
-import { onLoad, onUnload } from '@dcloudio/uni-app'
+import { onLoad } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { orderApi } from '@/api/order'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import {
+  COMMAND_STATUS_LABELS,
   formatBizTime,
   formatFen,
   formatMl,
@@ -40,32 +42,27 @@ const TONE_CLASS: Record<TagTone, string> = {
 /** 订单终态集合；出水中(3)等待设备回传，不算终态。 */
 const TERMINAL_STATUSES = [4, 5, 6, 7, 8]
 
-const PLAYBACK_INTERVAL_MS = 700
 const pageState = ref<'loading' | 'ready' | 'error'>('loading')
 const errorMessage = ref('')
-const errorImage = ref<'content' | 'network'>('network')
 
 const detail = ref<OrderDetail | null>(null)
-const visibleCount = ref(0)
-let playTimer: ReturnType<typeof setInterval> | null = null
 
+// 轨迹一次性全量展示。这里曾有一套 700ms 逐节点回放，只对 evidenceMode=prototype 的
+// 原型单生效——而真实订单从不携带 mockMeta，那条分支在任何出货构建里都进不去，
+// 页面实际一直走的就是「直接显示全部」。留着它的代价是三个恒定值（visibleTrace===trace、
+// playbackDone===true、activeIndex 的前半支永不取到）伪装成状态机，读代码的人会以为有时序。
 const trace = computed(() => detail.value?.trace ?? [])
-const visibleTrace = computed(() => trace.value.slice(0, visibleCount.value))
-const playbackDone = computed(() => visibleCount.value >= trace.value.length)
 
 const isTerminal = computed(() =>
   !!detail.value && TERMINAL_STATUSES.includes(detail.value.order.orderStatus),
 )
 
-const activeIndex = computed(() => {
-  if (!playbackDone.value) {
-    return visibleCount.value - 1
-  }
-  return isTerminal.value ? trace.value.length : trace.value.length - 1
-})
+const activeIndex = computed(() =>
+  isTerminal.value ? trace.value.length : trace.value.length - 1,
+)
 
 const statusToneClass = computed(() => {
-  if (!detail.value || !playbackDone.value) {
+  if (!detail.value) {
     return TONE_CLASS.default
   }
   return TONE_CLASS[ORDER_STATUS_TONES[detail.value.order.orderStatus]]
@@ -99,59 +96,21 @@ onLoad((query?: Record<string, string | undefined>) => {
   const orderNo = query?.orderNo
   if (!orderNo) {
     pageState.value = 'error'
-    errorImage.value = 'content'
     errorMessage.value = '请从订单列表进入'
     return
   }
   void load(orderNo)
 })
 
-onUnload(stopPlayback)
-
 async function load(orderNo: string) {
   pageState.value = 'loading'
   try {
     detail.value = await orderApi.getOrderDetail(orderNo)
     pageState.value = 'ready'
-    startPlayback()
   }
   catch (error) {
     pageState.value = 'error'
-    errorImage.value = error instanceof ContractError && error.code === 'ORDER_NOT_FOUND'
-      ? 'content'
-      : 'network'
     errorMessage.value = error instanceof ContractError ? error.message : '取水进度加载失败，请重试'
-  }
-}
-
-/**
- * 播放策略：新建原型单（evidenceMode=prototype）按 700ms 逐节点回放；
- * 固定快照单直接静态全量展示。数据本身已是终态，回放只是展示层动画，无人工推进。
- */
-function startPlayback() {
-  const total = trace.value.length
-  if (total === 0) {
-    visibleCount.value = 0
-    return
-  }
-  if (detail.value?.order.mockMeta?.evidenceMode !== 'prototype') {
-    visibleCount.value = total
-    return
-  }
-  visibleCount.value = 1
-  playTimer = setInterval(() => {
-    if (visibleCount.value >= trace.value.length) {
-      stopPlayback()
-      return
-    }
-    visibleCount.value += 1
-  }, PLAYBACK_INTERVAL_MS)
-}
-
-function stopPlayback() {
-  if (playTimer !== null) {
-    clearInterval(playTimer)
-    playTimer = null
   }
 }
 
@@ -166,36 +125,39 @@ function goDetail() {
   <view class="page-shell">
     <AppNavbar title="取水进度" back-to="U01" />
 
-    <view v-if="pageState === 'loading'" class="page-section loading-box">
-      <wd-loading />
-      <view class="muted-text">
-        正在加载取水进度…
-      </view>
+    <view v-if="pageState === 'loading'" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, 1, { width: '70%' }]" />
     </view>
 
     <view v-else-if="pageState === 'error'" class="page-section">
-      <wd-status-tip :image="errorImage" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="backOr('U01')">
-              返回首页
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain @click="backOr('U01')">
+            返回首页
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else-if="detail">
       <view class="page-section">
         <wd-card custom-class="block-card">
+          <!-- 全页唯一主视觉：实际出水量。原来这张卡只放一个状态词，
+               而「到底出了多少水」被压在下面订单信息里当第 5 行 14px 灰字，
+               与「计划水量」「订单号」同权重——最该看的反而最不显眼。 -->
           <view class="progress-status">
             <view class="progress-status-text" :class="statusToneClass">
-              {{ playbackDone ? ORDER_STATUS_LABELS[detail.order.orderStatus] : '取水处理中…' }}
+              {{ ORDER_STATUS_LABELS[detail.order.orderStatus] }}
             </view>
-            <view v-if="playbackDone && detail.order.orderStatus === 3" class="muted-text">
-              等待设备回传结果
+            <view v-if="detail.order.orderType === 1" class="progress-volume">
+              <text class="progress-volume__value num">
+                {{ detail.order.actualMl !== undefined ? formatMl(detail.order.actualMl) : '—' }}
+              </text>
+              <text class="progress-volume__label">
+                实际出水{{ detail.order.planMl !== undefined ? ` · 计划 ${formatMl(detail.order.planMl)}` : '' }}
+              </text>
             </view>
-            <view v-else-if="playbackDone && abnormalReason" class="muted-text">
+            <view v-if="abnormalReason" class="progress-abnormal">
               {{ abnormalReason }}
             </view>
           </view>
@@ -204,9 +166,9 @@ function goDetail() {
 
       <view class="page-section">
         <wd-card title="执行轨迹" custom-class="block-card">
-          <wd-steps v-if="visibleTrace.length" :active="activeIndex" vertical>
+          <wd-steps v-if="trace.length" :active="activeIndex" vertical>
             <wd-step
-              v-for="(node, index) in visibleTrace"
+              v-for="(node, index) in trace"
               :key="`${node.node}-${index}`"
               :title="node.label"
               :status="stepStatus(node)"
@@ -230,29 +192,23 @@ function goDetail() {
       <view class="page-section">
         <wd-card title="订单信息" custom-class="block-card">
           <wd-cell-group>
-            <wd-cell title="订单号" :value="detail.order.orderNo" />
-            <wd-cell v-if="detail.commandNo" title="命令号" :value="detail.commandNo" />
+            <wd-cell title="订单号" :value="detail.order.orderNo" ellipsis />
+            <!-- 原来这里摆的是「命令号」——内部下发指令的主键，用户拿它做不了任何决定；
+                 而真正的事实「指令有没有下发成功」页面一个字都没说。换成指令状态。 -->
             <wd-cell
-              title="站点 / 设备"
-              :value="`${detail.order.stationName ?? '—'} · ${detail.order.deviceNo ?? '—'}`"
+              v-if="detail.commandStatus !== undefined"
+              title="指令状态"
+              :value="COMMAND_STATUS_LABELS[detail.commandStatus] ?? '—'"
             />
-            <wd-cell
-              v-if="detail.order.planMl !== undefined"
-              title="计划水量"
-              :value="formatMl(detail.order.planMl)"
-            />
-            <wd-cell
-              v-if="detail.order.orderType === 1"
-              title="实际水量"
-              :value="detail.order.actualMl !== undefined ? formatMl(detail.order.actualMl) : '待设备回传'"
-            />
+            <wd-cell title="站点" :value="detail.order.stationName ?? '—'" ellipsis />
+            <wd-cell title="设备" :value="detail.order.deviceNo ?? '—'" ellipsis />
             <wd-cell title="金额" :value="formatFen(detail.order.orderAmountFen)" />
             <wd-cell title="支付方式" :value="PAY_WAY_LABELS[detail.order.payWay]" />
           </wd-cell-group>
         </wd-card>
       </view>
 
-      <view v-if="playbackDone" class="page-section">
+      <view class="page-section">
         <wd-button v-if="isTerminal" block size="large" @click="goDetail">
           查看订单详情
         </wd-button>
@@ -267,20 +223,6 @@ function goDetail() {
 </template>
 
 <style scoped lang="scss">
-.loading-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 64px 0;
-}
-
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 20px;
-}
-
 .progress-status {
   display: flex;
   flex-direction: column;
@@ -289,8 +231,35 @@ function goDetail() {
 }
 
 .progress-status-text {
-  font-size: 24px;
-  font-weight: 600;
+  font-size: var(--fs-title);
+  font-weight: 700;
+}
+
+// 本页唯一的 display 字号：实际出水量。计划量作为它的对照小字跟在下面。
+.progress-volume {
+  margin-top: var(--sp-2);
+
+  &__value {
+    display: block;
+    font-size: var(--fs-display);
+    font-weight: 700;
+    line-height: 1.1;
+  }
+
+  &__label {
+    display: block;
+    margin-top: var(--sp-1);
+    color: var(--app-text-secondary);
+    font-size: var(--fs-caption);
+  }
+}
+
+// 异常原因与状态同档语义色、正文字号：它是用户要据以行动的那句话，
+// 不该和「计划水量」共用一档 12px 灰字
+.progress-abnormal {
+  margin-top: var(--sp-2);
+  color: var(--app-color-danger);
+  font-size: var(--fs-body);
 }
 
 .tone-default {
@@ -306,7 +275,7 @@ function goDetail() {
 }
 
 .tone-warning {
-  color: var(--app-color-warning);
+  color: var(--app-color-warning-text);
 }
 
 .tone-success {

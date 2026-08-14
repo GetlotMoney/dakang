@@ -21,24 +21,10 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 退款事实收件箱实现（E2E-04 包B，R0-8）。
- *
- * <h3>这条管道要挡住的五类事实</h3>
- * <ol>
- *   <li><b>重复</b>：三元幂等键唯一索引挡住；同键不同正文由摘要比对挡住并转人工。</li>
- *   <li><b>乱序</b>：一条 PROCESSING 在 SUCCESS 之后到达，不得把已成功的单拖回处理中——
- *       {@code markNonSuccess} 的 {@code REFUND_STATUS <> 2} 前态负责。</li>
- *   <li><b>错金额</b>：{@code markSuccess} 把事实金额放进 WHERE，不符即影响 0 行 → 转人工，
- *       而不是用本地金额顶替后记成成功。</li>
- *   <li><b>错订单</b>：事实携带的 ORDER_NO 与本地退款单交叉核对，不符即转人工。</li>
- *   <li><b>迟到失败</b>：R0-7「已成功动作不得被迟到失败事实降级」，同样由
- *       {@code REFUND_STATUS <> 2} 前态负责。</li>
- * </ol>
- *
- * <h3>本类没有创建退款单的能力</h3>
- * <p>只注入了退款单与事实两个 Mapper，且只调用它们的推进方法。
- * 一条找不到对应退款单的事实一律转人工，绝不「顺手建一张」——
- * 那会让外部报文获得凭空创建出账记录的能力。</p>
+ * 退款事实收件箱实现（E2E-04 包B，R0-8）。管道挡五类事实：重复（三元幂等键 + 摘要比对）、
+ * 乱序与迟到失败（{@code REFUND_STATUS <> 2} 前态，R0-7）、错金额（事实金额进 markSuccess 的
+ * WHERE，不符 0 行转人工）、错订单（ORDER_NO 交叉核对）。本类没有创建退款单的能力：
+ * 找不到对应退款单的事实一律转人工，绝不顺手建一张。
  *
  * @author dakang
  * @since 2026-07-29
@@ -63,16 +49,9 @@ public class RefundFactServiceImpl implements IRefundFactService {
     private final WsRefundMapper refundMapper;
     /** 拒绝证据必须独立事务落库，理由见 RefundAnomalyRecorder 的类注释。 */
     private final RefundAnomalyRecorder anomalyRecorder;
-    /**
-     * 权益结算（包D-5）：本类依旧<b>没有</b>动卡的能力，只在退款单确实成功之后委托它。
-     * 结算自带 REQUIRES_NEW 事务与全套前态断言，失败会抛出，由下面的 catch 分流重试/人工。
-     */
+    /** 权益结算（包D-5）：本类没有动卡能力，只在退款单确实成功后委托它；失败由 catch 分流重试/人工。 */
     private final IEntitlementRefundTxService entitlementRefundTxService;
-    /**
-     * 分润冲减（D-420 R2）：与权益结算同位并列委托——退款成功后驱动动作级 outbox
-     * 执行（REQUIRES_NEW 对账后动账）。结构性失败抛出走 park 分流重试；证据不合格
-     * 在执行段内部整动作转人工；两种情况退款成功事实都不回退。
-     */
+    /** 分润冲减（D-420 R2）：退款成功后驱动动作级 outbox 执行；无论哪种失败，退款成功事实都不回退。 */
     private final com.jbk.serve.service.settlement.ISplitClawbackTxService splitClawbackTxService;
 
     // ==================== 落库 ====================
@@ -112,22 +91,17 @@ public class RefundFactServiceImpl implements IRefundFactService {
             eventMapper.insert(event);
             return event.getId();
         } catch (DuplicateKeyException duplicate) {
-            // 幂等命中：同一事实此前已到达过。返回既有行，但必须先确认「同键同正文」。
+            // 幂等命中：返回既有行，但必须先确认「同键同正文」
             WsRefundEvent existing = eventMapper.selectByProviderKey(
                     fact.source(), fact.factChannel(), fact.providerEventKey());
             if (ObjectUtil.isNull(existing)) {
-                // 撞了键却查不到行：唯一索引与查询口径不一致，属结构性问题，不能猜
+                // 撞键却查不到行：唯一索引与查询口径不一致，属结构性问题
                 throw new JbkException("退款事实幂等键冲突但查不到既有事实，拒绝继续");
             }
             if (eventMapper.countMatchingDigest(existing.getId(), digest) != 1) {
-                // 同一个事实号承载了两份不同内容——伪造、改写或上游串号，本次到达不可信。
-                //
-                // 只拒绝本次到达并留痕，**不改既有事实的处理状态**：若允许在这里把既有事实
-                // park 成需人工对账，任何知道事实键的人发一份垃圾正文就能把一笔正在推进的
-                // 合法退款冻住，那是一条现成的拒绝服务路径。既有事实此前已通过摘要校验，
-                // 它的可信度不该被一次可疑到达降级。
-                // 独立事务留痕：本方法随后抛出，同事务的写入会被一起回滚，
-                // 结果就是「拒绝生效了、证据没了」（铁律④）
+                // 同键不同正文：本次到达不可信。只拒绝本次并留痕，不改既有事实状态——
+                // 否则任何知道事实键的人发一份垃圾正文就能冻住正在推进的合法退款（DoS）。
+                // 留痕走独立事务：本方法随后抛出，同事务写入会被回滚（铁律④）
                 anomalyRecorder.record(existing.getId(),
                         trim("收到同键不同正文的可疑事实，已拒绝该次到达；本行内容未受影响"), now);
                 throw new JbkException("退款事实同键不同正文，已拒绝本次到达并留痕");
@@ -154,8 +128,7 @@ public class RefundFactServiceImpl implements IRefundFactService {
         try {
             return advance(event, now);
         } catch (RuntimeException failure) {
-            // 消费失败不得让事实停在 2处理中：那样它只能等租约到期才被别人捡起，
-            // 而失败原因也就丢了。可重试的排期，超限或业务性失败转人工。
+            // 消费失败不得停在 2处理中（只能等租约到期且丢失败原因）：可重试排期，超限/业务性转人工
             boolean retryable = event.getRetryCount() != null && event.getRetryCount() < MAX_RETRY;
             if (retryable) {
                 eventMapper.park(eventId, RefundEnum.ProcessingStatus.RETRY_WAIT,
@@ -171,7 +144,7 @@ public class RefundFactServiceImpl implements IRefundFactService {
     private Outcome advance(WsRefundEvent event, String now) {
         WsRefund refund = refundMapper.selectByRefundNo(event.getRefundNo());
         if (ObjectUtil.isNull(refund)) {
-            // 找不到对应退款单：可能是伪造事实、串号或本地单被删。绝不建单。
+            // 找不到对应退款单（伪造/串号/本地单被删）：绝不建单
             parkForReconciliation(event.getId(), "事实对应的退款单不存在：" + event.getRefundNo(), now);
             return Outcome.RECONCILIATION;
         }
@@ -190,9 +163,7 @@ public class RefundFactServiceImpl implements IRefundFactService {
                 || RefundEnum.FactState.ABNORMAL.equals(event.getRefundState())) {
             return advanceFailure(event, refund, now);
         }
-        // PROCESSING / UNKNOWN：不改退款单状态。
-        // PROCESSING 是重复的中间态通知，UNKNOWN 是我们看不懂的东西——
-        // 后者刻意不猜也不丢，标记已处理后留在库里供人工检索（LAST_ERROR 已记原因）。
+        // PROCESSING / UNKNOWN 不改退款单状态：前者是重复中间态通知，后者不猜也不丢、转人工判读
         if (RefundEnum.FactState.UNKNOWN.equals(event.getRefundState())) {
             parkForReconciliation(event.getId(), "无法归类的退款事实状态，转人工判读", now);
             return Outcome.RECONCILIATION;
@@ -203,13 +174,10 @@ public class RefundFactServiceImpl implements IRefundFactService {
 
     private Outcome advanceSuccess(WsRefundEvent event, WsRefund refund, String now) {
         if (ObjectUtil.equal(refund.getRefundStatus(), RefundEnum.RefundStatus.SUCCESS.getValue())) {
-            // 已成功：重复的成功事实是正常现象（通知重推）。
-            // 结算仍要再调一次（它自身幂等）——上一次的结算可能因为锁等待、卡前态漂移等
-            // 基础设施原因失败过，退款单却已经是成功。不在这里补，那笔退款的权益冲正
-            // 会永远停在「钱退了、卡上权益还在」，而重推的事实是唯一还会经过这里的机会。
+            // 重复的成功事实是正常现象（通知重推）。结算仍要再调一次（自身幂等）：
+            // 上次结算可能因基础设施失败而退款单已成功，重推事实是补上权益冲正的唯一机会
             entitlementRefundTxService.settleOnRefundSuccess(refund.getId(), now);
-            // 冲减执行段（D-420 R1）：登记已随结算成功事务完成（outbox），此处驱动执行；
-            // uk(ACTION_ID,SPLIT_ID)+事实状态机保证重放零副作用
+            // 冲减执行段（D-420 R1）：uk(ACTION_ID,SPLIT_ID)+事实状态机保证重放零副作用
             if (refund.getAfterSaleId() != null) {
                 splitClawbackTxService.processAction(refund.getAfterSaleId(), now);
             }
@@ -220,20 +188,15 @@ public class RefundFactServiceImpl implements IRefundFactService {
                 event.getRefundAmount(), event.getProviderRefundId(),
                 event.getRefundSuccessTime(), 0L, now);
         if (rows != 1) {
-            // 影响 0 行的可能原因：金额不符、服务方单号不符、状态已变、版本已变。
-            // 前两者是账实不符必须人工；后两者是并发，重跑一次即可分辨——
-            // 但两类都不该在这里猜，统一转人工比「猜错一次退两次钱」便宜得多。
+            // 0 行可能是金额/单号不符（账实不符）或并发状态/版本已变：不猜，统一转人工
             parkForReconciliation(event.getId(),
                     "退款成功推进影响 0 行（金额/服务方单号/状态任一不符），拒绝记成成功", now);
             return Outcome.RECONCILIATION;
         }
-        // 退款单已成功 → 结算权益：批次冲正、卡聚合冲减、唯一流水、订单终态与卡处置。
-        // 它抛出时本方法的调用方会把事实 park 成可重试/人工，而退款单保持成功——
-        // 「钱已退」是既成事实，绝不因为结算失败被改回去（R0-7）。
+        // 结算权益：抛出时调用方把事实 park 成可重试/人工，退款单保持成功——
+        // 「钱已退」是既成事实，绝不因结算失败改回去（R0-7）
         entitlementRefundTxService.settleOnRefundSuccess(refund.getId(), now);
-        // 冲减执行段（D-420 R1）：登记随结算成功事务落 ws_split_clawback（outbox），
-        // 此处独立事务执行扣回。抛出走 park 待重试/人工——退款成功事实不回退，
-        // 冲减失败停留在事实行状态机（可重试可转人工），绝不伪装退款未发生
+        // 冲减执行段（D-420 R1）：独立事务执行扣回，抛出走 park，退款成功事实不回退
         if (refund.getAfterSaleId() != null) {
             splitClawbackTxService.processAction(refund.getAfterSaleId(), now);
         }
@@ -243,8 +206,7 @@ public class RefundFactServiceImpl implements IRefundFactService {
 
     private Outcome advanceFailure(WsRefundEvent event, WsRefund refund, String now) {
         if (ObjectUtil.equal(refund.getRefundStatus(), RefundEnum.RefundStatus.SUCCESS.getValue())) {
-            // R0-7：已成功不得被迟到失败事实降级。这条事实本身不是错误，只是来晚了，
-            // 故标记已处理并留痕，而不是转人工把运营叫醒。
+            // R0-7：已成功不得被迟到失败事实降级；事实只是来晚了，标记已处理留痕即可
             log.warn("迟到的失败退款事实落在已成功的退款单上，忽略降级：eventId={} refundId={}",
                     event.getId(), refund.getId());
             eventMapper.markProcessed(event.getId(), 0L, now);
@@ -257,9 +219,7 @@ public class RefundFactServiceImpl implements IRefundFactService {
             parkForReconciliation(event.getId(), "退款失败推进影响 0 行，状态或版本已变", now);
             return Outcome.RECONCILIATION;
         }
-        // 退款失败：售后动作转需人工对账，权益批次<b>保持退款锁定不自动解除</b>
-        // （任务书 3.4：退款永久失败时不得自动恢复为未退款）。自动解锁会让一笔
-        // 可能已在服务方侧出款的退款重新变成可消费，那是双花窗口。
+        // 退款失败：动作转需人工对账，批次保持退款锁定不自动解除（任务书 3.4，自动解锁=双花窗口）
         entitlementRefundTxService.parkOnRefundFailure(refund.getId(),
                 "服务方退款事实：" + event.getRefundState(), now);
         eventMapper.markProcessed(event.getId(), 0L, now);
@@ -267,11 +227,8 @@ public class RefundFactServiceImpl implements IRefundFactService {
     }
 
     /**
-     * 事实与本地退款单的交叉核对。
-     *
-     * <p>只核对<b>事实真的携带了</b>的字段：服务方在非成功态下可能不返回金额与订单号，
-     * 此时缺失是正常的，把缺失当成不符会把大量正常事实推进人工队列。
-     * 而 SUCCESS 态的这些字段已由 {@link RefundFact} 在入口强制非空，不会走到宽松分支。</p>
+     * 事实与本地退款单的交叉核对。只核对事实真的携带了的字段（非成功态缺失是正常的）；
+     * SUCCESS 态字段已由 {@link RefundFact} 在入口强制非空，不会走到宽松分支。
      */
     private String crossCheck(WsRefundEvent event, WsRefund refund) {
         if (ObjectUtil.notEqual(event.getRefundSource(), refund.getRefundSource())) {

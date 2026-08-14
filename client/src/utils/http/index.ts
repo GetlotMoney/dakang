@@ -1,17 +1,5 @@
 /**
- * HTTP 请求封装模块
- * 基于 Axios 封装的 HTTP 请求工具，提供统一的请求/响应处理
- *
- * ## 主要功能
- *
- * - 请求/响应拦截器（自动添加 Token、统一错误处理）
- * - 1401 登录过期自动登出（带防抖机制）
- * - 请求失败自动重试（可配置）
- * - 统一的成功/错误消息提示
- * - 支持 GET/POST/PUT/DELETE 等常用方法
- *
- * @module utils/http
- * @author Art Design Pro Team
+ * 基于 Axios 的 HTTP 封装：拦截器注入 Token、统一错误处理、1401 防抖登出、可配置重试。
  */
 
 import axios, { AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
@@ -67,8 +55,7 @@ const axiosInstance = axios.create({
 /** 请求拦截器 */
 axiosInstance.interceptors.request.use(
   (request: InternalAxiosRequestConfig) => {
-    // 注入会话 token（后端 Sa-Token token-name=dakang-token，头与 Cookie 同名；
-    // 显式带头不依赖浏览器 Cookie，避免同机多个基座项目 Cookie 串号）
+    // 注入 dakang-token 头（不依赖 Cookie，避免同机多个基座项目 Cookie 串号）
     const { accessToken } = useUserStore()
     if (accessToken) {
       request.headers.set('dakang-token', accessToken)
@@ -128,11 +115,8 @@ function handleUnauthorizedError(message?: string): never {
 }
 
 /**
- * 处理待改初始密码（626）：把会话标记补回并送去改密页。
- *
- * 正常动线由路由守卫拦住，走不到这里；本分支是兜底——刷新、深链或标记丢失时，
- * 页面挂载会并发打出一批业务请求而全被服务端拒绝。若逐条弹提示，用户会被同一句话
- * 刷屏且不知该去哪儿，故这里只跳转一次，toast 交由 shouldSuppressErrorToast 抑制。
+ * 处理待改初始密码（626）兜底：补回会话标记并只跳转一次改密页；
+ * 并发被拒请求的 toast 交由 shouldSuppressErrorToast 抑制，避免刷屏。
  */
 function handlePwdChangeRequired(): void {
   const userStore = useUserStore()
@@ -185,17 +169,14 @@ async function retryRequest<T>(
   }
 }
 
-/** 延迟函数 */
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** 请求函数 */
 async function request<T = any>(config: ExtendedAxiosRequestConfig): Promise<T> {
   try {
     const res = await axiosInstance.request<BaseResponse<T>>(config)
 
-    // 显示成功消息
     if (config.showSuccessMessage && res.data.msg) {
       showSuccess(res.data.msg)
     }
@@ -205,7 +186,9 @@ async function request<T = any>(config: ExtendedAxiosRequestConfig): Promise<T> 
     if (
       error instanceof HttpError &&
       error.code !== ApiStatus.tokenExpired &&
-      error.code !== ApiStatus.pwdChangeRequired
+      error.code !== ApiStatus.pwdChangeRequired &&
+      // 1440 需二级认证：调用方就地弹口令并重放，不弹全局红字
+      error.code !== ApiStatus.safeAuthRequired
     ) {
       const showMsg = config.showErrorMessage !== false
       showError(error, showMsg)

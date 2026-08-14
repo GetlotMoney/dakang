@@ -1,7 +1,6 @@
 import type {
   BusinessTime,
   EntityId,
-  MockMeta,
   MoneyFen,
 } from './common'
 import type { DeliveryAppeal, OrderDetail, OrderDetailRaw } from './order'
@@ -26,7 +25,6 @@ import type {
 import { normalizeOrderDetail } from './order'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { currentMode } from './runtime'
 import { formatFen, formatMl } from '@/utils/format'
 
 export type DeliveryTaskStatus = 1 | 2 | 3 | 4 | 5 | 6 | 7
@@ -56,7 +54,6 @@ export interface SignPhoto {
   time: BusinessTime
   latitude?: number
   longitude?: number
-  evidenceMode: 'prototype' | 'external-snapshot' | 'real'
 }
 
 export interface DeliveryTask {
@@ -78,10 +75,7 @@ export interface DeliveryTask {
   receiveAddress: string
   maskedPhone: string
   priceSnapshot: DeliveryPriceSnapshot
-  /**
-   * 支付方式（D-214）。可选以兼容封板前的 Mock 夹具与后端旧单：缺省一律按 2（全余额）
-   * 展示——历史配送单只有余额支付一种口径。
-   */
+  /** 支付方式（D-214）。可选以兼容旧单与封板前夹具；缺省一律按 2（全余额）展示。 */
   payWay?: DeliveryPayWay
   taskStatus: DeliveryTaskStatus
   version: number
@@ -94,14 +88,8 @@ export interface DeliveryTask {
   signPhotos: SignPhoto[]
   /** 签收定位记录状态：原型快照=固定坐标已随三照记录；recorded=真实坐标已记录；unrecorded=未记录。 */
   locationStatus?: 'prototype-snapshot' | 'recorded' | 'unrecorded'
-  /**
-   * 补送任务标识（E2E-04 包C：申诉裁决 RESEND 生成的零金额子单任务）。
-   *
-   * **只认服务端下发的显式标识**：补送任务在快照上与普通任务只差"金额为 0、无回收桶"，
-   * 用这些特征去猜必然误标（价格调整或免配送费活动都能命中）。缺省即不加标识。
-   */
+  /** 补送任务标识（E2E-04 包C）。只认服务端显式下发，不按"金额0/无回收桶"特征猜；缺省即不加标识。 */
   isResend?: boolean
-  mockMeta?: MockMeta
 }
 
 export interface CreateDeliveryOrderInput {
@@ -126,10 +114,7 @@ export interface CreateDeliveryOrderInput {
   payWay?: DeliveryPayWay
 }
 
-/**
- * 页面提交的三照草稿（第五轮审计整改）：不含权威时间；
- * 即使传入 time 也仅视为草稿展示值，契约在签收动作发生时统一覆盖为权威 signTime。
- */
+/** 页面提交的三照草稿：传入 time 仅为草稿展示值，签收时统一覆盖为权威 signTime。 */
 export interface SignPhotoDraft extends Omit<SignPhoto, 'time'> {
   time?: BusinessTime
 }
@@ -273,9 +258,8 @@ export const CONTAINER_WATER_PRICE_FEN: Record<DeliveryTask['containerSpec'], Mo
 export const DELIVERY_FEE_PER_CONTAINER_FEN: MoneyFen = 200
 
 /**
- * 容器规格 → 单桶水量（毫升），D-214 混合结算（payWay=3）的抵扣量换算表。
- * 与后端 DeliveryPricing.CONTAINER_WATER_ML 契约同源同值：规格是容器物理容量，
- * 服务端按同表折算并冻结进创单快照，前端只用于费用预览与快照展示的升数换算。
+ * 容器规格 → 单桶水量（毫升），D-214 混合结算（payWay=3）的抵扣量换算表；
+ * 与后端 DeliveryPricing.CONTAINER_WATER_ML 同源同值，前端只用于费用预览与升数换算。
  */
 export const CONTAINER_WATER_ML: Record<DeliveryTask['containerSpec'], number> = {
   '3L袋': 3000,
@@ -312,10 +296,8 @@ export interface DeliveryPriceView {
 }
 
 /**
- * 价格快照展示行（D-214 展示分流唯一实现，U06/D01/D03/创单预览共用）：
- * payWay=3 时水费行呈现为「水量抵扣 X L」而不是 0 元水费——0 元会被读成免费，
- * 事实是水费以水量支付了；应扣合计仍如实等于快照 totalAmountFen（即配送费）。
- * payWay 缺省按 2（历史单只有余额口径）。
+ * 价格快照展示行（D-214 展示分流唯一实现，U06/D01/D03/创单预览共用）：payWay=3 时水费行呈现
+ * 「水量抵扣 X L」而非 0 元（0 元会被读成免费）；应扣合计仍等于快照 totalAmountFen。缺省按 2。
  */
 export function deliveryPriceLines(view: DeliveryPriceView): DeliveryPriceLine[] {
   const snapshot = view.priceSnapshot
@@ -358,10 +340,8 @@ export interface DeliveryPayOption {
 const AUTO_REFILL_PAY_WAY_REASON = '自动补货暂仅支持水卡余额支付'
 
 /**
- * 两种支付方式的实时可用性（与服务端拒因同文案，页面提示不另造第二套说法）：
- * 全余额需 余额≥水费+配送费；水量抵扣需 卡水量≥抵扣量 且 余额≥配送费，
- * 且自动补货方式下水量抵扣直接禁用（服务端同边界）。无卡时两项均禁用。
- * 最终裁决仍在服务端扣减事务（这里只是预检提示）。
+ * 两种支付方式的实时可用性（与服务端拒因同文案）：全余额需余额≥水费+配送费；水量抵扣需卡水量≥抵扣量
+ * 且余额≥配送费，自动补货下直接禁用；无卡时两项均禁用。最终裁决在服务端扣减事务，这里只是预检提示。
  */
 export function deliveryPayWayOptions(
   card: { balanceFen: number, balanceMl: number } | null,
@@ -412,9 +392,8 @@ function requireMediaKeys(refs: string[], scene: string): string[] {
 }
 
 /**
- * delivery 域真实适配器：全部经 withRealSession（无正式会话不发请求；401 走
- * request.ts 全局失效处理清正式会话，绝不回退 Mock）。业务判定（状态机/范围/
- * 幂等/窗口）全在服务端，这里只做入参形态收口与响应归一化。
+ * delivery 域真实适配器：全部经 withRealSession，401 走全局失效处理，绝不回退 Mock；
+ * 业务判定全在服务端，这里只做入参形态收口与响应归一化。
  */
 const realDeliveryApi: DeliveryApi = {
   async listAutoRules() {
@@ -606,14 +585,8 @@ const realDeliveryApi: DeliveryApi = {
   },
 }
 
-/**
- * real 创单的支付卡：取本人主卡 ID（服务端仍强制归属与锁卡校验，铁律1/6）。
- * 经 cardApi 间接读取避免复制卡域归一化；card 域未接真时给出明确阻断而不是静默失败。
- */
+/** 创单的支付卡：取本人主卡 ID（服务端仍强制归属与锁卡校验，铁律1/6）；经 cardApi 读取避免复制卡域归一化。 */
 async function requireRealPrimaryCardId(): Promise<EntityId> {
-  if (currentMode('card') !== 'real') {
-    throw new ContractError('DELIVERY_CARD_DOMAIN_MOCK', '暂时无法下单，请稍后重试')
-  }
   const card = await cardApi.getPrimaryCard()
   if (!card) {
     throw new ContractError('CARD_MISSING', '当前账号暂无水卡，请先购卡后再下配送单')
@@ -629,14 +602,6 @@ const MEDIA_PURPOSE_TO_VALUE: Record<DeliveryMediaPurpose, number> = {
   appeal: 2,
   exception: 3,
   workorder: 4,
-}
-
-/** 各用途归属的接真域：上传门控按业务域判定（工单证据随 device 域接真，与配送三照互不牵连）。 */
-const MEDIA_PURPOSE_DOMAIN: Record<DeliveryMediaPurpose, 'delivery' | 'device'> = {
-  sign: 'delivery',
-  appeal: 'delivery',
-  exception: 'delivery',
-  workorder: 'device',
 }
 
 /** 由本地文件扩展名推断 MIME（微信 chooseImage 临时文件带扩展名；未知按 JPEG）。 */
@@ -669,13 +634,10 @@ function readFileAsBase64(filePath: string): Promise<string> {
 }
 
 /**
- * 上传配送受控媒体（仅 delivery 域接真时可用）：读本地照片 → base64 →
- * POST /mini/delivery/media/upload → 受控媒体键。签收/举证只提交该键。
+ * 上传配送受控媒体：读本地照片 → base64 → POST /mini/delivery/media/upload → 受控媒体键。
+ * 签收/举证只提交该键，页面永远拿不到也提交不了本地路径。
  */
 export async function uploadDeliveryMedia(filePath: string, purpose: DeliveryMediaPurpose): Promise<string> {
-  if (currentMode(MEDIA_PURPOSE_DOMAIN[purpose]) !== 'real') {
-    throw new ContractError('MOCK_ONLY', '当前无法上传照片，请稍后重试')
-  }
   const contentBase64 = await readFileAsBase64(filePath)
   return withRealSession(async () => {
     const raw = await post<{ mediaKey?: string | null }>(deliveryEndpoints.mediaUpload, {
@@ -692,8 +654,8 @@ export async function uploadDeliveryMedia(filePath: string, purpose: DeliveryMed
 }
 
 /**
- * 配送下单幂等键：规范小写 UUID v4。页面在一次提交意图内持有并于重试间复用；
- * 不用 crypto.randomUUID()——小程序运行时没有该 API（recharge 域同款实现依据）。
+ * 配送下单幂等键：规范小写 UUID v4，页面在一次提交意图内持有并于重试间复用；
+ * 不用 crypto.randomUUID()——小程序运行时没有该 API。
  */
 export function newDeliveryRequestId(): string {
   const bytes = new Uint8Array(16)
@@ -706,5 +668,4 @@ export function newDeliveryRequestId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-// delivery 域按域解锁（recharge 先例）：显式 VITE_API_MODE_DELIVERY='real' 才接真，漏配回落 Mock。
 export const deliveryApi = realDeliveryApi

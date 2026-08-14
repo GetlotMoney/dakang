@@ -63,6 +63,19 @@ class AuditGhostRollbackDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -104,6 +117,7 @@ class AuditGhostRollbackDbTest {
             bean.setSqlSessionTemplate(template);
             return bean;
         }
+
 
         @Bean
         MapperFactoryBean<WsDeliveryAutoRuleMapper> wsDeliveryAutoRuleMapper(SqlSessionTemplate t) {

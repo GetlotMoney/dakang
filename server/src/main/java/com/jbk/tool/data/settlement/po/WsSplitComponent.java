@@ -13,14 +13,9 @@ import lombok.experimental.Accessors;
 import java.io.Serializable;
 
 /**
- * 分润 V2 组件证据（E2E-08 S1，任务书 5.4）。
- *
- * <p>回答「这个人从哪条基数、以什么角色、按什么比例、拿到多少钱」。
- * 是<b>计算证据</b>，不是付款状态机——付款推进仍由既有 {@code ws_split_record}
- * 承担，S2 才把组件按收益人聚合为待入账行。本表不设状态列，证据一经写入不再变更。</p>
- *
- * <p>{@code COMPONENT_KEY} 数据库唯一：同订单、同基数线、同角色恒一条；
- * 同一收益人以多角色出现时 key 因角色不同而不同，绝不会被唯一键错误合并（矩阵 12）。</p>
+ * 分润 V2 组件证据（E2E-08 S1，任务书 5.4）。计算证据而非付款状态机（付款推进仍由 ws_split_record 承担），
+ * 不设状态列，一经写入不再变更。
+ * {@code COMPONENT_KEY} 库内唯一：同订单同基数线同角色恒一条；多角色 key 因角色不同不会被合并（矩阵 12）。
  *
  * @author dakang
  * @since 2026-08-06

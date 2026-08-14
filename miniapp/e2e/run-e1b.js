@@ -12,11 +12,8 @@ const process = require('node:process')
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
-const { checkRuntimeModes } = require('./runtime-modes')
 const { cell, newBatchId, writeBatchFiles } = require('./report-core')
 const {
-  EXPECTED_REAL_MODES,
-  EXPECTED_REAL_MODE_MAP,
   FULL_STEP_NAMES,
   REQUIRED_SHOTS,
   assertRunAuthorized,
@@ -76,7 +73,6 @@ let orderNo = MODE === 'diag' || MODE === 'shots' ? EVIDENCE_ORDER : ''
 let pageActualMl = null
 let diskBuildFingerprint = ''
 let runtimeBuildFingerprint = ''
-let runtimeApiModes = ''
 let automator
 
 function automatorClient() {
@@ -194,21 +190,15 @@ async function verifyRuntimeBuild(mp) {
   if (!text) {
     throw new Error('运行页面未暴露构建 fingerprint，可能仍是旧缓存包')
   }
-  const matched = /^BUILD=([^;]+);(.+)$/.exec(text)
+  const matched = /^BUILD=(.+)$/.exec(text)
   if (!matched) {
     throw new Error('运行页面构建标记缺少 fingerprint 或 API 模式矩阵')
   }
   runtimeBuildFingerprint = matched[1].trim()
-  runtimeApiModes = matched[2].trim()
   if (runtimeBuildFingerprint !== diskBuildFingerprint) {
     throw new Error(`运行包 fingerprint(${runtimeBuildFingerprint}) 与磁盘构建(${diskBuildFingerprint}) 不一致`)
   }
-  const modeReasons = checkRuntimeModes(runtimeApiModes, EXPECTED_REAL_MODE_MAP)
-  if (modeReasons.length) {
-    // 逐域断言（与 run-d4 一致）：报精确原因，不再整串全等比较。
-    throw new Error(`E1b 仅允许 ${EXPECTED_REAL_MODES}，当前=${runtimeApiModes}；不符：${modeReasons.join('；')}`)
-  }
-  return `${runtimeBuildFingerprint};${runtimeApiModes}`
+  return runtimeBuildFingerprint
 }
 
 async function readOrderEvidence(page) {
@@ -529,7 +519,6 @@ function buildResult() {
       manifestSha256: manifest.digest,
       diskFingerprint: diskBuildFingerprint,
       runtimeFingerprint: runtimeBuildFingerprint,
-      runtimeModes: runtimeApiModes,
     },
     behavior,
     shots: shotEvidence,
@@ -566,7 +555,6 @@ function reportText(result) {
     `- 证据核心 SHA-256：${result.coreSha256}`,
     `- 构建 manifest：${result.build.manifestSha256}（${result.build.manifestCount} 文件）`,
     `- 构建 fingerprint：disk=${result.build.diskFingerprint || '未取得'}；runtime=${result.build.runtimeFingerprint || '未取得'}`,
-    `- 运行 API 模式：${result.build.runtimeModes || '未取得'}`,
     `- 行为：${result.behavior.passed}/${result.behavior.total} ${result.behavior.pass ? 'PASS' : 'FAIL'}`,
     `- 证据：${evidenceText}`,
     '',

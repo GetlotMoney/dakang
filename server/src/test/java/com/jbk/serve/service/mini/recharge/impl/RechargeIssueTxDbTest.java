@@ -54,18 +54,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * L2-A 发卡事务的<b>真实 MySQL + 真实 Spring 事务</b>集成测试（决策 A1~A4）。
- *
- * <p>这里测的三件事都无法用单测证明：</p>
- * <ol>
- *   <li><b>发卡原子性</b>：建卡、加权益、唯一流水、CARD_ID 回填、订单 2→4 必须同生共死——
- *       任一步失败不留卡、不留流水、订单不动（决策 A2）。</li>
- *   <li><b>发卡幂等</b>靠 {@code uk_card_issue_order} + {@code uk_wallet_flow_biz_key} 双唯一键
- *       + Spring 回滚共同保证；重放与 20 并发全库只能出现一张卡、一条流水（决策 A3）。</li>
- *   <li><b>资格复查</b>在锁内真实生效：已有任意 DATA_STATUS=0 的卡即不可恢复且零残留（决策 A4）。</li>
- * </ol>
- *
- * <p>无 Docker 环境自动跳过。</p>
+ * L2-A 发卡事务真实 MySQL + Spring 事务集成测试（决策 A1~A4）。
+ * 验证：发卡原子性（任一步失败零残留，A2）、双唯一键 uk_card_issue_order +
+ * uk_wallet_flow_biz_key 幂等（A3）、锁内资格复查（A4）。无 Docker 自动跳过。
  */
 @Testcontainers(disabledWithoutDocker = true)
 @ExtendWith(SpringExtension.class)
@@ -98,6 +89,22 @@ class RechargeIssueTxDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+        /** 通知登记用真实实现：要验「回滚后库里没有那一行」，mock 证不了。 */
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper>
+                wechatNotifyOutboxMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue(
+                com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper m) {
+            return new com.jbk.serve.service.mini.notify.WechatNotifyEnqueue(m);
+        }
+
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -121,6 +128,11 @@ class RechargeIssueTxDbTest {
                     new com.baomidou.mybatisplus.core.MybatisConfiguration();
             cfg.setMapUnderscoreToCamelCase(true);
             factory.setConfiguration(cfg);
+            // 与生产同款自动填充：缺了它，填充字段以 NULL 落库，NOT NULL 列报错、可空列假绿。
+            com.baomidou.mybatisplus.core.config.GlobalConfig globalConfig =
+                    new com.baomidou.mybatisplus.core.config.GlobalConfig();
+            globalConfig.setMetaObjectHandler(new com.jbk.tool.config.system.mybatis.MpMetaObjectHandler());
+            factory.setGlobalConfig(globalConfig);
             factory.setMapperLocations(new org.springframework.core.io.support
                     .PathMatchingResourcePatternResolver()
                     .getResources("classpath*:mapper/trade/TradeCardMapper.xml"));
@@ -162,8 +174,9 @@ class RechargeIssueTxDbTest {
         RechargeCreditTxImpl creditTx(RechargeCreditMapper mapper, RechargeLockedState locked,
                                       RechargeLedgerVerifier ledger,
                                       WsCardEntitlementBatchMapper batchMapper,
-                                      EntitlementLedger entitlementLedger) {
-            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger);
+                                      EntitlementLedger entitlementLedger,
+                                      com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue) {
+            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger, notifyEnqueue);
         }
 
         @Bean
@@ -211,7 +224,7 @@ class RechargeIssueTxDbTest {
         }
     }
 
-    /** 按接口注入：@Transactional 走 JDK 接口代理，注入实现类会失败（注入本身即证明事务增强已织入）。 */
+    /** 按接口注入：@Transactional 走 JDK 接口代理，注入实现类会失败。 */
     @Autowired
     private IRechargeIssueTx issueTx;
     /** 已完成购卡单的重放事实按路由规则走 creditTx（CARD_ID 已回填）——必须一并验证该真实路径。 */
@@ -228,9 +241,9 @@ class RechargeIssueTxDbTest {
                 CREATE TABLE IF NOT EXISTS ws_user (
                   ID BIGINT PRIMARY KEY
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
-        // E2E-04 包D：充值入账同事务建立权益批次，故本类的 schema 必须包含它。
-        // uk_batch_order 是「每笔充值恰好一个批次」的物理保证——本类的重放用例
-        // 正是靠它与 uk_card_issue_order 一起把「重放不得二次发权益」钉死。
+        // E2E-04 包D：入账同事务建批次；通知 outbox 表缺失会让整个事务失败
+        com.jbk.serve.service.mini.notify.WechatNotifyTestSchema.create(jdbc);
+        com.jbk.serve.service.mini.notify.WechatNotifyTestSchema.truncate(jdbc);
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_card_entitlement_batch (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -305,8 +318,7 @@ class RechargeIssueTxDbTest {
                   UNIQUE KEY uk_wallet_flow_biz_key (BIZ_IDEMPOTENCY_KEY)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.execute("TRUNCATE TABLE ws_wallet_flow");
-        // 包D 批次表也要逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键，
-        // 表现为与被测逻辑无关的 DuplicateKey，掩盖真正的断言
+        // 批次表逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键
         jdbc.execute("TRUNCATE TABLE ws_card_entitlement_batch");
         jdbc.execute("TRUNCATE TABLE ws_card");
         jdbc.execute("DELETE FROM ws_payment_event");
@@ -435,10 +447,7 @@ class RechargeIssueTxDbTest {
         assertEquals(3, eventStatus(1000L));
     }
 
-    /**
-     * 已完成购卡单 CARD_ID 已被回填，事实路由会把后续重放送进<b>事务 B（creditTx）</b>的
-     * 只读幂等核验分支——purchase 快照在该分支必须按 NewCardExpiry 下限通过完成态核验。
-     */
+    /** CARD_ID 回填后重放走事务 B（creditTx）只读核验分支，purchase 快照须按 NewCardExpiry 下限通过。 */
     @Test
     void replayThroughCreditTxAfterBackfillAlsoConverges() {
         issueTx.issue(EVENT_ID, PROCESSING);
@@ -497,19 +506,9 @@ class RechargeIssueTxDbTest {
     // ================= 4b：同用户两笔不同购卡单并发 → 恰好一张卡 =================
 
     /**
-     * 口径修正 1（先测后删）：同一用户两笔<b>不同</b>已支付购卡单（不同 orderNo/requestId）并发发卡。
-     * 与用例 4 的区别：那里 20 个事实同属一单，幂等由发行锚点/唯一键兜住；这里两单锚点、卡号、
-     * 流水幂等键全都不同，唯一防线是「锁 ws_user 行串行化 + 锁后资格复查看得见对方刚发的卡」。
-     * 期望：恰好一单发卡（order 4），另一单资格复查拒绝并按 A2 落痕为 payment 2 / order 6，
-     * 全库恰好一张卡、一条流水——零第二卡、零第二流水。
-     *
-     * <p><b>2026-07-23 实测为红（竞态真实存在，暂禁用留作复现器）</b>：两线程各发出一张卡。
-     * 根因：REPEATABLE READ 下 {@code countLiveCardsByUser} 是普通一致性读，读视图在事务首条
-     * SELECT（selectEventById）时就已建立；后到者在 {@code lockUserRow} 上排队醒来后，
-     * 资格复查读到的仍是先行者提交<b>前</b>的快照，看不见对方刚发的卡——锁串行化了执行顺序，
-     * 但没让复查读到最新账。已修复（N-15）：发卡事务降级 READ_COMMITTED，锁后复查读最新已提交版本；
-     * 刻意未用 FOR SHARE（无卡用户的二级索引锁定读会与相邻用户互等 gap 死锁）。本用例即回归闸。
-     * 边界与回归状态统一记录在 docs/demo-module-status.md。</p>
+     * 同用户两笔不同购卡单并发：锚点/卡号/流水键全不同，唯一防线是锁 ws_user 行串行化
+     * + 锁后资格复查。N-15 回归闸：发卡事务必须 READ_COMMITTED（REPEATABLE READ 下
+     * 锁后复查读的仍是旧快照，两线程各发一张卡）；刻意不用 FOR SHARE（gap 死锁）。
      */
     @Test
     void twoDistinctPaidPurchaseOrdersOfSameUserIssueExactlyOneCard() throws Exception {
@@ -722,10 +721,8 @@ class RechargeIssueTxDbTest {
     }
 
     /**
-     * 审计 R2 P1-3：<b>首次购卡 × 赠卡转正</b>两条不同事务实现并发争夺同一用户的付费名额。
-     * 两链共用 ws_user 行锁（payment→order→user→card 同序）+ READ_COMMITTED 锁内复查：
-     * 任一方可赢，但最终恰一张付费卡；输家 UNRECOVERABLE（订单6/事实待对账通道），
-     * payment 的成功事实保持不变，零卡权益、零充值流水。
+     * 审计 R2 P1-3：首次购卡 × 赠卡转正并发争夺同一用户付费名额——共用 ws_user 行锁
+     * + READ_COMMITTED 锁内复查，最终恰一张付费卡，输家 UNRECOVERABLE 零写入。
      */
     @Test
     void concurrentFirstPurchaseAndPromotionYieldExactlyOnePaidCard() throws Exception {
@@ -882,11 +879,8 @@ class RechargeIssueTxDbTest {
     }
 
     /**
-     * E2E-04 包D：首次购卡入账必须<b>同事务</b>建出权益批次，且批次剩余恰等于发放量。
-     *
-     * <p>没有这条正向断言，「接了但没生效」是看不出来的——把 createOnCredit 那一行删掉，
-     * 既有用例一条都不会红（它们只看卡余额与流水）。而批次缺失的后果是这笔充值
-     * 永远无法退款：折算没有基准。</p>
+     * E2E-04 包D：首次购卡入账同事务建权益批次且剩余等于发放量——
+     * 批次缺失这笔充值将永远无法退款（折算没有基准）。
      */
     @Test
     void firstPurchaseCreatesEntitlementBatchMatchingGrantedAmounts() {

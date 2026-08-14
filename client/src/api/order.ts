@@ -1,18 +1,9 @@
 /**
- * 订单中心 API 契约。
- * H2-FE 已接真：fetchOrderPage / fetchOrderTrace 走管理端只读接口（/order/order/page、/order/order/trace），
- * 读真实 ws_order/ws_command/ws_wallet_flow；后端 Long 序列化为字符串，见下方归一化。
- * E2E-03 包C 已接真：fetchDeliveryTaskPage / fetchDeliveryTaskDetail（/order/delivery/**）、
- * fetchAppealPage / fetchAppealEvidence / fetchDecideAppeal（/order/appeal/**）走真实配送域接口；
- * 追溯的 delivery/appeals/auditEvents 三区块对配送单返回真实聚合（deliveryTrace，履约链/资金链
- * 分层 fail-closed），照片仅呈现受控媒体元数据（一期无媒体下载出口，不渲染图片字节）。
- * E2E-04 包E：售后退款与补偿的 API 全部在 @/api/after-sale.ts，本文件不再承载该域。
- * Mock 追溯数据源（fetchOrderTraceMock + MOCK_* 固定样例）已随 Mock 期结束整体退役（2026-08-02）：
- * 全部页面接真后无任何发起方，追溯一律走真实接口。
- *
- * 字段口径与真实表严格对齐：ws_order / ws_delivery_task / ws_delivery_appeal / ws_command（见 server/sql）。
+ * 订单中心 API 契约（/order/order/**、/order/delivery/**、/order/appeal/** 管理端只读接真）。
+ * 售后退款与补偿 API 在 @/api/after-sale.ts；追溯照片只呈现受控媒体元数据，不渲染图片字节。
+ * 字段口径与真实表对齐：ws_order / ws_delivery_task / ws_delivery_appeal / ws_command。
  * 字典：订单类型1340 订单状态1341 支付方式1346 指令类型1320 指令状态1321 任务状态1351 申诉状态1352。
- * 金额一律"分"（bigint→number）；水量一律"毫升"；时间 varchar(14) yyyyMMddHHmmss。
+ * 金额一律"分"；水量一律"毫升"；时间 varchar(14) yyyyMMddHHmmss；后端 Long 序列化为字符串，见归一化。
  */
 
 import request from '@/utils/http'
@@ -41,8 +32,7 @@ export interface PageResult<T> {
 export type PaymentEvidenceState = 'valid' | 'missing' | 'invalid'
 
 /**
- * 订单列表项（ws_order）。
- * 数据库 Long 型 ID 一律保持 string（2026-07-20 收口轮 P1：Number 超过 2^53 丢精度会查错/查不到订单）；
+ * 订单列表项（ws_order）。Long ID 一律保持 string（Number 超 2^53 丢精度会查错/查不到订单）；
  * 仅金额、水量、序号、状态等可计算字段转 number。
  */
 export interface OrderItem {
@@ -282,13 +272,9 @@ export interface DeliveryTaskAdminDetail extends DeliveryTaskAdminItem {
 }
 
 /**
- * 管理端申诉列表项（真实接口）。
- *
- * 分页列表下发的是<b>案件聚合行</b>（一行 = 一个 taskId，D-215）：`appealId` 及原因、
- * 实收、状态、处理人等展示字段取代表申诉（活跃申诉优先，无活跃取最近一条），
- * 因此 `appealStatus` 就是案件当前状态；裁决/证据接口继续用 `appealId`。
- * 聚合列（appealCount / activeAppealId / first-lastAppealTime）只在分页下发，
- * 证据详情的 `appeal` 与 `appealHistory` 条目上为空。
+ * 管理端申诉列表项。分页下发案件聚合行（一行 = 一个 taskId，D-215）：展示字段取代表申诉
+ * （活跃优先），appealStatus 即案件当前状态；聚合列（appealCount / activeAppealId /
+ * first-lastAppealTime）只在分页下发，证据详情的 appeal 与 appealHistory 条目上为空。
  */
 export interface AppealAdminItem {
   appealId: string
@@ -353,12 +339,8 @@ export type AppealStrategyCode =
   | 'REJECT'
 
 /**
- * 裁决提交：**只提交策略码 + 批准数量 + 说明**。
- *
- * 申诉终态（2成立待补偿 / 3不成立驳回 / 5补送待执行）由服务端从策略码唯一派生，
- * 前端不再传 outcome —— 两套码并存必然出现"驳回却带补偿策略"这种自相矛盾的入参。
- * 金额与水量同样由服务端按订单快照计算，本契约刻意不含任何金额字段：
- * 让前端决定退多少钱是资金事故的起点。
+ * 裁决提交只含策略码 + 批准数量 + 说明：申诉终态由服务端从策略码唯一派生（不传 outcome），
+ * 金额与水量由服务端按订单快照计算，本契约刻意不含任何金额字段。
  */
 export interface AppealDecideData {
   id: string
@@ -475,18 +457,8 @@ export interface OrderTraceVo {
   deliveryTrace?: RealDeliveryTrace
   /** 区块五：申诉记录 */
   appeals: AppealBrief[]
-  /** 区块六：审计事件（Mock=共享 Demo 审计；真实=配送单领域事件聚合）。 */
+  /** 区块六：审计事件（配送单领域事件聚合）。 */
   auditEvents: TraceAuditEvent[]
-}
-
-/** 追溯 Mock 数据源使用的配送签收照片（演示样例专用；真实链路只出媒体元数据）。 */
-export interface AppealEvidencePhoto {
-  type: number
-  label: string
-  url: string
-  time?: string
-  lat?: number
-  lng?: number
 }
 
 /** 订单分页查询参数 */
@@ -499,39 +471,8 @@ export interface OrderSearchParams {
   userKeyword?: string
 }
 
-const parseSignPhotos = (raw?: string): AppealEvidencePhoto[] => {
-  if (!raw) return []
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-
-    return parsed.flatMap((item): AppealEvidencePhoto[] => {
-      if (!item || typeof item !== 'object') return []
-      const record = item as Record<string, unknown>
-      const url = typeof record.url === 'string' ? record.url : ''
-      if (!url) return []
-
-      const type = Number(record.type)
-      return [
-        {
-          type,
-          label: type === 1 ? '门牌照' : type === 2 ? '水品照' : '摆放照',
-          url,
-          time: typeof record.time === 'string' ? record.time : undefined,
-          lat: typeof record.lat === 'number' ? record.lat : undefined,
-          lng: typeof record.lng === 'number' ? record.lng : undefined
-        }
-      ]
-    })
-  } catch {
-    return []
-  }
-}
-
-// ============ 接真归一化（H2-FE：订单本体 + 追溯）============
-// 后端 Long 型经全局 Jackson 序列化为字符串以防 JS 精度丢失（id/userId/orderAmount/planMl 等到前端是数值字符串）。
-// 数据库 Long ID 一律保持 string（2026-07-20 收口轮 P1：Number 超过 2^53 丢精度会查错/查不到订单）；
-// 仅金额、水量、序号、状态等参与算术/比较的可计算字段转回 number（字符串按字典序比较会误判）。
+// ============ 接真归一化（订单本体 + 追溯）============
+// 后端 Long 经 Jackson 序列化为字符串；ID 保持 string，可计算字段转回 number（字符串按字典序比较会误判）。
 const toNum = (v: unknown): number | undefined => {
   if (v === null || v === undefined || v === '') return undefined
   const n = Number(v)
@@ -584,8 +525,6 @@ function normalizeOrderItem(raw: Record<string, any>): OrderItem {
     outletId: toIdStr(raw.outletId),
     outletNo: toNum(raw.outletNo),
     cardId: toIdStr(raw.cardId),
-    // 使用人/持卡人身份聚合（UI-TRACE）：脱敏与 accessRole 均为服务端产物，
-    // 前端只做结构校验，不用 userId/cardOwnerUserId 自行推导角色。
     actorMaskedPhone: typeof raw.actorMaskedPhone === 'string' ? raw.actorMaskedPhone : undefined,
     cardOwnerUserId: toIdStr(raw.cardOwnerUserId),
     cardOwnerName: typeof raw.cardOwnerName === 'string' ? raw.cardOwnerName : undefined,
@@ -751,7 +690,6 @@ function normalizeAppealAdminItem(raw: Record<string, any>): AppealAdminItem {
     handleTime: toText(raw.handleTime),
     handleResult: toText(raw.handleResult),
     createTime: toText(raw.createTime),
-    // 聚合列只在案件分页下发；详情/往来条目上后端本就不给，归一化后保持 undefined
     appealCount: toNum(raw.appealCount),
     activeAppealId: toIdStr(raw.activeAppealId),
     firstAppealTime: toText(raw.firstAppealTime),
@@ -922,8 +860,7 @@ function normalizeRechargeTrace(
   }
 
   const detailRaw = raw.detail as Record<string, unknown>
-  // 服务端充值详情沿用既有契约：FIRST_CARD 显式标识，已有卡充值为 null。
-  // PC 只在归一化后的展示模型中把 null 命名为 EXISTING_CARD，不改写业务事实。
+  // 契约：FIRST_CARD 显式标识，已有卡充值为 null（仅展示层命名为 EXISTING_CARD）。
   const purchaseMode =
     detailRaw.purchaseMode === 'FIRST_CARD'
       ? 'FIRST_CARD'
@@ -1032,7 +969,6 @@ function normalizeOrderTrace(raw: Record<string, any>): OrderTraceVo {
       mlAfter: toNum(f.mlAfter)
     })),
     // E2E-03 包C：配送单三区块真实聚合（deliveryTrace）；非配送单后端返 null/空数组。
-    // Mock 演示形状的 delivery 只由 fetchOrderTraceMock 构造，两条路径严格分流。
     deliveryTrace: normalizeRealDeliveryTrace(
       raw?.delivery as Record<string, any> | null | undefined
     ),
@@ -1056,22 +992,10 @@ export async function fetchOrderPage(params: OrderSearchParams): Promise<PageRes
   }
 }
 
-/*
- * 取水异常的终态处理已迁出本文件（E2E-04 包E）。
- *
- * 原 fetchResolveWaterException 是一套跑在浏览器里的资金算法：它自行算缺水量、自行决定
- * 订单落 4已完成 还是 5已取消、自行往 Mock 流水里追加一条“补偿水量登记”。这是资金口径的
- * 第二份真相，且与服务端账本毫无关系，按任务书明令删除。
- *
- * 取水核账现在走真实接口：/order/after-sale/water/preview 只读预览来源判别与建议终态，
- * /order/after-sale/water/confirm 在事务内按账本重算终态。两者都在 @/api/after-sale.ts，
- * 页面只提交订单ID与核账说明，不提交也不推算任何金额、水量或目标状态。
- */
+// 取水核账走真实接口（@/api/after-sale.ts 的 water/preview + water/confirm）：
+// 页面只提交订单ID与核账说明，不提交也不推算任何金额、水量或目标状态。
 
-/**
- * 订单全链路追溯（管理端只读接真 /order/order/trace；REQ-050 订单→指令→ACK→流水）。
- * 配送/申诉/审计三区块属配送链与领域事件聚合，为后续切片：后端本期返 null/空数组，抽屉对应区块走空态。
- */
+/** 订单全链路追溯（/order/order/trace；REQ-050 订单→指令→ACK→流水）。 */
 export async function fetchOrderTrace(orderId: string): Promise<OrderTraceVo> {
   const res = await request.post<Record<string, any>>({
     url: '/order/order/trace',
@@ -1080,10 +1004,7 @@ export async function fetchOrderTrace(orderId: string): Promise<OrderTraceVo> {
   return normalizeOrderTrace(res)
 }
 
-/**
- * 配送任务分页（真实接口 /order/delivery/page，DRIVER_MANAGE 只读）。
- * PC 只监控与追溯：本域没有任何接单/推进/签收写接口，页面不得伪造履约动作。
- */
+/** 配送任务分页（/order/delivery/page）。PC 只读监控：本域无接单/推进/签收写接口，页面不得伪造履约动作。 */
 export async function fetchDeliveryTaskPage(params: {
   current: number
   size: number
@@ -1111,9 +1032,8 @@ export async function fetchDeliveryTaskDetail(taskId: string): Promise<DeliveryT
 }
 
 /**
- * 申诉分页（真实接口 /order/appeal/page）：返回的是案件聚合行（一行一个 taskId，D-215），
- * 待处理案件排前、其余按最近申诉时间倒序；total 是案件数不是申诉条数。
- * appealStatus 筛的是案件当前状态。
+ * 申诉分页（/order/appeal/page）：返回案件聚合行（一行一个 taskId，D-215），待处理排前、
+ * 其余按最近申诉时间倒序；total 是案件数不是申诉条数；appealStatus 筛案件当前状态。
  */
 export async function fetchAppealPage(params: {
   current: number
@@ -1161,8 +1081,9 @@ export async function fetchAppealEvidence(appealId: string): Promise<AppealAdmin
 }
 
 /**
- * 申诉裁决（真实接口 /order/appeal/decide，权限 order:appeal:handle + 后端操作审计/防重）。
- * 结果只有包A 白名单三态；资金补偿仅登记待处理，本接口不产生退款成功结果。
+ * 申诉裁决（/order/appeal/decide，权限 order:appeal:handle）。
+ * 结果只有包A 白名单三态（2成立待补偿 / 3不成立驳回 / 5补送待执行）；
+ * 资金补偿仅登记待处理，本接口不产生退款成功结果。
  */
 export function fetchDecideAppeal(data: AppealDecideData): Promise<boolean> {
   return request.post<boolean>({

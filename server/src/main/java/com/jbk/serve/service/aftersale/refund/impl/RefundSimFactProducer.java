@@ -22,18 +22,9 @@ import java.util.Map;
 
 /**
  * Refund-Sim 事实产生器（仅 {@code mini.refund-sim.enabled=true} 时注册）。
- *
- * <h3>它模拟的是「服务方的答复」，不是「退款结果」</h3>
- * <p>R0-8：Refund-Sim 只模拟退款服务方事实，<b>不直接改退款成功</b>。
- * 因此本类做的全部事情是造出一条与真实通知同构的事实、落进收件箱，
- * 然后交给同一个 {@link IRefundFactService#process} 去核验推进——
- * 与真实微信通知走的是<b>同一条</b>管道，不存在「模拟专用的推进捷径」。
- * 这也意味着模拟事实同样要过金额、订单号、服务方单号的交叉核对。</p>
- *
- * <h3>金额与来源不取自入参</h3>
- * <p>见 {@link RefundSimNotifyBo}：允许调用方传金额，模拟器就成了任意金额退款的入口。
- * 正常路径下金额取自本地退款单；{@code overrideAmountFen} 只用于<b>刻意构造</b>
- * 「错金额事实」以验证它会被挡下，那条路径的终点是转人工，不是退款成功。</p>
+ * R0-8：只模拟服务方事实、不直接改退款成功——事实与真实通知走同一条收件箱管道，
+ * 同样要过金额/订单号/服务方单号交叉核对。金额正常取自本地退款单，
+ * {@code overrideAmountFen} 只用于刻意构造错金额事实验证会被挡下。
  *
  * @author dakang
  * @since 2026-07-29
@@ -58,9 +49,7 @@ public class RefundSimFactProducer {
         if (bo == null || StrUtil.isBlank(bo.getRefundNo())) {
             throw new JbkException("Refund-Sim 事实入参缺失");
         }
-        // 双重确认来源：本 Bean 只在开关为真时注册，而适配器也必须同时是 Sim。
-        // 两者理论上不可能不一致（同一个开关），这里显式断言是为了让「有人给微信适配器
-        // 加了别的注册条件」这类改动在测试期就炸掉，而不是把模拟事实记成微信退款。
+        // 双重确认来源：显式断言让「适配器注册条件被改」在测试期就炸掉，而非把模拟事实记成微信退款
         if (refundSourceAdapter.currentSource() != IRefundSourceAdapter.REFUND_SIM) {
             throw new JbkException("Refund-Sim 事实产生器与当前退款来源适配器不一致，拒绝产生事实");
         }
@@ -79,9 +68,8 @@ public class RefundSimFactProducer {
         String orderNo = StrUtil.blankToDefault(bo.getOverrideOrderNo(), refund.getOrderNo());
         String now = DateUtils.time();
 
-        // 事实键 = 退款单号 + 序号：同一退款单的第 N 条模拟事实恒定同键，
-        // 因此「同事实重复三次」在库里只会有一行（场景13）。序号由调用方给，
-        // 用随机数会让这条场景变成不可测。
+        // 事实键 = 退款单号 + 序号：第 N 条模拟事实恒定同键，「同事实重复三次」库里只有一行；
+        // 序号由调用方给，用随机数会让该场景不可测
         String eventKey = "SIM:" + refund.getRefundNo() + ":" + seq;
 
         Map<String, Object> body = new LinkedHashMap<>();

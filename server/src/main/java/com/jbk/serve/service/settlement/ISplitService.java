@@ -37,33 +37,26 @@ public interface ISplitService extends IService<WsSplitRecord> {
                          SettlementEnum.ProductLine productLine,
                          Long ownerUserId, Long courierUserId, String orderCreateTime);
 
-    /**
-     * 配送订单分线分账（D-419，2026-08-07 甲方确认：配送费与水费完全分开、各自为线）。
-     *
-     * <p>水费部分按 <b>WATER 线</b>比例（与取水订单同口径——水就是水）、配送费部分按
-     * <b>DELIVERY 线</b>比例分别计算；每个收款方仍落<b>一行</b>（金额=两线份额之和，
-     * {@code SPLIT_RATE_SNAP} 记分线明细 JSON），行合计恒等于整单（水费+配送费），
-     * 对账不变式与既有唯一键 {@code uk_split_order_receiver} 都不变。行级分线模型
-     * 由 V2（ws_split_plan/item/component）接线时交付，本方法是 V1 口径下的最小正确实现。</p>
-     *
-     * @param waterFen       水费基数(分)
-     * @param deliveryFeeFen 配送费基数(分)
-     */
     /** 冻结期阈值（D-421）：CREATE_TIME 不晚于该串的待分账行才可结算。 */
     String settleableCreateTimeThreshold();
 
 
+    /**
+     * 配送订单分线分账（D-419）：水费按 WATER 线、配送费按 DELIVERY 线分别计算；每收款方仍落一行
+     * （金额=两线之和，SPLIT_RATE_SNAP 记分线明细 JSON），行合计恒等于整单，唯一键不变。
+     * 行级分线模型由 V2 接线时交付，本方法是 V1 口径最小正确实现。
+     *
+     * @param waterFen       水费基数(分)
+     * @param deliveryFeeFen 配送费基数(分)
+     */
     void enqueueForDeliveryOrder(Long orderId, String orderNo, long waterFen, long deliveryFeeFen,
                                  Long ownerUserId, Long courierUserId, String orderCreateTime);
 
     /**
-     * 单行推进（Worker 逐行调用，独立事务）：只收 ID，事务内锁定读数据库当前行
-     * （ID+DATA_STATUS=0 FOR UPDATE），冻结期判定与入账事实（收款人/金额/备注）全部
-     * 取锁内 DB 行——不信任调用方任何携带值（D-421 R1：旧签名收整行对象可被伪造
-     * createTime 穿透冻结期）。前态 CAS 1→2 + 非平台行收益入账同事务。
-     * fail-closed：行不存在、状态非待分账、CREATE_TIME 缺失/非法、未满冻结期一律
-     * false（时间事实不可信按未满期处理，绝不放行）。
-     * 必须经 Spring 代理调用（接口方法而非 Worker 内部私有方法——自调用会绕过事务代理）。
+     * 单行推进（Worker 逐行调用，独立事务）：只收 ID，冻结期判定与入账事实全部取锁内 DB 行，
+     * 不信任调用方携带值（D-421 R1：旧签名整行对象可伪造 createTime 穿透冻结期）；
+     * 前态 CAS 1→2 + 非平台行收益入账同事务；行不存在/状态不符/CREATE_TIME 非法/未满冻结期
+     * 一律 false。必须经 Spring 代理调用（自调用会绕过事务代理）。
      *
      * @return 是否真正发生推进（false=让行：并发输方/重放/冻结期内/行事实非法）
      */

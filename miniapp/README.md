@@ -25,7 +25,7 @@ UNI_OUTPUT_DIR="$PWD/dist/dev/mp-weixin" pnpm exec uni build -p mp-weixin --mode
 
 **验收产物必须走 development 模式**：`build:mp-weixin` 是 production，只读 `env/.env`
 （AppID 是 `touristappid`），真实 AppID 只在不入库的 `env/.env.development.local` 里。
-接入正式微信登录、手机号、隐私、支付与订阅消息前，需替换为甲方 AppID 并完成契约评审。
+正式微信登录与手机号验证已接入（甲方 AppID 已固定）；微信支付与订阅消息尚未接入。
 
 `--mode development` 只切换 env 加载，**不切换输出目录**：`uni build` 会把 `NODE_ENV` 无条件
 置为 production（见 `@dcloudio/vite-plugin-uni/dist/cli/utils.js`，那里还留着 `// TODO 需要识别 mode`），
@@ -35,14 +35,14 @@ watch 留下的旧产物。
 **构建纪律**（2026-08-01 产物污染事故）：`dev:mp-weixin` 是 watch 进程，杀 pnpm 包装进程不会
 杀掉真正的编译器。验收用上面那条一次性构建，构建前后都要确认
 `pgrep -f "vite-plugin-uni/bin/uni.js"` 为 0，有残留先 `pkill -f` 清掉；"Build complete" 只表示
-编译完成、不代表落盘完毕。产物核验看内容（`build-fingerprint.json` 指纹是否变新、
-`api/runtime.js` 的模式值、AppID、后端 IP），不看构建日志。
+编译完成、不代表落盘完毕。产物核验看内容（`build-fingerprint.json` 指纹是否变新、AppID、后端 IP），不看构建日志。
 
 ## 数据源
 
-全部业务域**恒接真实后端**。Mock 基建已于 2026-08-02 整体退役——mock 适配器与场景库均已删除，
-把任何域改回 `mock` 不会有实现兜底，只会得到构建期错误或空能力。
+全部业务域**恒接真实后端**，无任何 mock 分流（口径见 `env/.env` 与 `src/api/runtime.ts` 头注释）。
 `env/.env.development` 是已入库的公开安全档，本机联调请改 `env/.env.development.local`。
+其中 `VITE_SERVER_BASEURL` 是构建期烧进产物的局域网地址：本机 IP 漂移后必须先改该文件再重建，
+否则真机连不上后端（用 `ipconfig getifaddr en0` 核对；`pnpm dev/build` 的构建前置钩子会自动校正）。
 
 ## 账号与导航
 
@@ -65,26 +65,9 @@ watch 留下的旧产物。
 
 ## 页面编号
 
-代码注释与验收脚本大量引用 `U01`/`D03`/`O02` 这类页面编号，**本表是它们唯一的定义源**。
-路由本身以 `src/pages.json`（由 `scripts/create-base-files.mjs` 生成）为准。
-
-| ID | 路由 | ID | 路由 |
-|---|---|---|---|
-| C01 | `pages/entry/index` 登录与入口 | U09 | `pages/user/appeal/create` 配送申诉 |
-| C02 | `pages/message/index` 消息列表 | U10 | `pages/user/recharge/index` 购卡与充值 |
-| C03 | `pages/message/detail` 消息详情 | U11 | `pages/user/card/detail` 水卡详情 |
-| U01 | `pages/user/home/index` 首页 | U12 | `pages/user/card/member-form` 成员授权 |
-| U02 | `pages/user/order/index` 订单列表 | U13 | `pages/user/family/index` 家庭资料 |
-| U03 | `pages/user/profile/index` 我的 | U14 | `pages/user/address/index` 地址列表 |
-| U04 | `pages/user/water/confirm` 取水确认 | U15 | `pages/user/address/edit` 地址维护 |
-| U05 | `pages/user/water/progress` 取水进度 | D01 | `pages/courier/task/index` 任务列表 |
-| U06 | `pages/user/order/detail` 订单详情 | D02 | `pages/courier/admission/index` 配送员准入 |
-| U07 | `pages/user/station/index` 水站目录 | D03 | `pages/courier/task/detail` 任务详情 |
-| U08 | `pages/user/delivery/create` 配送下单 | D04 | `pages/courier/task/sign` 三照签收 |
-| O01 | `pages/owner/overview/index` 经营概览 | D05 | `pages/courier/task/exception` 配送异常 |
-| O02 | `pages/owner/device/index` 机主设备 | O04 | `pages/owner/transaction/index` 交易收益 |
-| O03 | `pages/owner/device/detail` 设备详情 | O05 | `pages/owner/service/index` 报修配件 |
-| U16 | `pages/user/delivery/auto-rules` 自动补货规则 | | |
+代码注释与验收脚本引用的 `U01`/`D03`/`M01` 这类页面编号，定义源是 `src/router/routes.ts` 的
+`RouteId` 联合类型与 `appRoutes`（`routes.test.ts` 常态断言路由总数与结构）；
+路由文件 `src/pages.json` 由 `scripts/create-base-files.mjs` 生成。
 
 ## 验收与门禁
 

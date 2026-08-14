@@ -1,12 +1,18 @@
 <!-- 用户管理页面 -->
-<!-- art-full-height 自动计算出页面剩余高度 -->
-<!-- art-table-card 一个符合系统样式的 class，同时自动撑满剩余高度 -->
-<!-- 更多 useTable 使用示例请移步至 功能示例 下面的高级表格示例或者查看官方文档 -->
-<!-- useTable 文档：https://www.artd.pro/docs/zh/guide/hooks/use-table.html -->
 <template>
-  <div class="user-page">
+  <div ref="userPageRef" class="user-page">
     <!-- 左侧部门侧边栏 -->
-    <DeptSidebar ref="deptSidebarRef" @select="handleDeptSelect" @refresh="refreshData" />
+    <DeptSidebar
+      v-if="canQueryDept"
+      ref="deptSidebarRef"
+      :compact="isCompactLayout"
+      :can-add="hasPermission('api:dept:add')"
+      :can-update="hasPermission('api:dept:update')"
+      :can-delete="hasPermission('api:dept:delete')"
+      @loaded="handleDeptLoaded"
+      @select="handleDeptSelect"
+      @refresh="refreshData"
+    />
 
     <!-- 右侧主内容区 -->
     <div class="main-content">
@@ -21,7 +27,24 @@
               <ElButton v-if="hasPermission('api:employee:add')" @click="showDialog('add')" v-ripple
                 >新增用户</ElButton
               >
+              <BusinessTableSummary :total="pagination.total" :page-size="data.length" unit="人" />
             </ElSpace>
+          </template>
+          <template #right>
+            <ArtExcelExport
+              :data="employeeExportRows"
+              :filename="employeeExportFilename"
+              sheet-name="员工列表"
+              type="primary"
+              size="small"
+              plain
+              auto-index
+            >
+              <span class="export-button-content">
+                <ArtSvgIcon icon="ri:file-excel-2-line" />
+                导出当前页
+              </span>
+            </ArtExcelExport>
           </template>
         </ArtTableHeader>
 
@@ -46,6 +69,12 @@
           :gender-options="genderOptions"
           :position-options="positionOptions"
           :tag-options="tagOptions"
+          :can-add-position="hasPermission('api:position:add')"
+          :can-update-position="hasPermission('api:position:update')"
+          :can-delete-position="hasPermission('api:position:delete')"
+          :can-add-tag="hasPermission('api:tag:add')"
+          :can-update-tag="hasPermission('api:tag:update')"
+          :can-delete-tag="hasPermission('api:tag:delete')"
           @submit="handleDialogSubmit"
           @refresh-position="handleRefreshPosition"
           @refresh-tag="handleRefreshTag"
@@ -83,7 +112,7 @@
 <script setup lang="ts">
   import ArtButtonTable from '@/components/core/forms/art-button-table/index.vue'
   import { useTable } from '@/hooks/core/useTable'
-  import { fetchGetUserList, fetchDeleteUser, fetchGetPositionList } from '@/api/system-manage'
+  import { fetchGetUserList, fetchGetPositionList } from '@/api/system-manage'
   import { fetchTagList } from '@/api/tag'
   import { fetchDictByTypes } from '@/utils/dict'
   import { DictTypeEnum } from '@/constants/dict'
@@ -93,16 +122,24 @@
   import DeptSidebar from './modules/dept-sidebar.vue'
   import PositionDialog from '@/views/system/position/modules/position-dialog.vue'
   import TagDialog from '@/views/system/tag/modules/tag-dialog.vue'
-  import { ElTag, ElMessageBox, ElMessage, ElButton, ElSpace } from 'element-plus'
+  import { ElTag, ElButton, ElSpace } from 'element-plus'
   import { DialogType } from '@/types'
   import { useUserStore } from '@/store/modules/user'
+  import BusinessTableSummary from '@/components/business/business-table-summary/index.vue'
+  import {
+    currentPageExportFilename,
+    currentPageExportRows,
+    maskedPhoneForExport
+  } from '@/utils/current-page-export'
 
   defineOptions({ name: 'User' })
 
-  // 权限判断函数
-  const hasPermission = (perm: string) => {
-    return useUserStore().rbacMenuList.some((item) => item.menuWebPerms === perm)
-  }
+  const userStore = useUserStore()
+  const hasPermission = (perm: string) =>
+    userStore.rbacMenuList.some((item) => item.menuWebPerms === perm)
+  const canQueryDept = computed(() => hasPermission('api:dept:query'))
+  const canQueryPosition = computed(() => hasPermission('api:position:query'))
+  const canQueryTag = computed(() => hasPermission('api:tag:query'))
 
   type UserListItem = Api.SystemManage.UserListItem
 
@@ -125,26 +162,30 @@
   const tagDialogType = ref<DialogType>('add')
   const currentTagData = ref<Partial<Api.SystemManage.TagListItem>>({})
 
-  // 选中行
   const selectedRows = ref<UserListItem[]>([])
-
-  // 部门侧边栏引用
+  const userPageRef = ref<HTMLElement>()
+  const isCompactLayout = ref(false)
   const deptSidebarRef = ref()
-
-  // 当前选中的部门ID
   const selectedDeptId = ref<string>()
-
   // 部门数据（用于表格显示）
   const deptList = ref<{ id: string; deptName: string }[]>([])
 
-  // 部门选择处理
+  // 以页面内容区而不是浏览器宽度为准：左侧主导航展开后，可用空间会少 230px。
+  // 只看 window.innerWidth 会在 1000~1280px 区间误判为宽屏，正是本页此前被挤裂的原因。
+  useResizeObserver(userPageRef, ([entry]) => {
+    isCompactLayout.value = entry.contentRect.width < 900
+  })
+
+  const handleDeptLoaded = (items: { id: string; deptName: string }[]) => {
+    deptList.value = items
+  }
+
   const handleDeptSelect = (deptId: string | undefined) => {
     selectedDeptId.value = deptId
     replaceSearchParams({ deptId } as any)
     getData()
   }
 
-  // 重置搜索参数
   const handleReset = () => {
     resetSearchParams()
     selectedDeptId.value = undefined
@@ -154,11 +195,7 @@
 
   // 性别选项（字典 20）
   const genderOptions = ref<{ label: string; value: number }[]>([])
-
-  // 职务选项
   const positionOptions = ref<{ id: string; positionName: string }[]>([])
-
-  // 标签选项
   const tagOptions = ref<{ id: string; tagName: string }[]>([])
 
   const getDeptName = (deptId: number | string) => {
@@ -166,9 +203,11 @@
     return deptList.value.find((d) => String(d.id) === String(deptId))?.deptName || '-'
   }
 
-  const getPositionName = (positionId: string | Number) => {
+  const getPositionName = (positionId: string | number) => {
     if (!positionId) return '-'
-    return positionOptions.value.find((p) => p.id === positionId)?.positionName || '-'
+    return (
+      positionOptions.value.find((p) => String(p.id) === String(positionId))?.positionName || '-'
+    )
   }
 
   const getTagNames = (tagList: { id: string; tagName: string }[]) => {
@@ -178,20 +217,17 @@
     ])
   }
 
-  const loadDeptList = async () => {
-    // 从部门侧边栏获取扁平化的部门列表用于表格显示
-    const flatList = deptSidebarRef.value?.getFlatDeptList() || []
-    deptList.value = flatList
+  const loadReferenceData = async () => {
+    const tasks: Promise<unknown>[] = [loadGenderOptions()]
+    if (canQueryPosition.value) tasks.push(loadPositionOptions())
+    else positionOptions.value = []
+    if (canQueryTag.value) tasks.push(loadTagOptions())
+    else tagOptions.value = []
+    await Promise.all(tasks)
+  }
 
-    const [dictResult, positionRes, tagRes] = await Promise.all([
-      fetchDictByTypes([DictTypeEnum.性别]),
-      fetchGetPositionList({ current: 1, size: 9999 }),
-      fetchTagList({})
-    ])
-
-    // 性别字典
-
-    // 性别字典
+  const loadGenderOptions = async () => {
+    const dictResult = await fetchDictByTypes([DictTypeEnum.性别])
     const genderDict = dictResult.find((d) => d.dictType === DictTypeEnum.性别)
     if (genderDict) {
       genderOptions.value = genderDict.dictDataList.map((item) => ({
@@ -199,35 +235,25 @@
         value: item.dictValue
       }))
     }
-
-    // 职务列表
-    if (positionRes.list) {
-      positionOptions.value = positionRes.list
-    }
-
-    // 标签列表
-    tagOptions.value = tagRes || []
   }
 
-  // 搜索表单
   const searchForm = ref({
     employeeName: undefined,
     deptId: undefined
   })
 
-  /**
-   * 获取性别标签配置
-   */
   const getGenderTag = (gender: number) => {
-    const option = genderOptions.value.find((o) => o.value === gender)
-    const text = option?.label || (gender === 1 ? '男' : '女')
+    const text = getGenderLabel(gender)
     const type = gender === 1 ? ('primary' as const) : ('danger' as const)
     return h(ElTag, { type }, () => text)
   }
 
-  /**
-   * 获取状态标签配置
-   */
+  const getGenderLabel = (gender: number) =>
+    genderOptions.value.find((o) => o.value === gender)?.label ||
+    (gender === 1 ? '男' : gender === 2 ? '女' : '-')
+
+  const getStatusLabel = (disabledFlag: number) => (disabledFlag === 1 ? '启用' : '禁用')
+
   const getStatusTag = (disabledFlag: number) => {
     const config =
       disabledFlag === 1
@@ -305,7 +331,7 @@
         {
           prop: 'operation',
           label: '操作',
-          minWidth: 200,
+          minWidth: 140,
           fixed: 'right',
           formatter: (row: UserListItem) =>
             h(ElSpace, { size: 8 }, () => [
@@ -330,17 +356,6 @@
                     onClick: () => showDialog('edit', row)
                   },
                   () => '编辑'
-                ),
-              hasPermission('api:employee:delete') &&
-                h(
-                  ElButton,
-                  {
-                    size: 'small',
-                    type: 'danger',
-                    link: true,
-                    onClick: () => deleteUser(row)
-                  },
-                  () => '删除'
                 )
             ])
         }
@@ -348,17 +363,25 @@
     }
   })
 
-  /**
-   * 搜索处理
-   */
+  const employeeExportFilename = currentPageExportFilename('员工管理')
+  const employeeExportRows = computed(() =>
+    currentPageExportRows(data.value, [
+      { header: '登录账号', value: (row) => row.loginName },
+      { header: '用户姓名', value: (row) => row.employeeName },
+      { header: '性别', value: (row) => getGenderLabel(row.employeeGender) },
+      { header: '手机号', value: (row) => maskedPhoneForExport(row.employeePhone) },
+      { header: '部门', value: (row) => getDeptName(row.deptId) },
+      { header: '职务', value: (row) => getPositionName(row.positionId) },
+      { header: '标签', value: (row) => row.tagList?.map((tag) => tag.tagName).join('、') || '' },
+      { header: '状态', value: (row) => getStatusLabel(row.disabledFlag) }
+    ])
+  )
+
   const handleSearch = (params: Api.SystemManage.UserSearchParams) => {
     replaceSearchParams(params)
     getData()
   }
 
-  /**
-   * 显示用户弹窗
-   */
   const showDialog = (type: DialogType, row?: UserListItem): void => {
     dialogType.value = type
     currentUserData.value = row || {}
@@ -367,55 +390,24 @@
     })
   }
 
-  /**
-   * 显示分配角色弹窗
-   */
   const showAssignRoleDialog = (row: UserListItem): void => {
     currentAssignRoleUserData.value = row
     assignRoleDialogVisible.value = true
   }
 
-  /**
-   * 删除用户
-   */
-  const deleteUser = (row: UserListItem): void => {
-    ElMessageBox.confirm('确定要删除该用户吗？', '删除用户', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }).then(async () => {
-      try {
-        await fetchDeleteUser(row.id)
-        ElMessage.success('删除成功')
-        refreshData()
-      } catch {
-        ElMessage.error('删除失败')
-      }
-    })
-  }
-
-  /**
-   * 处理弹窗提交事件
-   */
   const handleDialogSubmit = async () => {
     dialogVisible.value = false
     currentUserData.value = {}
-    await loadDeptList()
+    await loadReferenceData()
     refreshData()
   }
 
-  /**
-   * 打开新增/编辑职务弹窗
-   */
   const handleOpenPositionDialog = (data?: Partial<Api.SystemManage.PositionListItem>) => {
     positionDialogType.value = data?.id ? 'edit' : 'add'
     currentPositionData.value = data || {}
     positionDialogVisible.value = true
   }
 
-  /**
-   * 职务弹窗提交后刷新职务列表
-   */
   const handlePositionSubmit = async () => {
     positionDialogVisible.value = false
     currentPositionData.value = {}
@@ -436,64 +428,61 @@
     await loadTagOptions()
   }
 
-  /**
-   * 打开新增/编辑标签弹窗
-   */
   const handleOpenTagDialog = (data?: Partial<Api.SystemManage.TagListItem>) => {
     tagDialogType.value = data?.id ? 'edit' : 'add'
     currentTagData.value = data || {}
     tagDialogVisible.value = true
   }
 
-  /**
-   * 标签弹窗提交后刷新标签列表
-   */
   const handleTagSubmit = async () => {
     tagDialogVisible.value = false
     currentTagData.value = {}
     await loadTagOptions()
   }
 
-  /**
-   * 加载职务选项
-   */
   const loadPositionOptions = async () => {
+    if (!canQueryPosition.value) {
+      positionOptions.value = []
+      return
+    }
     const positionRes = await fetchGetPositionList({ current: 1, size: 9999 })
     if (positionRes.list) {
       positionOptions.value = positionRes.list
     }
   }
 
-  /**
-   * 加载标签选项
-   */
   const loadTagOptions = async () => {
+    if (!canQueryTag.value) {
+      tagOptions.value = []
+      return
+    }
     const tagRes = await fetchTagList({})
     tagOptions.value = tagRes || []
   }
 
-  /**
-   * 处理表格行选择变化
-   */
   const handleSelectionChange = (selection: UserListItem[]): void => {
     selectedRows.value = selection
   }
 
   onMounted(() => {
-    loadDeptList()
+    loadReferenceData()
   })
 </script>
 
 <style scoped lang="scss">
   .user-page {
     display: flex;
+    gap: 12px;
     height: 100%;
+    min-width: 0;
   }
 
   .main-content {
     flex: 1;
     display: flex;
     flex-direction: column;
+    gap: 12px;
+    min-width: 0;
     overflow: hidden;
   }
 
@@ -508,5 +497,11 @@
       flex-direction: column;
       overflow: hidden;
     }
+  }
+
+  .export-button-content {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
   }
 </style>

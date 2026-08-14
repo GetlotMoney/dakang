@@ -84,7 +84,7 @@ CREATE TABLE `ws_domain_event` (
   `EVENT_KEY`        varchar(64)  NOT NULL COMMENT '业务键(max64)：订单号/设备编号/工单号',
   `EVENT_PAYLOAD`    text         NOT NULL COMMENT '事件快照JSON（旧值/新值/时间）',
   `WHITELIST_FLAG`   tinyint      NOT NULL DEFAULT 1 COMMENT '是否n8n白名单可订阅(1)：1否 2是',
-  `CONSUMED_FLAG`    tinyint      NOT NULL DEFAULT 1 COMMENT '是否已被通知消费(1)：1否 2是（消息中心二期用）',
+  `CONSUMED_FLAG`    tinyint      NOT NULL DEFAULT 1 COMMENT '是否已被通知消费(1)：1否 2是。当前无任何消费者：全仓无代码读取或翻转本列，该列也无索引；微信订阅通知走 ws_wechat_notify_outbox，不从本表消费',
   `BIZ_IDEMPOTENCY_KEY` varchar(64) NULL DEFAULT NULL COMMENT '业务幂等键，仅为需要数据库级幂等的领域事件提供稳定业务键（L2-DB 契约§5.1）',
   PRIMARY KEY (`ID`),
   UNIQUE KEY `uk_domain_event_biz_key` (`BIZ_IDEMPOTENCY_KEY`),

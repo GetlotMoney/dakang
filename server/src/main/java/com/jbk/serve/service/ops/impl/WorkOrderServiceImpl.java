@@ -48,17 +48,10 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * 统一工单领域服务实现（E2E-05 包C）。
- *
- * <h3>迁移内核</h3>
- * <p>{@link #transit} 是唯一落库路径：先经 {@link WorkOrderTransitions} 校验动作合法性
- * （fail-closed），再以「前态 + VERSION」双条件 CAS 落库——两个管理员同时点分配，
- * 输方影响行数为 0，收到明确拒绝而不是静默覆盖。审计与业务同事务
- * （recordReliableOnceAs），业务回滚审计一并消失。</p>
- *
- * <h3>幂等边界</h3>
- * <p>建单幂等靠唯一键（uk_wo_alarm / uk_wo_request）撞键读回；动作幂等靠前态 CAS——
- * 重复确认第二次会因前态不符被拒绝（明确拒绝，任务书包C：重复动作必须幂等或明确拒绝）。</p>
+ * 统一工单领域服务实现（E2E-05 包C）。{@link #transit} 是唯一落库路径：先经
+ * {@link WorkOrderTransitions} 校验动作合法性（fail-closed），再以「前态+VERSION」双条件 CAS
+ * 落库，输方影响行数 0 收到明确拒绝；审计与业务同事务，回滚一并消失。
+ * 建单幂等靠唯一键（uk_wo_alarm/uk_wo_request）撞键读回，动作幂等靠前态 CAS 明确拒绝。
  *
  * @author dakang
  * @since 2026-07-30

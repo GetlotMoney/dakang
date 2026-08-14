@@ -1,11 +1,5 @@
 package com.jbk.tool.utils.satoken;
 
-/**
- * @ClassName StpKit
- * @Author xs
- * @Date 2024/6/11 10:45
- * @Version 1.0
- */
 
 import cn.dev33.satoken.exception.NotLoginException;
 import cn.dev33.satoken.jwt.StpLogicJwtForSimple;

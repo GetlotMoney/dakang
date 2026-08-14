@@ -7,12 +7,6 @@ import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
-/**
- * @ClassName WebConfig
- * @Author xs
- * @Date 2024/6/7 15:25
- * @Version 1.0
- */
 @Configuration
 public class MyWebMvcConfigurer implements WebMvcConfigurer {
 

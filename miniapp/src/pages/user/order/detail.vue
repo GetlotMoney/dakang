@@ -10,7 +10,6 @@ import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
 import {
   AFTER_SALE_ACTION_TYPE_LABELS,
-  AFTER_SALE_READONLY_NOTE,
   AFTER_SALE_SOURCE_LABELS,
   AFTER_SALE_STATUS_LABELS,
   afterSaleAmountRows,
@@ -25,8 +24,9 @@ import { cardApi } from '@/api/card'
 import { appealDeadlineOf, canCreateDeliveryAppeal } from '@/api/delivery-normalize'
 import { orderApi } from '@/api/order'
 import { rechargeApi } from '@/api/recharge'
-import { currentMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
+import WechatContactEntry from '@/components/wechat-contact-entry.vue'
 import {
   APPEAL_STATUS_LABELS,
   APPEAL_STATUS_TONES,
@@ -77,8 +77,6 @@ const errorMessage = ref('')
 const errorImage = ref<'content' | 'network'>('network')
 
 const detail = ref<OrderDetail | null>(null)
-const isRechargeReal = currentMode('recharge') === 'real'
-const isCardReal = currentMode('card') === 'real'
 const issuedCard = ref<CardDetail | null>(null)
 const issuedCardError = ref('')
 
@@ -103,17 +101,12 @@ const paymentMethodText = computed(() => {
   if (order.orderType !== 2) {
     return PAY_WAY_LABELS[order.payWay]
   }
-  return rechargePaySourceLabel(order.recharge?.paySource, order.payWay, isRechargeReal)
+  return rechargePaySourceLabel(order.recharge?.paySource, order.payWay)
 })
 
 /**
- * 充值信息展示行。
- *
- * **页面不再解析 PACKAGE_SNAP**（契约 v2 §9.2 禁止下发原始快照）：接真时消费后端已校验的
- * 结构化区块，Mock/历史单由 api 适配层归一化成同一形状。快照的合法性判定只在一处实现，
- * 页面拿到的要么是完整可信的数据，要么是明确的 snapshotValid=false。
- *
- * 返回 null 表示数据异常，由模板提示联系客服——绝不用残缺值拼出一个看起来正常的订单。
+ * 充值信息展示行。页面不解析 PACKAGE_SNAP（契约 v2 §9.2），只消费已校验的结构化区块；
+ * 返回 null 表示数据异常，由模板提示联系客服，绝不用残缺值拼出看似正常的订单。
  */
 const rechargeRows = computed<{ label: string, value: string }[] | null>(() => {
   const block = detail.value?.order.recharge
@@ -123,7 +116,7 @@ const rechargeRows = computed<{ label: string, value: string }[] | null>(() => {
   const rows: { label: string, value: string }[] = [
     { label: '套餐名称', value: block.packageName ?? '—' },
     { label: '支付金额', value: block.payAmountFen == null ? '—' : formatFen(block.payAmountFen) },
-    { label: '支付来源', value: rechargePaySourceLabel(block.paySource, detail.value!.order.payWay, isRechargeReal) },
+    { label: '支付来源', value: rechargePaySourceLabel(block.paySource, detail.value!.order.payWay) },
   ]
   if ((block.waterMl ?? 0) > 0) {
     rows.push({ label: '到账水量', value: formatMl(block.waterMl!) })
@@ -188,11 +181,8 @@ const issuedCardRows = computed<{ label: string, value: string }[] | null>(() =>
 })
 
 /**
- * 继续支付：服务端 pay-status 的最新快照。
- *
- * 页面不从订单详情自行推导「还能不能付」——`payStatusCode` 是服务端按契约 §9.1
- * 精确矩阵得出的结论，前端只消费它。拿不到（Mock 域、非充值单、请求失败）就是 null，
- * 按钮一律不显示，绝不"猜一个大概能付"。
+ * 继续支付：服务端 pay-status 的最新快照。页面不自行推导「还能不能付」（§9.1 矩阵结论只消费）；
+ * 拿不到就是 null，按钮一律不显示。
  */
 const payStatus = ref<RechargePayStatus | null>(null)
 const paying = ref(false)
@@ -201,7 +191,7 @@ const continuePay = computed(() => continuePayGate(payStatus.value, nowBusinessT
 const rechargeNoticeState = computed(() => {
   const order = detail.value?.order
   return order?.orderType === 2
-    ? rechargeNotice(order.orderStatus, isRechargeReal, rechargeSettled.value)
+    ? rechargeNotice(order.orderStatus, rechargeSettled.value)
     : null
 })
 const task = ref<DeliveryTask | null>(null)
@@ -262,10 +252,7 @@ const showAppealBlock = computed(() =>
 
 // ==================== 售后与退款（E2E-04 包E：只读） ====================
 
-/**
- * 售后进度只来自服务端下发的区块。缺省即「服务端未下发」，页面不按订单状态、金额
- * 或申诉裁决倒推一份售后结论——钱有没有回到卡里，只有服务端的返还事务知道。
- */
+/** 售后进度只来自服务端下发的区块；缺省即未下发，页面不按订单状态/金额/申诉裁决倒推售后结论。 */
 const afterSale = computed(() => detail.value?.afterSale ?? null)
 const afterSaleRows = computed(() => (afterSale.value ? afterSaleAmountRows(afterSale.value) : []))
 /** 结局文案：未到 actionStatus=3 一律「处理中/待补送」，补送以回签为完成条件。 */
@@ -296,11 +283,7 @@ const showAfterSaleBlock = computed(() => {
     || order.orderStatus === 8
 })
 
-/**
- * 取消入口资格：**唯一来源是服务端下发**。未下发即隐藏——
- * 「什么状态可以取消」在服务端事务里（任务仍待接单 + 归属本人 + 无在途售后），
- * 页面复制一份只会在边界上多给入口，而多出来的那次点击直接对着资金。
- */
+/** 取消入口资格：唯一来源是服务端下发，未下发即隐藏；页面复制判定只会在边界上多给资金入口。 */
 const cancelEligibility = computed(() => detail.value?.cancelEligibility)
 const showCancelEntry = computed(() => canShowCancelEntry(cancelEligibility.value))
 const cancelling = ref(false)
@@ -314,10 +297,6 @@ function stepStatus(node: OrderTraceNode): 'finished' | 'error' | undefined {
     return 'finished'
   }
   return undefined
-}
-
-function blockClass(block: Exclude<FocusBlock, ''>) {
-  return focusBlock.value === block ? 'block-card focus-card' : 'block-card'
 }
 
 onLoad((query?: Record<string, string | undefined>) => {
@@ -342,7 +321,7 @@ async function load(orderNo: string) {
   try {
     const loaded = await orderApi.getOrderDetail(orderNo)
     detail.value = loaded
-    if (loaded.order.orderType === 2 && isRechargeReal) {
+    if (loaded.order.orderType === 2) {
       await refreshPayStatus(loaded.order.orderNo)
       if (loaded.order.orderStatus === 4 && loaded.order.recharge?.purchaseMode === 'FIRST_CARD') {
         await loadIssuedCard(loaded)
@@ -373,9 +352,6 @@ async function load(orderNo: string) {
 async function loadIssuedCard(loaded: OrderDetail) {
   const block = loaded.order.recharge
   try {
-    if (!isCardReal) {
-      throw new ContractError('PURCHASE_CARD_SOURCE_INVALID', '新卡信息暂时无法查看')
-    }
     if (!block?.snapshotValid || !block.cardId || !block.cardNo
       || loaded.order.cardId !== block.cardId) {
       throw new ContractError('PURCHASE_CARD_EVIDENCE_INVALID', '新卡信息不完整，请联系客服')
@@ -397,10 +373,7 @@ async function loadIssuedCard(loaded: OrderDetail) {
   }
 }
 
-/**
- * 拉取 pay-status。失败时把结果置回 null（即不显示继续支付按钮）——
- * 读不到服务端结论时宁可少给一个入口，也不能凭订单详情猜出一个可能已失效的支付按钮。
- */
+/** 拉取 pay-status。失败置回 null（不显示继续支付按钮）：读不到服务端结论时宁可少给入口。 */
 async function refreshPayStatus(orderNo: string) {
   try {
     payStatus.value = await rechargeApi.getPayStatus(orderNo)
@@ -411,10 +384,8 @@ async function refreshPayStatus(orderNo: string) {
 }
 
 /**
- * 继续支付：复用充值页同一条「确认 → 模拟支付 → 轮询到终态」实现。
- *
- * 完成后重新拉订单详情与 pay-status，页面上的到账结论只来自服务端返回的状态码，
- * 不以点击成功为准。
+ * 继续支付：复用充值页同一条「确认 → 模拟支付 → 轮询到终态」实现；
+ * 完成后重拉详情与 pay-status，到账结论只来自服务端状态码，不以点击成功为准。
  */
 async function handleContinuePay() {
   const order = detail.value?.order
@@ -458,10 +429,8 @@ function goAppeal() {
 }
 
 /**
- * 待接单取消：确认 → 服务端事务裁决 → **原样展示服务端结论文案** → 重新拉详情。
- *
- * 结论文案不做任何归并：「已退还至水卡」与「退款处理中」是两种结局，订单状态先于资金
- * 独占，资金段仍在途时把它显示成"已退款"就是替服务端谎报到账。
+ * 待接单取消：确认 → 服务端事务裁决 → 原样展示服务端结论文案 → 重新拉详情。
+ * 结论文案不归并：资金段仍在途时把「退款处理中」显示成"已退款"就是谎报到账。
  */
 async function handleCancelOrder() {
   const order = detail.value?.order
@@ -499,23 +468,18 @@ async function handleCancelOrder() {
     <wd-toast />
     <wd-message-box />
 
-    <view v-if="pageState === 'loading'" class="page-section loading-box">
-      <wd-loading />
-      <view class="muted-text">
-        正在加载订单详情…
-      </view>
+    <view v-if="pageState === 'loading'" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, 1, { width: '70%' }]" />
     </view>
 
     <view v-else-if="pageState === 'error'" class="page-section">
-      <wd-status-tip :image="errorImage" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="backOr('U02')">
-              返回订单列表
-            </wd-button>
-          </view>
+      <AppPageState :state="errorImage === 'content' ? 'empty' : 'error'" :message="errorMessage">
+        <template #actions>
+          <wd-button plain @click="backOr('U02')">
+            返回订单列表
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
     <template v-else-if="detail">
@@ -543,12 +507,19 @@ async function handleCancelOrder() {
             <wd-cell title="金额" :value="formatFen(detail.order.orderAmountFen)" />
             <wd-cell title="支付方式" :value="paymentMethodText" />
             <wd-cell
-              v-if="detail.order.stationName || detail.order.deviceNo"
-              title="站点 / 设备"
-              :value="`${detail.order.stationName ?? '—'}${detail.order.deviceNo ? ` · ${detail.order.deviceNo}` : ''}`"
+              v-if="detail.order.stationName"
+              title="站点"
+              :value="detail.order.stationName"
+              ellipsis
             />
-            <wd-cell title="创建时间" :value="formatBizTime(detail.order.createTime)" />
-            <wd-cell title="完成时间" :value="formatBizTime(detail.order.finishTime)" />
+            <wd-cell
+              v-if="detail.order.deviceNo"
+              title="设备"
+              :value="detail.order.deviceNo"
+              ellipsis
+            />
+            <wd-cell title="创建时间" :value="formatBizTime(detail.order.createTime)" vertical />
+            <wd-cell title="完成时间" :value="formatBizTime(detail.order.finishTime)" vertical />
           </wd-cell-group>
           <view class="e2e-order-evidence" aria-hidden="true">
             ORDER_STATUS={{ detail.order.orderStatus }};ACTUAL_ML={{ detail.order.actualMl ?? 'null' }}
@@ -579,7 +550,7 @@ async function handleCancelOrder() {
       </view>
 
       <view v-if="detail.order.orderType === 1" class="page-section">
-        <wd-card :custom-class="blockClass('command')">
+        <wd-card custom-class="block-card">
           <template #title>
             <view class="card-title-row">
               <view>取水命令</view>
@@ -630,14 +601,19 @@ async function handleCancelOrder() {
               :scrollable="false"
               :text="rechargeNoticeState.text"
             />
+            <!-- 客服入口紧跟提示条，仅 danger 提示才给（info 类不需要找人） -->
+            <view v-if="rechargeNoticeState.tone === 'danger'" class="notice-contact">
+              <WechatContactEntry
+                scene="订单异常"
+                :biz-no="detail?.order.orderNo"
+                page-path="/pages/user/order/detail"
+              />
+            </view>
           </view>
           <view v-if="continuePay.visible" class="continue-pay">
             <wd-button block :loading="paying" @click="handleContinuePay">
               继续支付
             </wd-button>
-            <view class="muted-text">
-              超过付款截止时间后本单不可再支付。
-            </view>
           </view>
           <view v-else-if="continuePay.reason" class="muted-text boundary-note">
             {{ continuePay.reason }}
@@ -647,11 +623,7 @@ async function handleCancelOrder() {
 
       <view v-if="isCompletedPurchase" class="page-section">
         <wd-card title="新卡信息" custom-class="block-card">
-          <wd-status-tip
-            v-if="issuedCardError"
-            image="content"
-            :tip="issuedCardError"
-          />
+          <AppPageState v-if="issuedCardError" state="error" :message="issuedCardError" />
           <wd-cell-group v-else-if="issuedCardRows">
             <wd-cell
               v-for="row in issuedCardRows"
@@ -667,7 +639,7 @@ async function handleCancelOrder() {
       </view>
 
       <view v-if="detail.order.orderType === 3" class="page-section">
-        <wd-card :custom-class="blockClass('delivery')">
+        <wd-card custom-class="block-card">
           <template #title>
             <view class="card-title-row">
               <view>配送任务</view>
@@ -707,7 +679,7 @@ async function handleCancelOrder() {
                 title="实际回收"
                 :value="task.actualReturnCount !== undefined ? `${task.actualReturnCount} 件` : '待签收确认'"
               />
-              <wd-cell title="收货地址" :label="task.receiveAddress" />
+              <wd-cell title="收货地址" :label="task.receiveAddress" vertical />
               <wd-cell title="联系电话" :value="task.maskedPhone" />
             </wd-cell-group>
             <!-- D-214 展示分流：payWay=3 呈现「水量抵扣 X L + 配送费」，不把 0 元水费渲染成免费 -->
@@ -727,7 +699,7 @@ async function handleCancelOrder() {
             </view>
             <view v-if="task.signPhotos.length" class="photo-grid">
               <view v-for="photo in task.signPhotos" :key="photo.type" class="photo-card">
-                <wd-icon name="picture" size="28px" color="#b9bec7" />
+                <wd-icon name="picture" size="28px" color="var(--app-text-disabled)" />
                 <view class="photo-label">
                   {{ photo.label }}
                 </view>
@@ -814,15 +786,11 @@ async function handleCancelOrder() {
           <view v-else-if="cancelEligibility?.reason" class="muted-text boundary-note">
             {{ cancelEligibility.reason }}
           </view>
-
-          <view class="muted-text boundary-note">
-            {{ AFTER_SALE_READONLY_NOTE }}
-          </view>
         </wd-card>
       </view>
 
       <view v-if="showAppealBlock" class="page-section">
-        <wd-card :custom-class="blockClass('appeal')">
+        <wd-card custom-class="block-card">
           <template #title>
             <view class="card-title-row">
               <view>申诉记录</view>
@@ -871,14 +839,6 @@ async function handleCancelOrder() {
 </template>
 
 <style scoped lang="scss">
-.loading-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 64px 0;
-}
-
 .e2e-order-evidence {
   position: absolute;
   width: 1px;
@@ -886,12 +846,6 @@ async function handleCancelOrder() {
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
-}
-
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 20px;
 }
 
 .card-title-row {
@@ -906,10 +860,6 @@ async function handleCancelOrder() {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.focus-card {
-  border: 1px solid rgba(93, 135, 255, 0.45);
 }
 
 .copy-action {
@@ -949,11 +899,16 @@ async function handleCancelOrder() {
   overflow: hidden;
 }
 
+.notice-contact {
+  padding: 8px 0 0;
+  text-align: right;
+}
+
 .price-rows {
   margin-top: 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(93, 135, 255, 0.06);
+  background: var(--tint-primary);
 }
 
 .price-row {
@@ -980,7 +935,7 @@ async function handleCancelOrder() {
   align-items: center;
   gap: 4px;
   padding: 12px 4px;
-  border: 1px dashed #d5d9e0;
+  border: 1px dashed var(--line-2);
   border-radius: 8px;
 }
 
@@ -1005,7 +960,7 @@ async function handleCancelOrder() {
 .evidence-item {
   padding: 8px 12px;
   border-radius: 8px;
-  background: rgba(100, 106, 115, 0.06);
+  background: var(--tint-neutral);
   font-size: 13px;
 }
 </style>

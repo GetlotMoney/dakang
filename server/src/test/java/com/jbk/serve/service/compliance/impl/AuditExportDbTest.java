@@ -39,30 +39,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 审计导出的<b>真实 MySQL</b> 回归（B23 验收 P2-1 / P2-2）：选号口径与 ORM 写入边界。
- *
- * <p>这两件事都只有真库能证伪。{@code AuditExportContractTest} 做的是源级断言，
- * 拦得住"有人写出某种文本形式的代码"，拦不住"换个写法绕过去"；能力边界最终
- * 由数据库里那两列是不是 NULL 说了算，见 {@link #ormCannotWriteFileDigestOrExpireTime}。</p>
- *
- * <h2>选号</h2>
- *
- * <p>钉住两个失效模式，两者都会造成<b>确定性</b>故障——
- * 撞键后重试三次算出的是同一个号，当天此后每一次申请都失败：</p>
- * <ol>
- *   <li><b>逻辑删除行占号</b>：唯一键 {@code uk_audit_export_task_no} 不区分逻辑删除，
- *       选号也必须不区分。旧实现用 Wrapper 查询，被 {@code @TableLogic} 注入的
- *       {@code AND DATA_STATUS = 0} 过滤掉已删行——注入条件与调用方条件是 AND 关系，
- *       写 {@code .and(w -> eq(0).or().eq(1))} 也绕不开，看着像绕开了其实没有。</li>
- *   <li><b>序号越过 999</b>：旧实现按 {@code ORDER BY TASK_NO DESC} 取最大。
- *       定宽 3 位时字典序等于数值序，一旦出现 4 位号就断裂——
- *       {@code '...-999' > '...-1000'}，于是永远算出 1000。</li>
- * </ol>
- *
- * <p>建表 DDL 直接读迁移文件，不在测试里另抄一份：抄一份就会漂移，
- * 而漂移后的测试仍然全绿。</p>
- *
- * <p>无 Docker 环境自动跳过。</p>
+ * 审计导出真实 MySQL 回归（B23 P2-1/P2-2）：选号口径与 ORM 写入边界。
+ * 选号两个陷阱：唯一键不区分逻辑删除而 @TableLogic 注入 AND DATA_STATUS=0 会漏已删行占号
+ * （.and(...or...) 也绕不开）；TASK_NO 字典序在 4 位号处断裂（'999' > '1000'）。
+ * DDL 直接读迁移文件防抄本漂移。无 Docker 自动跳过。
  */
 @Testcontainers(disabledWithoutDocker = true)
 @ExtendWith(SpringExtension.class)
@@ -193,13 +173,8 @@ class AuditExportDbTest {
     }
 
     /**
-     * 能力边界的<b>行为</b>证明：ORM 层真的写不出 FILE_DIGEST / EXPIRE_TIME。
-     *
-     * <p>{@code AuditExportContractTest} 只做源级断言——它拦得住"有人写出
-     * {@code setFileDigest(...)}"，拦不住换个写法绕过去（Mapper 注解 SQL、XML、
-     * 通用更新器）。这条测试直接把两个字段塞进 PO 再走真实 {@code save}/{@code updateById}，
-     * 由数据库回答它们有没有落盘。落盘了就意味着合规页可以展示一份并不存在的导出结果，
-     * 比没有导出功能更糟。</p>
+     * 行为证明：ORM 真的写不出 FILE_DIGEST / EXPIRE_TIME——把字段塞进 PO 走真实
+     * save/updateById，由数据库回答是否落盘（源级断言拦不住换通道的写法）。
      */
     @Test
     void ormCannotWriteFileDigestOrExpireTime() {

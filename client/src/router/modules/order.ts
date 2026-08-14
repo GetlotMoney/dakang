@@ -1,9 +1,9 @@
 import { AppRouteRecord } from '@/types/router'
 
 /**
- * 订单中心路由（一期 5+1，Demo 阶段使用 Mock 契约）
+ * 订单履约、财务结算与配送运营共享的稳定技术路由根。
  * 运行时为后端菜单模式（VITE_ACCESS_MODE=backend），菜单以 api_rbac_menu 为准；
- * 本文件用于前端路由模式，并与数据库菜单保持一致；两处变更必须同步。
+ * 用户侧按职责投影成三个工作区，真实路径与数据库权限树保持不变。
  */
 export const orderRoutes: AppRouteRecord = {
   path: '/order',
@@ -71,6 +71,16 @@ export const orderRoutes: AppRouteRecord = {
       component: '/order/splitconfig',
       meta: {
         title: 'menus.order.splitconfig',
+        keepAlive: true,
+        roles: ['R_SUPER', 'R_ADMIN']
+      }
+    },
+    {
+      path: 'attribution',
+      name: 'OrderAttribution',
+      component: '/order/attribution',
+      meta: {
+        title: 'menus.order.attribution',
         keepAlive: true,
         roles: ['R_SUPER', 'R_ADMIN']
       }

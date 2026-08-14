@@ -8,12 +8,6 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/**
- *@ClassName SortUtils
- *@Author xs
- *@Date 2025/9/17 13:56
- *@Version 1.0
- */
 public class SortUtils {
 
     public static <T> List<T> sortById(List<Long> idList, List<T> dataInfoList, Function<T, Long> idExtractor) {

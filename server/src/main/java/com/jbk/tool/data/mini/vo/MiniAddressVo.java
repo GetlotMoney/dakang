@@ -37,6 +37,9 @@ public class MiniAddressVo implements Serializable {
     @Schema(description = "详细地址")
     private String detail;
 
+    @Schema(description = "收货区县行政区码(6位)：为空表示尚未选择，商城下单前需补选")
+    private String districtCode;
+
     @Schema(description = "是否默认地址")
     private Boolean isDefault;
 

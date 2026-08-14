@@ -36,40 +36,26 @@ import java.util.List;
 /**
  * 取水异常核账事务实现（E2E-04 包A，售后来源 3取水异常核账）。
  *
- * <h3>依赖清单即安全边界：本类构造器里没有任何加钱能力</h3>
- * <p>本类<b>刻意不注入 {@code TradeCardMapper}，也不注入售后返还内核事务</b>。
- * 核账的全部业务价值是「核对既有账本后推进订单终态」，一分钱一毫升都不该动；
- * 而「不该动」如果只写在注释和 if 分支里，任何一次后续维护都可能顺手加一行返还调用，
- * 且改动看起来完全合理（"顺便把没退的那笔补上"）。把加钱能力从依赖清单里删掉，
- * 这类改动就必须先新增一个字段和构造参数——那是评审一眼能看见的动作，而不是埋在
- * 三百行分支里的一行。评审可机械核验：本类的字段声明区与构造参数里没有任何具备写卡能力的依赖。</p>
+ * <p><b>依赖清单即安全边界</b>：本类<b>刻意不注入 {@code TradeCardMapper}，也不注入售后返还内核事务</b>
+ * ——本类没有加钱能力。「不该动」如果只写在注释和 if 分支里，任何一次后续维护都可能顺手加一行返还调用，
+ * 且改动看起来完全合理（"顺便把没退的那笔补上"）。把加钱能力从依赖清单里删掉，这类改动就必须先新增一个
+ * 字段和构造参数——那是评审一眼能看见的动作，而不是埋在三百行分支里的一行。评审可机械核验：
+ * 本类的字段声明区与构造参数里没有任何具备写卡能力的依赖。</p>
  *
- * <h3>状态 6异常待补偿 有两条语义完全相反的来源，必须先判别再处理</h3>
- * <ul>
- *   <li><b>来源A（已退差待复核）</b>：{@code TradeOrderTxServiceImpl.settleWaterOrder(success=false)}。
- *       它在同一事务内回填 {@code ACTUAL_ML}、落 6，并按「预扣 − 实际应扣」补偿入账 +
- *       写一条 {@code FLOW_TYPE=4} 补偿流水。钱已经退过，落 6 只是等运营复核。</li>
-     *   <li><b>来源B（未退差）</b>：{@code WaterCommandFailureTxServiceImpl}（下发失败 / 超时）、
-     *       {@code WsCommandAckTxServiceImpl}（设备拒绝）与
-     *       {@code MiniOrderServiceImpl.markAbnormalWhenDispatchLeftNoTrace}
-     *       （下发异常且未留任何指令痕迹）。这些路径会推进订单异常态并落相应状态证据，
-     *       但<b>一分钱没退</b>，且都不写 {@code ACTUAL_ML}。</li>
- * </ul>
+ * <p>状态 6 有两条语义相反的来源：<b>来源A（已退差待复核）</b>＝
+ * {@code TradeOrderTxServiceImpl.settleWaterOrder(success=false)}，在同一事务内回填 {@code ACTUAL_ML}、落 6，
+ * 并按「预扣 − 实际应扣」补偿入账 + 写一条 {@code FLOW_TYPE=4} 补偿流水；<b>来源B（未退差）</b>＝
+ * {@code WaterCommandFailureTxServiceImpl}（下发失败 / 超时）、{@code WsCommandAckTxServiceImpl}（设备拒绝）与
+ * {@code MiniOrderServiceImpl.markAbnormalWhenDispatchLeftNoTrace}（下发异常且未留任何指令痕迹），
+ * 这些路径<b>一分钱没退</b>，且都不写 {@code ACTUAL_ML}。</p>
  *
- * <p><b>判别依据：{@code ACTUAL_ML} 是否非空 ⨯ 是否存在 FLOW_TYPE=4 补偿流水，两个信号都要。</b>
- * 只看补偿流水会误判——来源A 在「实际出水已达计划量」时退差为 0、不写流水，
- * 看起来与来源B 一模一样；只看 {@code ACTUAL_ML} 又无法发现流水被改写。因此：
- * 两个信号同时成立判 A，同时不成立判 B，<b>一真一假一律 UNKNOWN 并 fail-closed 转人工</b>。
- * {@code ACTUAL_ML} 之所以能当判别信号，是因为全仓只有 {@code settleWaterOrder} 写它，
- * 而三条落 6 的路径互斥（各自的 CAS 前态都是 2/3，先到者把后到者的影响行打成 0），
- * 一张订单不可能同时经过结算与指令异常两条路。</p>
- *
- * <p><b>来源B 一律显式拒绝，不静默放行。</b>它需要的是真实资金返还（补退差），属后续包；
- * 本包若把它当成"已退过"直接确认终态，用户的钱就被无偿吞掉，且账面显示订单正常完成。</p>
- *
- * <p>本类只读 {@code DATA_STATUS=0} 的流水（走 MyBatis-Plus 逻辑删除）。被逻辑删除的退差流水
- * 会让判定退化为「查不到已退差」→ 落 UNKNOWN 或 B → 一律阻断转人工。方向是 fail-closed，
- * 不会把「删了流水」变成绕过核验放行的后门。</p>
+ * <p>判别必须同时看两个信号：ACTUAL_ML 非空 ⨯ 存在 FLOW_TYPE=4 补偿流水——只看其一会误判
+ * （来源A 退差为 0 时不写流水；流水可能被改写）。两真判 A、两假判 B，
+ * <b>一真一假一律 UNKNOWN 并 fail-closed 转人工</b>。{@code ACTUAL_ML} 之所以能当判别信号，
+ * 是因为全仓只有 {@code settleWaterOrder} 写它，而三条落 6 的路径互斥（各自的 CAS 前态都是 2/3，
+ * 先到者把后到者的影响行打成 0），一张订单不可能同时经过结算与指令异常两条路。
+ * 来源B 一律显式拒绝：把它当"已退过"确认终态即无偿吞掉用户的钱。被逻辑删除的退差流水只会让判定阻断转人工，
+ * 不构成放行后门。</p>
  *
  * @author dakang
  * @since 2026-07-29
@@ -101,9 +87,7 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
     private ISplitService splitService;
 
     /**
-     * 只读预览。不加事务：三条读之间的短暂不一致对展示无害，
-     * 而确认路径会在自己的事务内用同一份 {@link #analyze} 重新判定，绝不采信本方法的结论。
-     * 预览也不写任何拒绝证据——运营点开看一眼不构成一次业务判定。
+     * 只读预览，不加事务、不写拒绝证据：确认路径会在自己的事务内用同一份 {@link #analyze} 重判。
      */
     @Override
     public AdminWaterAbnormalPreviewVo preview(Long orderId) {
@@ -112,30 +96,16 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
     }
 
     /**
-     * 运营确认核账。
-     *
-     * <p><b>为什么是 READ_COMMITTED</b>：账本核验（退差流水聚合）是普通一致性读，
-     * MySQL 默认 REPEATABLE READ 下读视图在事务首条 SELECT（读订单）时就固定，
-     * 此后即使有并发售后刚提交了本单的返还流水也看不见，等于拿旧账本核出终态。
-     * 本事务零资金写入，后果不是超额返还而是「按过期账本确认终态」，但结论同样驱动
-     * 订单终态，没有理由容忍旧视图。权威先例与不改用锁定读的理由见
-     * {@code RechargeIssueTxImpl.issue}（对不存在的行做二级索引锁定读会留 gap 锁，
-     * 两笔不相关的并发操作会在相邻间隙上互等死锁；降隔离级别零新增锁面）。</p>
-     *
-     * <p>核验与 CAS 之间存在极短的 TOCTOU 窗口，但危害为零：流水表只插不改，
-     * 账本只会增长；而订单终态由 {@code ORDER_STATUS=6} 的 CAS 独占，
-     * 并发确认必然只有一个赢家，输家影响行为 0 并整体回滚。</p>
+     * 运营确认核账。READ_COMMITTED：RR 下读视图在首条 SELECT 固定，会拿旧账本核出终态
+     * （权威先例与不用锁定读的理由见 {@code RechargeIssueTxImpl.issue}）。
+     * 核验与 CAS 间的 TOCTOU 窗口无害：流水只插不改，终态由 ORDER_STATUS=6 的 CAS 独占。
      */
     @Override
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public void confirm(Long orderId, String handleRemark, Long opUserId, String now) {
-        // 传播级别保持 REQUIRED（订单终态、台账与领域事件必须与调用方同生共死，
-        // 不能像返还内核那样独立提交），代价是 Spring 在加入外层事务时会静默丢弃上面声明的
-        // READ_COMMITTED（validateExistingTransaction 默认 false）——隔离级别没了，
-        // 上面 javadoc 论证的「不拿旧账本核出终态」这条前提也就没了，而且没有任何报错。
-        // 今天唯一调用方 AdminAfterSaleServiceImpl 不带事务，声明值实际生效；这道断言是为了
-        // 哪天有人在外面包一层事务时立刻炸掉。与 AfterSaleActionTxServiceImpl.executeInTx
-        // 的同款断言成对存在：两处都靠隔离级别成立，就不该只有一处有护栏。
+        // 传播保持 REQUIRED（终态、台账与领域事件须与调用方同生共死），代价是被外层事务包住时
+        // 声明的 READ_COMMITTED 会被静默丢弃且零报错——此断言让那一天立刻炸掉
+        // （与 AfterSaleActionTxServiceImpl.executeInTx 的同款断言成对）
         Integer isolation = TransactionSynchronizationManager.getCurrentTransactionIsolationLevel();
         if (isolation == null || isolation != TransactionDefinition.ISOLATION_READ_COMMITTED) {
             throw new JbkException("取水核账事务隔离级别不是 READ_COMMITTED（实际 " + isolation
@@ -148,7 +118,7 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
             throw new JbkException("核账操作人缺失，拒绝确认");
         }
         if (now == null || now.length() != TIME_LEN) {
-            // 不做「为空就取当前时间」的兜底：那会让订单、台账与审计出现两套时钟
+            // 不做取当前时间的兜底：会让订单、台账与审计出现两套时钟
             throw new JbkException("业务时间格式非法，拒绝确认");
         }
         String remark = StrUtil.maxLength(StrUtil.trim(handleRemark), REMARK_MAX);
@@ -163,9 +133,8 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
         }
 
         // 订单终态 CAS：WHERE 带 ID + ORDER_STATUS=6，影响行必须 == 1（铁律①）。
-        // 刻意不改写 FINISH_TIME 与 CANCEL_REASON：前者是结算完成时刻、后者是原始异常原因，
-        // 都是本次核账所依据的证据，用核账时间和核账备注覆盖它们等于把证据改成结论。
-        // 核账时刻与说明落在售后台账行与领域事件里。
+        // 刻意不改写 FINISH_TIME/CANCEL_REASON——它们是核账依据的证据，覆盖即把证据改成结论；
+        // 核账时刻与说明落在台账行与领域事件里
         int moved = wsOrderMapper.update(null, Wrappers.lambdaUpdate(WsOrder.class)
                 .set(WsOrder::getOrderStatus, verdict.targetStatus())
                 .set(WsOrder::getUpdateBy, opUserId)
@@ -176,9 +145,8 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
             throw rejected(orderId, order, "订单已被并发推进出异常待补偿状态，核账确认未生效", now);
         }
 
-        // E2E-08 口径补齐：人工核账确认 6→4 与结算路径是同一个「完成」事实，必须同产分账
-        // （FINISHED+余额支付，基数=实扣=订单金额-已退差；两路口径分叉=同类单分润有无全看走哪条路）。
-        // 6→7 零出水退款不分账；撞唯一键幂等跳过由 enqueueForOrder 自身保证。
+        // E2E-08：核账确认 6→4 与结算路径是同一个「完成」事实，必须同产分账
+        // （基数=实扣=订单金额-已退差）；6→7 零出水退款不分账，撞键幂等由 enqueueForOrder 保证
         if (ObjectUtil.equal(verdict.targetStatus(), TradeEnum.OrderStatus.FINISHED.getValue())
                 && ObjectUtil.equal(order.getPayWay(), TradeEnum.PayWay.CARD_BALANCE.getValue())) {
             splitService.enqueueForOrder(order.getId(), order.getOrderNo(),
@@ -191,8 +159,7 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
         JSONObject snapshot = buildSnapshot(order, verdict, remark, opUserId);
         insertLedgerAction(order, snapshot, opUserId, now);
 
-        // 正向状态审计与业务同事务（铁律④）：核账结论若提交、审计必须一起在；
-        // 撞幂等键时 recordReliableOnce 会读回核验语义一致性，不一致即整体回滚。
+        // 正向状态审计与业务同事务（铁律④）；撞幂等键时按语义比对，不一致即整体回滚
         domainEventService.recordReliableOnce(OpsEnum.EventType.ORDER_STATUS, order.getOrderNo(),
                 RECONCILE_KEY_PREFIX + order.getOrderNo(),
                 TradeEnum.OrderStatus.ABNORMAL.getDesc(),
@@ -205,8 +172,7 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
 
     /**
      * 核账判定结论。{@code blockReason != null} 时 {@code targetStatus} 恒为 null——
-     * 不允许出现「有阻断原因但仍带着一个建议终态」的中间对象，那种对象一旦被调用方
-     * 只读了 targetStatus 就会绕过阻断。
+     * 否则只读 targetStatus 的调用方会绕过阻断。
      */
     private record Reconcile(String verdict, Long planMl, Long actualMl,
                              long refundedFen, long refundedMl,
@@ -277,10 +243,8 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
     }
 
     /**
-     * 终态派生：零出水等同退款完成(7)，部分出水等同正常完成(4)。
-     *
-     * <p>实际量达到或超过计划量时返回 null 而不是"也算完成"：那说明水已足量出完，
-     * 结算路径本不该判失败，落 6 的原因超出本核账口径，只能交人工判断。</p>
+     * 终态派生：零出水→7已退款，部分出水→4已完成；实际量 ≥ 计划量返回 null——
+     * 水已足量出完却落 6，原因超出本核账口径，只能交人工。
      */
     private Integer targetStatus(long planMl, Long actualMl) {
         if (actualMl == null || actualMl < 0L || actualMl >= planMl) {
@@ -320,17 +284,9 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
     }
 
     /**
-     * 账本与「计划-实际」的一致性核对。
-     *
-     * <p><b>payWay=3 与零出水场景是精确等式</b>：退差水量必须恰等于 {@code 计划 − min(实际, 计划)}；
-     * 零出水的余额单必须恰等于订单预扣金额（实际应扣为 0）。两者都不依赖单价。</p>
-     *
-     * <p><b>payWay=2 的部分出水只能核到强不变量而非精确值</b>：精确差额 =
-     * {@code 预扣 − ceil(实际 × 单价 ÷ 1000)}，需要订单快照里的单价。本类刻意不解析该快照——
-     * 单价快照的解析与回退口径只有结算路径一份实现（铁律⑤），在核账里再写一份，
-     * 两份从落地第一天起就可能漂移，而漂移的表现是「核账说账不对、结算说账对」这种
-     * 无人能裁决的对账争议。此处核到方向、维度与上界（退差为正、不退错维度、不超过预扣金额），
-     * 精确性由退差路径自身的断言保证。</p>
+     * 账本与「计划-实际」的一致性核对。payWay=3 与零出水是不依赖单价的精确等式；
+     * payWay=2 部分出水只核方向/维度/上界——单价快照的解析只有结算路径一份实现（铁律⑤），
+     * 此处再写一份必然漂移成无人能裁决的对账争议，精确性由退差路径自身断言保证。
      */
     private String ledgerMismatch(WsOrder order, long planMl, long actualMl, Ledger ledger) {
         long settledActual = Math.min(actualMl, planMl);
@@ -421,17 +377,8 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
 
     /**
      * 台账留痕行：SOURCE_TYPE=3、ACTION_TYPE=1卡内退款、四元额度全 0、直接落 SUCCESS。
-     *
-     * <p><b>本方法只 insert 一行，不调用任何返还 API</b>——这正是不注入返还能力的意义所在：
-     * 想在这里"顺手把钱退了"必须先改依赖清单。动作类型登记为卡内退款是因为本单的资金形态
-     * 确实是卡内退款（钱已由结算路径退回卡内），本行记录的是「这笔卡内退款经核账确认」，
-     * 而不是「本行执行了一笔卡内退款」；额度三列全 0 精确表达了「本次动作零资金变化」，
-     * 也让按订单聚合的累计封顶不会因为这条留痕而少算可返额度。</p>
-     *
-     * <p>幂等由 {@code uk_after_sale_source(SOURCE_TYPE, SOURCE_ID)} 与 {@code uk_after_sale_no}
-     * 承担（铁律②），不做应用层查重。撞键即整事务回滚而不是"当成已完成返回"：
-     * 订单终态 CAS 已经在本事务前面独占了 6→终态这一步，能走到这里还撞键说明有本路径之外
-     * 的写入方，属账本异常，必须炸出来。</p>
+     * 只 insert 不调返还 API；额度全 0 表达零资金变化，且不影响按订单聚合的累计封顶。
+     * 幂等由唯一键承担（铁律②），撞键必须炸——终态 CAS 已独占 6→终态，还撞键即有第三方写入。
      */
     private void insertLedgerAction(WsOrder order, JSONObject snapshot, Long opUserId, String now) {
         WsAfterSaleAction action = new WsAfterSaleAction();
@@ -482,9 +429,8 @@ public class WaterAbnormalReconcileTxServiceImpl implements IWaterAbnormalReconc
     }
 
     /**
-     * 拒绝证据独立提交（铁律④，REQUIRES_NEW）：主事务随后回滚正是拒绝的业务结果，
-     * 证据若跟着回滚，"拒绝过"就成了无痕事件，运营与审计都无从得知曾有人试图确认。
-     * 手法与 {@code TradeOrderTxServiceImpl.scopeRejected} 一致：固定业务键 + 报文带判定时刻。
+     * 拒绝证据独立提交（铁律④，REQUIRES_NEW）：证据随主事务回滚则「拒绝过」成无痕事件。
+     * 手法同 {@code TradeOrderTxServiceImpl.scopeRejected}：固定业务键 + 报文带判定时刻。
      */
     private JbkException rejected(Long orderId, WsOrder order, String reason, String now) {
         String eventKey = order == null || StrUtil.isBlank(order.getOrderNo())

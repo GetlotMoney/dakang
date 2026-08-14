@@ -13,16 +13,9 @@ import com.jbk.tool.data.trade.po.WsOrder;
 public interface ITradeOrderTxService {
 
     /**
-     * 事务内创建取水订单（CARD-SCOPE 固定顺序，预检不是安全边界，这里是最终防线）：
-     * ①以服务端铸造的扫码会话为设备/出水口唯一来源 → ②锁内重核 qrcode/station/device/outlet
-     * 共键与档案状态 → ③SELECT 水卡 FOR UPDATE → ④使用人=卡主，或（CARD-MEMBER）锁
-     * uk_card_member_user 成员关系行并校验授权状态与有效期窗口 →
-     * ⑤未删除/状态正常/未过期 → ⑥{@code WaterCardScope.allows(station,device,outlet)} 放行
-     * （成员继承主卡范围）→ ⑦成员日限额（仅成员且配置 DAY_LIMIT_ML；靠 ④ 的行锁串行化）→
-     * ⑧原子扣减（条件 UPDATE + 影响行数；USER_ID 归属条件=锁内卡主，UPDATE_BY=实际使用人）→
-     * ⑨INSERT 订单+流水（USER_ID=实际使用人，扣减作用卡主的卡）。
-     * 任一步失败整体回滚：卡余额/水量不变、订单/流水零新增；扫码会话消费与设备指令
-     * 由编排层在提交成功后才执行（⑩）。
+     * 事务内创建取水订单（CARD-SCOPE 固定顺序 ①~⑨，预检不是安全边界，这里是最终防线）：
+     * 会话共键重核 → 锁卡 → 归属/成员授权 → 状态 → 范围 → 日限额 → 原子扣减 → 订单+流水。
+     * 任一步失败整体回滚零副作用；扫码会话消费与设备指令由编排层在提交成功后才执行（⑩）。
      *
      * @param order   已装配好业务字段（不含 ID/审计字段）的订单，ORDER_STATUS=2 已支付
      * @param session 服务端铸造的扫码会话（qrcodeId/stationId/deviceId/outletId 共键重核依据）
@@ -32,13 +25,9 @@ public interface ITradeOrderTxService {
     WsOrder createWaterOrder(WsOrder order, ScanSessionInfo session, String now);
 
     /**
-     * 出水指令重入原子闸：条件 UPDATE ws_order SET CMD_ID=? WHERE ID=? AND CMD_ID IS NULL。
-     * 返回影响行数：==1 抢闸成功（可 publish）；==0 已有指令占位（重复触发，作废本次不下发）。
-     * 保证一个订单物理上不可能产生两条有效出水指令（设备安全铁律4 配套）。
-     *
-     * <p>CAS 谓词还包含订单类型、已支付状态与「站-设备-出水口」三共键：调用方读单、判定设备到
-     * 抢占之间，订单可能被并发转异常/退款/完成，档案也可能迁站或改绑。影响行数不是 1 时
-     * 调用方必须作废本次 PENDING 指令且不得 publish。</p>
+     * 出水指令重入原子闸：条件 UPDATE，==1 抢闸成功可 publish，==0 已有指令占位作废本次不下发
+     * （一单物理上不可能两条有效出水指令，铁律4 配套）。CAS 谓词含订单类型、已支付态与三共键；
+     * 影响行数不是 1 时调用方必须作废本次 PENDING 指令且不得 publish。
      *
      * @param orderId   订单ID
      * @param commandId 待关联的指令ID

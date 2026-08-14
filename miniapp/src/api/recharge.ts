@@ -109,13 +109,8 @@ export function normalizeRechargeExpireDays(value: unknown): number | null {
 }
 
 /**
- * 幂等键。
- *
- * Mock 域用可预测序号（原型演示要能复现同一编号）；**接真时必须是规范小写 UUID**——
- * 后端 `RechargeOrderNo.derive` 只接受规范 UUID 并据此派生订单号，
- * 此前接真也发 `recharge-mock-0001`，创单在服务端一律被拒，充值根本走不通。
- *
- * 不用 `crypto.randomUUID()`：小程序运行时没有该 API。
+ * 幂等键：必须是规范小写 UUID（后端 `RechargeOrderNo.derive` 只接受规范 UUID 并据此派生订单号）；
+ * 不用 `crypto.randomUUID()`——小程序运行时没有该 API。
  */
 export function createRechargeRequestId(): string {
   return uuidV4()
@@ -149,14 +144,8 @@ export interface PackageRaw {
 }
 
 /**
- * 数值字段解析：**必须同时接受 number 与十进制字符串**。
- *
- * 后端把所有 Long 序列化成字符串以避免 JS 的 53 位精度丢失（`packageId`、`payAmountFen`、
- * `waterMl`、`bonusAmountFen`、`orderAmountFen` 全是字符串；Integer 型的 `orderStatus`/
- * `payStatus`/`paySource` 才是数字）。此前这里只认 number，导致套餐页拿到后端正确响应后
- * 仍以「packageId 缺失或非法」整页 fail-closed——接口通了，页面却一个套餐都渲染不出来。
- *
- * 仍然严格：空串、小数、指数、前导零、非十进制一律拒绝，绝不 `Number()` 一把梭。
+ * 数值字段解析：必须同时接受 number 与十进制字符串（后端 Long 序列化为字符串防精度丢失）；
+ * 空串、小数、指数、前导零、非十进制一律拒绝，绝不 `Number()` 一把梭。
  */
 function requireNumber(value: unknown, field: string): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -195,18 +184,14 @@ function requireBoolean(value: unknown, field: string): boolean {
   return value
 }
 
-/**
- * 套餐归一化：金额/水量缺失一律拒绝而不是补 0。
- * 补 0 会让「500 元套餐」在页面上显示成 0 元，用户点下去却被扣真钱。
- */
+/** 套餐归一化：金额/水量缺失一律拒绝而不是补 0——补 0 会把 500 元套餐显示成 0 元。 */
 export function normalizePackage(raw: PackageRaw): RechargePackage {
   return {
     id: requireId(raw.packageId, 'packageId'),
     packageName: requireText(raw.packageName, 'packageName'),
     payAmountFen: requireNumber(raw.payAmountFen, 'payAmountFen'),
     waterMl: requireNumber(raw.waterMl, 'waterMl'),
-    // 必须走同一套解析：这里曾写成「不是 number 就取 0」，而后端 Long 是字符串，
-    // 于是「50元充值(送5元)」在页面上显示成「赠送 ¥0.00」——用户看到的赠送额与实际到账不符。
+    // 必须走同一套解析：后端 Long 是字符串，「不是 number 就取 0」会把赠送额显示成 ¥0.00
     bonusAmountFen: requireNumber(raw.bonusAmountFen ?? 0, 'bonusAmountFen'),
     unitPriceSnap: requireText(raw.unitPriceSnap, 'unitPriceSnap'),
     expireDays: raw.expireDays == null ? null : normalizeRechargeExpireDays(raw.expireDays),
@@ -216,10 +201,8 @@ export function normalizePackage(raw: PackageRaw): RechargePackage {
 }
 
 /**
- * 真实创单请求体：首次购卡必须彻底省略 cardId。
- *
- * 传 null、空串或字符串 "undefined" 会把坏请求误分流成购卡，因此除真正的 undefined 外
- * 一律拒绝，不能靠服务端把畸形值猜成某种模式。
+ * 真实创单请求体：首次购卡必须彻底省略 cardId——传 null/空串/"undefined" 会把坏请求误分流成购卡，
+ * 除真正的 undefined 外一律拒绝。
  */
 export function buildRechargeCreateBody(input: CreateRechargeOrderInput): Record<string, string> {
   const body: Record<string, string> = {
@@ -236,11 +219,7 @@ export function buildRechargeCreateBody(input: CreateRechargeOrderInput): Record
   return body
 }
 
-/**
- * 支付状态归一化：{@code retryable} 缺失时取 false。
- * 默认可重试会让前端在服务端已判定 MISMATCH 的单子上无限轮询，
- * 既刷屏又让用户以为「还在处理中」——宁可停下来显示异常。
- */
+/** 支付状态归一化：retryable 缺失取 false——默认可重试会在服务端已判 MISMATCH 的单子上无限轮询。 */
 export function normalizePayStatus(raw: Record<string, unknown>): RechargePayStatus {
   return {
     orderNo: requireText(raw.orderNo, 'orderNo'),

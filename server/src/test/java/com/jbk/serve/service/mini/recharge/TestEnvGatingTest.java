@@ -9,47 +9,65 @@ import com.jbk.serve.service.mini.recharge.impl.WechatPaySourceAdapter;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 隔离测试环境能力的<b>门控</b>本身的回归测试。
- *
- * <p>模拟支付与测试登录都是"生产绝不能有"的能力。它们能不能出现在生产，
- * 完全取决于几个注解属性——而注解属性被改错时编译器不会吭声，
- * 上线前也很难有人肉眼发现少了个 {@code havingValue}。这里把它们钉死：</p>
- *
- * <ul>
- *   <li>四个类都必须挂在<b>同一个</b>开关上，不允许各挂各的；</li>
- *   <li>模拟能力必须 {@code havingValue="true"} 且<b>不得</b> {@code matchIfMissing}——
- *       漏配即关闭；</li>
- *   <li>微信来源适配器必须与 Pay-Sim 适配器<b>互斥</b>，否则容器里可能同时存在两个来源，
- *       模拟收款会被记成真实微信收款。</li>
- * </ul>
+ * 隔离测试环境能力门控回归（D-425）。钉死四条：模拟能力必须 havingValue="true" 且不得
+ * matchIfMissing（漏配即关闭）；同一能力的控制器与 Service 挂同一开关；不同能力各挂各的
+ * 开关可分别授权（Pay-Sim 与测试登录绝不能被一个开关连带打开）；微信来源适配器与
+ * Pay-Sim 适配器互斥，否则模拟收款会被记成真实微信收款。
  */
 class TestEnvGatingTest {
 
-    private static final String SWITCH = "mini.pay-sim.enabled";
+    private static final String PAY_SIM_SWITCH = "mini.pay-sim.enabled";
+    private static final String TEST_LOGIN_SWITCH = "mini.test-login.enabled";
 
-    /** 四个仅测试环境的类：漏配开关时必须一个都不注册。 */
+    /** 五个仅测试环境的类：漏配开关时必须一个都不注册，且同一能力的类同开关。 */
     @Test
     void testOnlyBeansRequireExplicitTrueAndNeverDefaultOn() {
-        for (Class<?> type : new Class<?>[] {
-                MiniPaySimController.class, MiniPaySimServiceImpl.class,
-                MiniTestLoginController.class, MiniTestLoginServiceImpl.class,
-                PaySimSourceAdapter.class }) {
+        Map<Class<?>, String> expected = new LinkedHashMap<>();
+        expected.put(MiniPaySimController.class, PAY_SIM_SWITCH);
+        expected.put(MiniPaySimServiceImpl.class, PAY_SIM_SWITCH);
+        expected.put(PaySimSourceAdapter.class, PAY_SIM_SWITCH);
+        // 测试登录与 Pay-Sim 分属两种能力，各挂各的开关（D-425）
+        expected.put(MiniTestLoginController.class, TEST_LOGIN_SWITCH);
+        expected.put(MiniTestLoginServiceImpl.class, TEST_LOGIN_SWITCH);
+
+        for (Map.Entry<Class<?>, String> e : expected.entrySet()) {
+            Class<?> type = e.getKey();
             ConditionalOnProperty c = type.getAnnotation(ConditionalOnProperty.class);
             assertNotNull(c, type.getSimpleName() + " 必须带 @ConditionalOnProperty，否则生产也会注册");
-            assertArrayEquals(new String[] { SWITCH }, c.name(),
-                    type.getSimpleName() + " 必须挂在统一开关 " + SWITCH + " 上");
+            assertArrayEquals(new String[] { e.getValue() }, c.name(),
+                    type.getSimpleName() + " 必须挂在 " + e.getValue() + " 上");
             assertEquals("true", c.havingValue(),
                     type.getSimpleName() + " 必须显式 true 才注册");
             assertFalse(c.matchIfMissing(),
                     type.getSimpleName() + " 漏配开关时必须关闭，绝不能默认开启");
         }
+    }
+
+    /**
+     * 测试登录与 Pay-Sim 必须能<b>分别</b>授权。
+     *
+     * <p>这条是上面那张表的语义断言：表里写错成同一个开关时，上面的循环仍然全绿
+     * （它只核"实际注解 == 表里写的"），而"能不能分别关"这个真正的性质会悄悄失效。</p>
+     */
+    @Test
+    void testLoginAndPaySimAreSeparatelyAuthorizable() {
+        String testLogin = MiniTestLoginController.class
+                .getAnnotation(ConditionalOnProperty.class).name()[0];
+        String paySim = MiniPaySimController.class
+                .getAnnotation(ConditionalOnProperty.class).name()[0];
+        assertNotEquals(paySim, testLogin,
+                "测试登录与 Pay-Sim 共用开关：开模拟支付会连带打开按手机号直签会话的入口");
     }
 
     /**
@@ -61,7 +79,7 @@ class TestEnvGatingTest {
     void paySourceAdaptersAreMutuallyExclusive() {
         ConditionalOnProperty wechat = WechatPaySourceAdapter.class.getAnnotation(ConditionalOnProperty.class);
         assertNotNull(wechat);
-        assertArrayEquals(new String[] { SWITCH }, wechat.name());
+        assertArrayEquals(new String[] { PAY_SIM_SWITCH }, wechat.name());
         assertEquals("false", wechat.havingValue(), "微信适配器只在开关非 true 时注册");
         assertTrue(wechat.matchIfMissing(), "漏配开关时必须回落到真实微信来源");
 

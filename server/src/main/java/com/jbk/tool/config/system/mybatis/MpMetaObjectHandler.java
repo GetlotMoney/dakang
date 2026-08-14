@@ -9,12 +9,6 @@ import com.jbk.tool.utils.satoken.StpKit;
 import org.apache.ibatis.reflection.MetaObject;
 import org.springframework.context.annotation.Configuration;
 
-/**
- * @ClassName MpMetaObjectHandler
- * @Author xs
- * @Date 2024/6/7 14:22
- * @Version 1.0
- */
 @Configuration
 public class MpMetaObjectHandler implements MetaObjectHandler {
     @Override

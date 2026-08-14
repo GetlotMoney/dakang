@@ -1,9 +1,8 @@
-import type { EntityId, MoneyFen, VolumeMl } from './common'
+import type { EntityId } from './common'
 import { ContractError } from './common'
 import { strictEntityId, strictNonNegativeInt } from './delivery-normalize'
 import { withRealSession } from './real-session'
 import { post } from './request'
-import { realAdapterPending } from './runtime'
 
 export interface WaterType {
   id: EntityId
@@ -22,26 +21,14 @@ export interface StationSummary {
   status: 'OPEN' | 'MAINTENANCE' | 'CLOSED'
 }
 
-export interface PackageSummary {
-  id: EntityId
-  packageName: string
-  payAmountFen: MoneyFen
-  waterMl: VolumeMl
-  bonusAmountFen: MoneyFen
-  /** 套餐有效期天数；null 表示永久。 */
-  expireDays: number | null
-}
-
 export interface CatalogApi {
   listWaterTypes: () => Promise<WaterType[]>
   listStations: () => Promise<StationSummary[]>
-  listPackages: () => Promise<PackageSummary[]>
 }
 
 export const catalogEndpoints = {
   waterTypes: '/mini/catalog/water-type/list',
   stations: '/mini/catalog/station/list',
-  packages: '/mini/catalog/package/list',
 } as const
 
 /** 后端 MiniWaterTypeVo 原样结构（Long ID 已按字符串下发）。 */
@@ -94,10 +81,7 @@ function normalizeStation(raw: StationRaw): StationSummary {
   }
 }
 
-/**
- * catalog 真实适配器（E2E-03 包B）：水种/水站接真；套餐归 recharge 域
- * （/mini/package/list，recharge.ts 自持），此处保持显式 pending 防误用。
- */
+/** catalog 真实适配器（E2E-03 包B）：水种/水站接真；套餐归 recharge 域，不在此重复来源。 */
 const realCatalogApi: CatalogApi = {
   async listWaterTypes() {
     return withRealSession(async () => {
@@ -111,11 +95,7 @@ const realCatalogApi: CatalogApi = {
       return (raw ?? []).map(normalizeStation)
     })
   },
-  async listPackages() {
-    return realAdapterPending('查询套餐', catalogEndpoints.packages)
-  },
 }
 
-// catalog 的页面消费方全部在配送链（U07 站点选择 / U08 配送下单 / D02 准入表单），
-// 故跟随 delivery 域接真——不单设 catalog 域，避免运行期模式指纹再多一段无独立语义的开关。
+// catalog 的消费方全部在配送链，跟随 delivery 域接真，不单设 catalog 域
 export const catalogApi = realCatalogApi

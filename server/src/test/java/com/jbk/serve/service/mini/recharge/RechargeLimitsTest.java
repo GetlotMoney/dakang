@@ -171,13 +171,7 @@ class RechargeLimitsTest {
                 "只要有 1 分权益就成立，不得误伤");
     }
 
-    /**
-     * D-213：付费套餐一律永久有效，不得设有效期。
-     *
-     * <p>该决策此前<b>只存在于 decisions.md 与 L2 契约</b>，代码零守卫——PC 能建出
-     * 售价&gt;0 且带 expireDays 的套餐并正常上架，用户买完即得到有限期付费卡。
-     * 独立审计（2026-08-06）抓出该缺口后补此闸。</p>
-     */
+    /** D-213：付费套餐一律永久有效，不得设有效期（此前只在文档、代码零守卫）。 */
     @Test
     void paidPackageMustNotCarryExpiry() {
         rejectBecause(base().setExpireDays(365), "付费套餐不得设置有效期",

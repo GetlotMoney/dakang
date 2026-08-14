@@ -5,7 +5,7 @@
 ## Demo 约定
 
 - 业务和系统列表页默认开启 `auto-search`：文本输入停止 350ms 后查询，选择器等值变化后同样触发；组件自动隐藏“查询”按钮。
-- “重置”保留，用于恢复组件初始化时的筛选快照并立即重新加载列表。
+- 筛选控件必须提供清空能力；项目默认不显示独立“重置”按钮，避免与输入框或选择器的清除动作重复。
 - 登录、表单提交、设备指令和其他写操作不能使用自动查询语义。
 - 自动查询必须配合父页面的“回到第 1 页”逻辑；使用 `useTable` 时优先调用 `getDataDebounced` 或既有 `handleSearch`。
 
@@ -70,7 +70,7 @@
 | `is-expand`         | 是否固定展开全部筛选项         | `boolean`                    | `false`   |
 | `default-expanded`  | 初始是否展开                   | `boolean`                    | `false`   |
 | `show-expand`       | 是否显示展开/收起              | `boolean`                    | `true`    |
-| `show-reset`        | 是否显示重置按钮               | `boolean`                    | `true`    |
+| `show-reset`        | 是否显示重置按钮               | `boolean`                    | `false`   |
 | `show-search`       | 手动模式是否显示查询按钮       | `boolean`                    | `true`    |
 | `auto-search`       | 是否在用户修改筛选值后自动查询 | `boolean`                    | `false`   |
 | `auto-search-delay` | 自动查询防抖毫秒数             | `number`                     | `350`     |

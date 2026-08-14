@@ -7,19 +7,11 @@ import com.jbk.tool.data.device.vo.WsCommandBatchVo;
 
 /**
  * 高风险设备控制服务（E2E-05 包B，任务书 3.4/3.5）：批量控制 + 紧急停止，统一两步确认。
- *
- * <h3>两步确认协议</h3>
- * <ol>
- *   <li>{@link #preview}：服务端按范围重新解析目标（绝不信前端集合），冻结目标与参数
- *       进 Redis，返回目标数量、摘要与短时效一次性 operationTicket；</li>
- *   <li>{@link #confirm}：Redis GETDEL 原子领取 ticket——过期、重复、换人、
- *       摘要不一致（参数/目标变化）全部拒绝；领取成功才建批次并逐设备展开子指令。</li>
- * </ol>
- *
- * <p>紧急停止建模为「单设备、cmdType=2 停止出水」的特殊批次（total=1）：preview 阶段
- * 由服务端查出该设备当前活动出水订单（ORDER_STATUS=3）锚定 orderId，不存在活动出水链
- * 直接拒绝；confirm 阶段复验订单仍在出水中。停止指令因此始终关联真实订单，
- * 与订单链路触发的停止语义完全一致（任务书 3.4）。</p>
+ * {@link #preview} 服务端按范围重新解析目标（绝不信前端集合），冻结目标与参数进 Redis，
+ * 返回摘要与短时效一次性 operationTicket；{@link #confirm} Redis GETDEL 原子领取——
+ * 过期/重复/换人/摘要不一致全部拒绝，领取成功才建批次展开子指令。紧急停止建模为
+ * 单设备特殊批次（total=1）：preview 锚定活动出水订单（无活动链直接拒绝），
+ * confirm 复验仍在出水中，停止指令始终关联真实订单（任务书 3.4）。
  *
  * @author dakang
  * @since 2026-07-30

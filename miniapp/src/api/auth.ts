@@ -4,13 +4,9 @@ import { ContractError } from './common'
 import { clearToken, post, setToken, setTokenName } from './request'
 
 /**
- * 小程序 L2-AUTH 正式登录适配层（真实微信静默登录 + 手机号绑定）。
- *
- * 流程：uni.login 取一次性 code → POST /mini/auth/login。
- *   - BOUND：写入 tokenName+tokenValue 会话，返回 AccountContext 进首页；
- *   - UNBOUND：拿到一次性 bindTicket，用户 getPhoneNumber 授权后 POST /mini/auth/bind-phone 建会话。
- * 全程不接收 openid/session_key；BOUND 分支才写会话；失败/401 由上层 clearSession 清理，绝不回退 Mock。
- * Long 型 ID 全程按字符串处理（后端已 String 序列化，这里再做防御性 String()）。
+ * 小程序 L2-AUTH 正式登录适配层：uni.login 取一次性 code → /mini/auth/login；BOUND 写会话进首页，
+ * UNBOUND 拿一次性 bindTicket 待 getPhoneNumber 授权后 bind-phone 建会话。
+ * 全程不接收 openid/session_key；失败/401 由上层 clearSession 清理，绝不回退 Mock；Long ID 恒按字符串处理。
  */
 
 const LOGIN_ENDPOINT = '/mini/auth/login'
@@ -61,9 +57,7 @@ export function readPhoneAuthorization(detail?: { code?: string, errMsg?: string
   if (phoneCode) {
     return { authorized: true, phoneCode }
   }
-  // 未拿到 code：把微信原始 errMsg 带出去。用户主动拒绝与平台侧不可用
-  // （未开通手机号验证组件、额度用尽、主体未认证）文案完全不同，
-  // 吞掉 errMsg 会让「点了没反应」和「余额不足」看起来一模一样，无法定位。
+  // 保留微信原始 errMsg：用户主动拒绝与平台侧不可用文案不同，吞掉就无法定位
   return { authorized: false, reason: detail?.errMsg }
 }
 
@@ -137,11 +131,7 @@ function normalizeContext(raw: RawAccountContext): AccountContext {
     userId: requireDecimalStringId(raw.userId, 'userId'),
     userName: requireString(raw.userName, 'userName'),
     userPhone,
-    // 判据只认号码本身，不认后端的 phoneBound 声明。
-    // 「顶部显示号码」与「我的页显示补绑入口」是同一件事的两面，两者必须同真同假：
-    // 若信了 phoneBound=true 而号码实际缺失（后端脏数据或版本错配），就会出现
-    // 「首页写着未绑手机号、我的页却找不到补绑入口」的死角，用户永远绑不上。
-    // 后端字段保留作契约自文档与将来扩展位，此处不参与判定。
+    // 判据只认号码本身，不认后端 phoneBound 声明：信声明而号码缺失会出现「显示未绑却无补绑入口」的死角
     phoneBound: Boolean(userPhone),
     userAvatar: optionalString(raw.userAvatar, 'userAvatar'),
     capabilities: Array.isArray(raw.capabilities) ? [...(raw.capabilities as CapabilityCode[])] : [],
@@ -167,61 +157,6 @@ function applyBoundSession(raw: RawAuthResult): AccountContext {
   setTokenName(raw.tokenName)
   setToken(raw.tokenValue)
   return context
-}
-
-/**
- * 测试登录（仅测试环境，与后端 Pay-Sim 同一开关门控）。
- *
- * 存在的唯一理由：小程序主体的 appid/appsecret 未配置，真机上 `uni.login` 走不通，
- * 于是所有接真业务域一个都点不到。它建立的是**真实 KH_USER 会话**——
- * 与正式登录落地的是同一份 token，因此后续所有接口走的都是真链路，
- * 与「Mock 原型账号打真实接口」有本质区别。
- *
- * 只在 `VITE_TEST_LOGIN_PHONE` 被显式配置时才可能被调用；交付构建不配置该变量。
- */
-export const testLoginPhone: string | undefined = import.meta.env.VITE_TEST_LOGIN_PHONE
-
-/** 显式退出登录后要求入口停在测试账号选择的标记（仅测试登录模式写入/消费）。 */
-export const TEST_LOGIN_SWITCH_KEY = 'dakang-test-login-switch'
-
-export interface TestLoginAccount {
-  phone: string
-  label: string
-}
-
-/**
- * 解析「手机号:标签」逗号清单为测试账号白名单（仅测试环境构建配置 VITE_TEST_LOGIN_PHONES）。
- * 非法手机号一律丢弃——白名单是构建期写死的，不提供自由输入，杜绝把测试入口变成账号枚举面。
- * 未配置时回退单号 VITE_TEST_LOGIN_PHONE，旧构建行为不变（入口自动登录、无选择页）。
- */
-export function parseTestLoginAccounts(raw: string | undefined, fallbackPhone?: string): TestLoginAccount[] {
-  const parsed = (raw ?? '')
-    .split(',')
-    .map(item => item.trim())
-    .filter(item => item.length > 0)
-    .map((item) => {
-      const [phone = '', label = ''] = item.split(':').map(part => part.trim())
-      return { phone, label: label || phone }
-    })
-    .filter(account => /^1\d{10}$/.test(account.phone))
-  if (parsed.length > 0) {
-    return parsed
-  }
-  return fallbackPhone ? [{ phone: fallbackPhone, label: fallbackPhone }] : []
-}
-
-/** 测试账号白名单；入口自动登录仍用 testLoginPhone，本清单只服务显式退出后的切换。 */
-export const testLoginAccounts: TestLoginAccount[] = parseTestLoginAccounts(
-  import.meta.env.VITE_TEST_LOGIN_PHONES,
-  testLoginPhone,
-)
-
-export async function loginByTestPhone(phone: string): Promise<AccountContext> {
-  const raw = await post<RawAuthResult>('/mini/test-login/by-phone', { phone })
-  if (raw.result !== RESULT_BOUND) {
-    throw new ContractError('AUTH_CONTRACT_BROKEN', '登录失败，请重试')
-  }
-  return applyBoundSession(raw)
 }
 
 export const authApi = {
@@ -258,10 +193,8 @@ export const authApi = {
   },
 
   /**
-   * 登录后自助补绑手机号（仅微信身份建号的账号用）。
-   *
-   * 与 {@link bindPhone} 的区别：由已有会话授权，不需要 bindTicket，也不换发 token——
-   * 后端只回吐刷新后的账号上下文，前端就地替换，用户不会在补绑成功后被踢回登录页。
+   * 登录后自助补绑手机号（仅微信身份建号的账号用）：由已有会话授权，不需要 bindTicket 也不换发 token，
+   * 前端就地替换账号上下文，补绑成功后不会被踢回登录页。
    */
   async bindPhoneSelf(phoneCode: string): Promise<AccountContext> {
     const raw = await post<RawAccountContext>(BIND_PHONE_SELF_ENDPOINT, { phoneCode })

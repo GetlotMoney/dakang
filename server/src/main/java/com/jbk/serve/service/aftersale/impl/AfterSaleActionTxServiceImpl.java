@@ -43,20 +43,9 @@ import java.util.List;
 
 /**
  * 售后返还内核事务实现（E2E-04 包A）：卡内退款 / 卡内补偿共用的唯一资金写入路径。
- *
- * <p><b>三个事务边界，三种传播，不可合并</b>：
- * 登记 REQUIRED（并入裁决/取消事务）、认领与失败落痕 REQUIRES_NEW（独立提交）、
- * 执行 REQUIRED + READ_COMMITTED（资金本体）。合并任意两个都会踩到已知事故，
- * 各自的理由写在方法上，不在此重复。</p>
- *
- * <p><b>本实现刻意只服务配送取消与配送申诉两条来源</b>：取水异常核账是零资金写入的核账确认，
- * 由不注入 {@link TradeCardMapper} 的独立事务承担——那边用编译期依赖杜绝「核账走上加钱路径」，
- * 这边在入口显式拒绝核账来源，两侧对开。</p>
- *
- * <p>判定逻辑一律外借不重写（铁律⑤）：状态机 {@link AfterSaleTransitions}、
- * 额度封顶 {@link AfterSaleQuota}、金额合计 {@link AfterSaleStrategy.Refund#totalFen()}、
- * 快照解析 {@link DeliveryRefundSnapshot}、售后号 {@link AfterSaleNo}。
- * 本类只负责编排顺序、锁序与影响行数校验。</p>
+ * 三个事务边界三种传播不可合并（理由见各方法）；只服务配送取消与配送申诉两条来源，
+ * 取水核账由不注入 {@link TradeCardMapper} 的独立事务承担、本入口显式拒绝。
+ * 判定逻辑一律外借不重写（铁律⑤），本类只负责编排顺序、锁序与影响行数校验。
  *
  * @author dakang
  * @since 2026-07-29
@@ -67,16 +56,14 @@ import java.util.List;
 public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
 
     /**
-     * 重试次数上限——<b>单一出处</b>。XML 里没有这个魔数，由 {@code markTerminal} 的
-     * {@code maxRetryCount} 参数传入；上限闸与 {@code RETRY_COUNT+1} 在 SQL 里同源，
-     * 漏传即谓词为 NULL、影响 0 行，走 fail-closed 升级为需人工对账。
+     * 重试次数上限——单一出处：XML 无此魔数，经 markTerminal 参数传入；
+     * 漏传即谓词为 NULL、影响 0 行，fail-closed 升级为需人工对账。
      */
     private static final int MAX_RETRY_COUNT = 3;
 
     /**
-     * {@code LAST_ERROR} 是 varchar(500)，而 {@code StrUtil.maxLength(s, n)} 截断后会补 "..."，
-     * 实际产出最长 n+3。故这里传 497 而不是 500——传 500 会在超长错因上撞 data too long，
-     * 让「保住失败证据」的独立事务反而写不进去。
+     * LAST_ERROR 是 varchar(500)，StrUtil.maxLength 截断后补 "..." 最长 n+3——
+     * 传 500 会在超长错因上撞 data too long，故 497。
      */
     private static final int LAST_ERROR_TRUNCATE = 497;
 
@@ -85,15 +72,9 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
     private final TradeCardMapper tradeCardMapper;
     private final WsWalletFlowMapper walletFlowMapper;
     private final IWsDomainEventService domainEventService;
-    /**
-     * 权益批次台账（包D-4）：返还回补批次剩余。它没有自己的事务边界，
-     * 故必须与 {@link #executeInTx} 的资金写入落在同一个事务里——卡与批次同生共死。
-     */
+    /** 权益批次台账（包D-4）：返还回补批次剩余，必须与 executeInTx 同一事务——卡与批次同生共死。 */
     private final EntitlementLedger entitlementLedger;
-    /**
-     * 分润冲减登记（D-420 R1 段1）：与本类的卡内返还同事务（outbox 语义——退款成功即
-     * 冲减事实存在）；执行段独立事务由 Worker/编排层驱动，失败不回滚本事务的返还。
-     */
+    /** 分润冲减登记（D-420 R1 段1）：与卡内返还同事务（outbox）；执行段独立事务，失败不回滚返还。 */
     private final com.jbk.serve.service.settlement.ISplitClawbackTxService splitClawbackTxService;
 
     // ------------------------------------------------------------------
@@ -112,19 +93,17 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         requireId(draft.getSourceId(), source.sourceIdMeaning());
         requireId(draft.getOrderId(), "关联订单ID");
         requireId(draft.getUserId(), "订单归属用户ID");
-        // 首次购卡在付款成功前不建卡；其异常退款动作因此合法地没有 CARD_ID。
-        // 只有“充值退款 + 机构退款”这一组允许空卡，其它内部返还仍必须指向确定水卡。
+        // 首次购卡付款成功前不建卡，故仅「充值退款 + 机构退款」允许空卡，其余必须指向确定水卡
         boolean cardOptional = source == SourceType.RECHARGE_REFUND && type == ActionType.GATEWAY_REFUND;
         if (!cardOptional || ObjectUtil.isNotNull(draft.getCardId())) {
             requireId(draft.getCardId(), "返还目标卡ID");
         }
         if (StrUtil.isNotBlank(draft.getStrategyCode())) {
-            // 白名单唯一入口：策略码在这里过一次门，落库后执行期不再 valueOf
+            // 策略码在这里过一次白名单，落库后执行期不再 valueOf
             AfterSaleStrategy.requireStrategy(draft.getStrategyCode());
         }
 
-        // 四元额度：合计列由 Refund.totalFen() 派生而不是信任 draft——
-        // 「三个分维怎么加成一个总额」只允许有一份实现，否则 markSuccess 的四列 WHERE 会自相矛盾
+        // 合计列由 Refund.totalFen() 派生而非信任 draft：分维加总只允许一份实现
         AfterSaleStrategy.Refund refund = new AfterSaleStrategy.Refund(
                 requireAmount(draft.getRefundProductFen(), "水品返还金额"),
                 requireAmount(draft.getRefundServiceFen(), "配送费返还金额"),
@@ -148,10 +127,8 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
                 throw new JbkException("售后动作登记影响行数异常");
             }
         } catch (DuplicateKeyException duplicated) {
-            // 铁律②：幂等由 uk_after_sale_source / uk_after_sale_no 收敛，不做应用层预查重。
-            // 两把键撞哪一把都指向同一行——售后号是 (sourceType, sourceId) 的确定性派生，
-            // 故一条按售后号的读回即可覆盖两种撞键，且必须绕过 @TableLogic（唯一键不含 DATA_STATUS，
-            // 逻辑删除行仍占键，用 selectById 会出现「键被占用但行查不到」的无解分支）
+            // 铁律②：幂等由 uk_after_sale_source / uk_after_sale_no 收敛，不做预查重。
+            // 按售后号读回可覆盖两种撞键，且必须绕过 @TableLogic——逻辑删除行仍占键
             WsAfterSaleAction existed = actionMapper.selectByAfterSaleNoIncludingDeleted(afterSaleNo);
             if (ObjectUtil.isNull(existed)) {
                 throw new JbkException("售后动作唯一键冲突但读不回既有行，账实不符");
@@ -178,11 +155,7 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
     // ② 认领（独立提交）
     // ------------------------------------------------------------------
 
-    /**
-     * 认领必须独立于资金事务提交：同事务时资金失败回滚会把 ACTION_STATUS 复原成待执行，
-     * 而失败落痕的 CAS 要求前态为执行中 → 影响行恒 0 → 动作无终态、无错因、可被无限重放。
-     * 详见接口注释。
-     */
+    /** 认领必须独立于资金事务提交，理由见接口注释。 */
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public boolean claimIndependent(Long id, Integer expectedVersion, Long opUserId, String now) {
@@ -192,7 +165,7 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
             throw new JbkException("售后动作版本缺失，无法认领");
         }
         requireOperator(opUserId);
-        // 合法前态集合只能来自状态机，不在此处枚举 1/4——枚举一次就是第二份真相
+        // 合法前态集合只能来自状态机，此处枚举一次就是第二份真相
         int to = ActionStatus.PROCESSING.getValue();
         int rows = actionMapper.claimForExecute(id, expectedVersion, to,
                 AfterSaleTransitions.requireSources(to), opUserId, now);
@@ -209,23 +182,19 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
     // ------------------------------------------------------------------
 
     /**
-     * <b>必须 READ_COMMITTED，这是本方法能不能封住重复返还的前提。</b>
+     * 必须 READ_COMMITTED——RR 下 read view 在锁卡前的首条 SELECT（读售后动作行）就固定，
+     * 锁卡后 {@code sumSuccessRefundByOrderForUpdate} 的额度聚合仍走那份旧视图。
      *
-     * <p>MySQL 8 默认 REPEATABLE READ，一致性读视图在事务的第一条普通 SELECT 时就固定。
-     * 本方法的第一条读是「读售后动作行」，发生在锁卡之前；此后
-     * {@code sumSuccessRefundByOrderForUpdate} 的额度聚合仍会走那份锁卡前的旧视图。
-     * 攻击序列：同一订单两条合法待执行动作（同任务可多次申诉，{@code uk_after_sale_source}
+     * <p>攻击序列：同一订单两条合法待执行动作（同任务可多次申诉，{@code uk_after_sale_source}
      * 因 appealId 不同拦不住）→ T2 先读动作行建立旧 read view → T1 走完锁卡/聚合/返还/标记成功并提交
      * → T2 在卡行锁上醒来，聚合读到的 used 仍是 0 → 判定额度充足 → 第二次全额返还。
      * 降到 READ_COMMITTED 后每条语句读最新已提交版本，拿到卡锁再聚合才看得见赢家的成功行。</p>
      *
-     * <p>本仓已踩过同型坑并留有权威修法：{@code RechargeIssueTxImpl.issue} 用 READ_COMMITTED
-     * 修复「同用户并发发两张卡」，其注释同时说明了<b>为什么不改用 FOR SHARE 锁定读</b>——
-     * 对二级索引做范围锁定读在 RR 下会留 gap 锁，两笔不相关的并发售后会在相邻索引间隙上互等死锁。
-     * 降隔离级别零新增锁面，是同一处方。</p>
+     * <p><b>为什么不改用 FOR SHARE 锁定读</b>：对二级索引做范围锁定读在 RR 下会留 gap 锁，
+     * 两笔不相关的并发售后会在相邻索引间隙上互等死锁；降隔离级别零新增锁面。
+     * 同型坑与同一处方见 {@code RechargeIssueTxImpl.issue}（同用户并发发两张卡）。</p>
      *
-     * <p>入口断言 ACTION_STATUS=2执行中：认领已由 {@link #claimIndependent} 独立提交，
-     * 本方法不再认领（再认领一次就把 P0 的病灶搬回来了）。</p>
+     * <p>入口断言 ACTION_STATUS=2执行中，本方法不再认领。</p>
      */
     @Override
     @Transactional(rollbackFor = Exception.class, propagation = Propagation.REQUIRES_NEW,
@@ -234,11 +203,8 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         DeliveryClock.requireTime(now, "当前时间");
         requireId(id, "售后动作ID");
         requireOperator(opUserId);
-        // 隔离级别是本包唯一挡住重复全额返还的机制，但注解无法自证：REQUIRED 传播下若被编排层
-        // 的 @Transactional 包住，Spring 默认 validateExistingTransaction=false，会静默沿用外层
-        // 事务的隔离级别（MySQL 默认 RR），锁卡后的额度聚合又读回锁卡前的旧视图——P0 在零报错的
-        // 情况下失效。故传播定为 REQUIRES_NEW（物理上无法被吞并），并在此处再加一道运行时断言：
-        // 两条防线同时失守的概率远低于只靠注解。
+        // 注解无法自证隔离级别（被外层事务包住时静默沿用 RR 且零报错）：
+        // 传播定为 REQUIRES_NEW 物理上不可吞并，再加运行时断言双保险
         Integer actual = TransactionSynchronizationManager.getCurrentTransactionIsolationLevel();
         if (actual == null || actual != TransactionDefinition.ISOLATION_READ_COMMITTED) {
             throw new JbkException("售后返还事务隔离级别不是 READ_COMMITTED（实际 " + actual
@@ -273,8 +239,7 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
                 requireAmount(action.getRefundServiceFen(), "配送费返还金额"),
                 requireAmount(action.getRefundProductMl(), "水品返还水量"));
         if (refund.isZero()) {
-            // refundCardAssets 的 (amountFen>0 OR ml>0) 会让零额度返还静默变成 0 行，
-            // 与「卡前态漂移」混为一谈；在这里先拒绝，错因才是准的
+            // 零额度会让 refundCardAssets 静默 0 行、与「卡前态漂移」混淆，先拒绝错因才准
             throw new JbkException("零额度动作不应进入卡内返还事务");
         }
         long totalFen = refund.totalFen();
@@ -339,9 +304,8 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
             throw new JbkException("水卡权益返还影响行数异常：卡前态或状态漂移，账本断裂");
         }
 
-        // ── ⑧ 唯一流水：一笔混合返还只插一条，同时记正的金额与水量变动 ──
-        // AFTER 用 Math.addExact(前态, delta) 的预期值（铁律③），不再 selectById 重读：
-        // 重读拿到的是「读的那一刻」的值，与本次变动之间可以插进任何其他写入，对账时反而更不可靠
+        // ── ⑧ 唯一流水：一笔混合返还只插一条 ──
+        // AFTER 用前态+delta 的预期值（铁律③），不 selectById 重读——重读值可能已被其他写入插队
         long amountAfter = Math.addExact(oldAmount, totalFen);
         long mlAfter = Math.addExact(oldMl, refund.productMl());
         WsWalletFlow flow = new WsWalletFlow()
@@ -358,15 +322,14 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         flow.setCreateBy(opUserId);
         flow.setCreateTime(now);
         flow.setUpdateTime(now);
-        // 撞 uk_wallet_flow_biz_key 不捕获：本单已入过账，整事务回滚是唯一正确结果（铁律②），
-        // 捕获后「按已完成继续」会让 markSuccess 给一笔没发生的返还盖成功章
+        // 撞 uk_wallet_flow_biz_key 不捕获、整事务回滚（铁律②）：
+        // 捕获后继续会让 markSuccess 给一笔没发生的返还盖成功章
         if (walletFlowMapper.insert(flow) != 1) {
             throw new JbkException("售后返还流水插入影响行数异常");
         }
 
-        // ── ⑧bis 权益批次回补（E2E-04 包D-4，REQ-061）：卡加回多少，批次就补回多少 ──
-        // 只加卡不回补批次，多出来的余额永远凑不出批次额度，用户看得见却花不掉；
-        // 回补目标由原配送消费的分摊键定位，每个批次最多补回它当初为这一单扣走的额度。
+        // ── ⑧bis 权益批次回补（E2E-04 包D-4，REQ-061）：卡加回多少批次就补回多少，
+        // 回补目标由原消费分摊键定位（只加卡不回补，余额看得见花不掉）──
         entitlementLedger.restoreOnRefundBack(
                 new EntitlementLedger.CardAfter(card.getId(), card.getUserId(), card.getExpireTime(),
                         amountAfter, mlAfter),
@@ -381,9 +344,8 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
             throw new JbkException("售后动作标记完成影响行数异常：状态或额度在执行期漂移");
         }
 
-        // ── ⑩ 正向状态审计与业务同事务（D-215 边界：REQUIRES_NEW 只留给拒绝/失败证据）──
-        // payload 刻意不含执行时刻：recordReliableOnce 撞键时会读回既有行逐项比对语义，
-        // 掺进时间戳会让本该幂等的重放核验必然失败并把主事务拖回滚
+        // ── ⑩ 正向状态审计与业务同事务（D-215：REQUIRES_NEW 只留给拒绝/失败证据）──
+        // payload 不含执行时刻：撞键时按语义比对，掺时间戳会让幂等重放核验必然失败并拖回滚主事务
         domainEventService.recordReliableOnce(OpsEnum.EventType.AFTER_SALE, action.getAfterSaleNo(),
                 "AFTERSALE_DONE:" + action.getAfterSaleNo(),
                 ActionStatus.PROCESSING.getDesc(),
@@ -400,10 +362,8 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
                         .set("refundAmount", totalFen)
                         .set("amountAfter", amountAfter)
                         .set("mlAfter", mlAfter));
-        // ── ⑪ 分润冲减登记（D-420 R2 段1，同事务动作级 outbox）：只登记一条不可变
-        // 动作事实（单行 INSERT，零分账读，不可失败路径）；分摊/校验/明细全在独立
-        // 执行事务，冲减侧异常置需人工，绝不回滚本次退款。补偿/纯水量/配送费返还
-        // 在 registerForAction 内明确 no-op；基数取 markSuccess 刚钉死的实际退款额
+        // ── ⑪ 分润冲减登记（D-420 R2 段1，同事务动作级 outbox）：单行 INSERT 不可失败路径；
+        // 分摊/校验在独立执行事务，冲减侧异常绝不回滚本次退款；基数取 markSuccess 刚钉死的实退额
         WsAfterSaleAction registered = new WsAfterSaleAction();
         registered.setId(action.getId());
         registered.setOrderId(action.getOrderId());
@@ -419,10 +379,7 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
     // ④ 失败/终局落痕（独立提交）
     // ------------------------------------------------------------------
 
-    /**
-     * 失败证据独立提交（铁律④后半句）：主事务回滚保住「钱没动」，这条独立事务保住「为什么没动」。
-     * 与主事务同生共死的话，回滚会把终态和错因一起抹掉，失败变成无痕事件。
-     */
+    /** 失败证据独立提交（铁律④后半句）：主事务回滚保「钱没动」，本事务保「为什么没动」。 */
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void markTerminalIndependent(Long id, Integer expectedVersion, int toStatus,
@@ -433,13 +390,12 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         ActionStatus target = ActionStatus.getByValue(toStatus);
         if (target != ActionStatus.RETRY_WAIT && target != ActionStatus.RECONCILIATION_REQUIRED
                 && target != ActionStatus.TERMINATED) {
-            // 状态机允许 PROCESSING→SUCCESS，但成功只能由资金事务在写完账之后盖章；
-            // 放行这里等于给出一条「不写账也能标成功」的旁路
+            // 成功只能由资金事务写完账后盖章，放行即「不写账也能标成功」的旁路
             throw new JbkException("本方法只受理可重试/需人工对账/已终止三种落点");
         }
         boolean retryable = StrUtil.isNotBlank(nextRetryTime);
         if (retryable != (target == ActionStatus.RETRY_WAIT)) {
-            // XML 用 nextRetryTime 是否为空驱动「计数递增 + 上限闸」分支，二者必须与目标态互为充要
+            // XML 用 nextRetryTime 是否为空驱动「计数递增 + 上限闸」分支，必须与目标态互为充要
             throw new JbkException("重试排期与目标状态不匹配：" + target.getDesc());
         }
         if (retryable) {
@@ -447,13 +403,8 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         }
         String safeError = truncateError(lastError);
 
-        // 前态版本必须在本事务内重读，不能用调用方传进来的那个：
-        // claimIndependent 独立提交时把 VERSION 加了 1，而它只返回 boolean，编排层手上永远是
-        // claim **之前** 的版本。用旧版本做 CAS 谓词必然 0 行，于是每次执行失败都落进下面的
-        // 重读分流；而分流里只有「重试耗尽」一支会重发 CAS，普通可重试失败仅记一条审计就返回——
-        // 动作行永久停在 2执行中，claimForExecute 只认 PENDING/RETRY_WAIT 再也捡不起来，
-        // 无终态、无 NEXT_RETRY_TIME。这正是 claim 独立事务想消灭的失败模式从状态 1 平移到状态 2。
-        // 本方法自身就是那个 REQUIRES_NEW 事务，重读天然在事务内，读到的即最新已提交版本。
+        // 前态版本必须在本事务内重读：claim 已把 VERSION +1 而编排层手上是旧值，
+        // 用旧版本做 CAS 必然 0 行，动作会永久停在 2执行中（claimForExecute 只认 1/4 捡不起来）
         WsAfterSaleAction claimed = actionMapper.selectByIdIncludingDeleted(id);
         Integer casVersion = ObjectUtil.isNull(claimed) ? expectedVersion : claimed.getVersion();
 
@@ -467,8 +418,7 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
             return;
         }
 
-        // 影响 0 行：重读现状再分流。绝不沿用调用方那份已随主事务回滚的对象——
-        // 它的 VERSION 与状态在库里早已不成立（做法同 RechargeCreditFailureTxImpl）
+        // 影响 0 行：重读现状再分流，绝不沿用已随主事务回滚的对象（同 RechargeCreditFailureTxImpl）
         WsAfterSaleAction current = actionMapper.selectByIdIncludingDeleted(id);
         if (ObjectUtil.isNull(current)) {
             recordTerminalMiss(id, null, target, "售后动作行读不回，落痕失败：" + safeError);
@@ -483,8 +433,7 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         }
         if (actual == ActionStatus.PROCESSING && retryable
                 && requireAmount(current.getRetryCount(), "重试次数") >= MAX_RETRY_COUNT) {
-            // 上限闸让可重试落点影响 0 行 = 重试耗尽：改判需人工对账，钱不动但必须有人接手。
-            // 用重读到的 VERSION 而不是入参版本
+            // 重试耗尽：改判需人工对账，用重读到的 VERSION 而非入参版本
             int upgraded = actionMapper.markTerminal(id, current.getVersion(),
                     ActionStatus.RECONCILIATION_REQUIRED.getValue(),
                     AfterSaleTransitions.requireSources(ActionStatus.RECONCILIATION_REQUIRED.getValue()),
@@ -509,10 +458,9 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         return switch (source) {
             case DELIVERY_CANCEL -> TradeEnum.FlowType.REFUND.getValue();
             case DELIVERY_APPEAL -> TradeEnum.FlowType.COMPENSATE.getValue();
-            // 核账来源已在入口拒绝；正向枚举而非 default，将来新增来源会在此立刻暴露而不是静默归类
+            // 正向枚举而非 default：新增来源在此立刻暴露而非静默归类
             case WATER_ABNORMAL -> throw new JbkException("取水异常核账不产生资金流水");
-            // 充值退款（包D-5）走机构退款：钱原路退回支付账户，卡内变动是「权益冲减」而非返还，
-            // 由 EntitlementRefundTxServiceImpl 写自己的负向流水。落到这里说明动作类型判定被绕过了
+            // 充值退款走机构退款路径写自己的负向流水，落到这里说明动作类型判定被绕过
             case RECHARGE_REFUND -> throw new JbkException("充值退款不走卡内返还流水，由权益批次冲正路径写入");
         };
     }
@@ -525,10 +473,7 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         return "AFTERSALE:" + afterSaleNo;
     }
 
-    /**
-     * 落痕落空的独立证据：状态没能推进这件事本身必须留痕，否则运营只看到一条卡在中间态、
-     * 没有任何线索的动作行。证据走 REQUIRES_NEW，本事务再失败也带不走它。
-     */
+    /** 落痕落空的独立证据（REQUIRES_NEW）：状态没能推进这件事本身必须留痕，否则中间态无线索。 */
     private void recordTerminalMiss(Long id, WsAfterSaleAction current, ActionStatus target, String reason) {
         String eventKey = ObjectUtil.isNull(current) || StrUtil.isBlank(current.getAfterSaleNo())
                 ? String.valueOf(id) : current.getAfterSaleNo();
@@ -553,8 +498,7 @@ public class AfterSaleActionTxServiceImpl implements IAfterSaleActionTxService {
         if (ObjectUtil.equals(status, UserEnum.CardStatus.CANCELLED.getValue())) {
             throw new JbkException("返还目标水卡已注销，拒绝返还");
         }
-        // 白名单而非黑名单：refundCardAssets 只认 1/2/3，未登记状态在这里就要拒绝，
-        // 否则会退化成一次影响 0 行的假失败，错因归到「前态漂移」上
+        // 白名单：refundCardAssets 只认 1/2/3，未登记状态在此拒绝，否则退化成「前态漂移」的假失败
         if (ObjectUtil.equals(status, UserEnum.CardStatus.NORMAL.getValue())
                 || ObjectUtil.equals(status, UserEnum.CardStatus.FROZEN.getValue())
                 || ObjectUtil.equals(status, UserEnum.CardStatus.EXPIRED.getValue())) {

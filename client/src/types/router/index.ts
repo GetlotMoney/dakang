@@ -68,6 +68,8 @@ export interface RouteMeta extends Record<string | number | symbol, unknown> {
   parentPath?: string
   /** 展示菜单对应的业务根路径；用于内部页面保持一级菜单激活 */
   menuRootPath?: string
+  /** 同一技术根拆分展示时，该工作区拥有的精确页面路径。 */
+  menuOwnedPaths?: string[]
   /** 是否为从完整路由树投影出的一级直达菜单 */
   isDirectMenu?: boolean
 }

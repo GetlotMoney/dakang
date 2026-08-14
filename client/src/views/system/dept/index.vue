@@ -51,7 +51,6 @@
 
   defineOptions({ name: 'Dept' })
 
-  // 权限判断函数
   const hasPermission = (perm: string) => {
     return useUserStore().rbacMenuList.some((item) => item.menuWebPerms === perm)
   }
@@ -59,7 +58,6 @@
   type DeptListItem = Api.SystemManage.DeptListItem
   type UserListItem = Api.SystemManage.UserListItem
 
-  // 状态管理
   const loading = ref(false)
   const isExpanded = ref(false)
   const tableRef = ref()
@@ -77,15 +75,12 @@
     }
   }
 
-  // 弹窗相关
   const dialogType = ref<DialogType>('add')
   const dialogVisible = ref(false)
   const currentDeptData = ref<Partial<DeptListItem>>({})
 
-  // 原始数据
   const tableData = ref<DeptListItem[]>([])
 
-  // 切换展开/收起
   const toggleExpand = () => {
     isExpanded.value = !isExpanded.value
     const toggleRows = (rows: DeptListItem[], expand: boolean) => {
@@ -99,7 +94,6 @@
     toggleRows(tableData.value, isExpanded.value)
   }
 
-  // 获取部门树形数据
   const getDeptTree = async (): Promise<void> => {
     loading.value = true
     try {
@@ -112,7 +106,6 @@
     }
   }
 
-  // 表格列配置
   const { columnChecks, columns } = useTableColumns(() => [
     {
       prop: 'deptName',
@@ -161,7 +154,6 @@
     }
   ])
 
-  // 显示弹窗
   const showDialog = (type: DialogType, row?: DeptListItem): void => {
     dialogType.value = type
     currentDeptData.value = row || {}
@@ -170,7 +162,6 @@
     })
   }
 
-  // 删除部门
   const deleteDept = (row: DeptListItem): void => {
     ElMessageBox.confirm('确定要删除该部门吗？', '删除部门', {
       confirmButtonText: '确定',

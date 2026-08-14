@@ -12,17 +12,9 @@ import lombok.experimental.Accessors;
 import java.io.Serializable;
 
 /**
- * 退款单 Po（E2E-04 包B；严格对齐 deploy/mysql/migrations/2026-07-29-aftersale-e2e04-b.sql
- * 与 deploy/mysql/init/02-ws-business.sql 的同一份 schema）。
- *
- * <p><b>本表只表示支付机构（Refund-Sim / 未来微信）的金额退款</b>，
- * 不表示水卡余额或水量返还——后者由 ws_after_sale_action + ws_wallet_flow 表达。
- * 任务书 3.2 明令「内部水卡返还不得伪造 ws_refund 或 ws_payment」：
- * 一旦内部返还也往这里写一行，对账口径就把「没出过公司账户的钱」算成了对外退款。</p>
- *
- * <p>{@code AFTER_SALE_ID} 上有唯一键 {@code uk_refund_after_sale}：一个售后动作至多一张退款单。
- * 这是重复退款的物理闸，不靠应用层查重（铁律②）。该列可空，唯一键对 NULL 不去重，
- * 因此将来非售后来源的退款单不受影响。</p>
+ * 退款单 Po（E2E-04 包B；严格对齐 2026-07-29-aftersale-e2e04-b.sql 与 02-ws-business.sql 同一份 schema）。
+ * 只表示支付机构金额退款，内部水卡返还不得伪造 ws_refund/ws_payment（任务书 3.2），后者走 ws_after_sale_action + ws_wallet_flow。
+ * {@code AFTER_SALE_ID} 唯一键 uk_refund_after_sale 是重复退款的物理闸（铁律②）；该列可空，唯一键对 NULL 不去重。
  */
 @Getter
 @Setter

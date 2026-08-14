@@ -1,11 +1,5 @@
 package com.jbk.tool.consts;
 
-/**
- * @ClassName Constant
- * @Author xs
- * @Date 2024/6/7 14:06
- * @Version 1.0
- */
 public interface ApiConst {
     // 占位符
     String SYS_PLACEHOLDER = "1";

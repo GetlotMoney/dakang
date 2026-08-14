@@ -10,7 +10,9 @@ import { cardApi, resolveCardSelection } from '@/api/card'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
 import { orderApi } from '@/api/order'
+import AppBottomActionBar from '@/components/app-bottom-action-bar.vue'
 import AppNavbar from '@/components/app-navbar.vue'
+import AppPageState from '@/components/app-page-state.vue'
 import {
   AVAILABILITY_LABELS,
   CARD_BLOCK_LABELS,
@@ -21,7 +23,7 @@ import {
   formatMl,
   PAY_WAY_LABELS,
 } from '@/utils/format'
-import { backOr, redirectTo } from '@/utils/navigation'
+import { backOr, goTo, redirectTo } from '@/utils/navigation'
 import {
   buildCreateWaterOrderPayload,
   canSubmitWater,
@@ -67,7 +69,6 @@ const pageState = ref<'loading' | 'ready' | 'error'>('loading')
 /** 报价失效/会话过期：主按钮永久禁用，必须重新扫码，不允许在失效页面反复点提交。 */
 const quoteInvalid = ref(false)
 const errorMessage = ref('')
-const errorImage = ref<'content' | 'network'>('network')
 
 const scanSessionId = ref('')
 const context = ref<WaterDeviceContext | null>(null)
@@ -172,7 +173,6 @@ onLoad((query?: Record<string, string | undefined>) => {
   const sessionId = query?.scanSessionId
   if (!sessionId) {
     pageState.value = 'error'
-    errorImage.value = 'content'
     errorMessage.value = '请从首页重新扫码进入'
     return
   }
@@ -209,7 +209,6 @@ async function loadAll() {
       return
     }
     pageState.value = 'error'
-    errorImage.value = 'network'
     errorMessage.value = error instanceof ContractError ? error.message : '设备信息加载失败，请重试'
   }
 }
@@ -225,22 +224,15 @@ function markQuoteInvalid(error: unknown) {
   context.value = null
   eligibility.value = null
   pageState.value = 'error'
-  errorImage.value = 'content'
   errorMessage.value = error instanceof ContractError && error.code === 'SCAN_QUOTE_CHANGED'
     ? '报价已变化，请重新扫码'
     : '报价已变化或已超时，请重新扫码'
 }
 
 /**
- * 选卡核心：CARD-SCOPE 契约「预检卡=下单卡」，换卡必须重新预检，绝不复用旧卡的预检结果。
- *
- * <p><b>失败一律抛出，绝不在这里吞。</b>两个调用方要的处置完全不同：加载期（单卡自动选中）
- * 失败必须落到错误页，因为那时页面上没有任何可点的卡、也就没有重试入口；用户手动切卡失败
- * 只需原位提示，旧卡与旧预检继续有效。曾经把 catch 写在这里，结果加载期失败被吞掉、
- * loadAll 照常把 pageState 置 'ready'，单卡用户拿到一张「卡区空空、按钮永久灰掉、
- * 还写着'请先选择'」的页面——比不兜底更糟。</p>
- *
- * <p>card 与 eligibility 只在预检成功后成对写入，绝不出现「卡换了、预检还是旧卡的」。</p>
+ * 选卡核心：CARD-SCOPE「预检卡=下单卡」，换卡必须重新预检，绝不复用旧卡的预检结果。
+ * 失败一律抛出不在这里吞：加载期失败要落错误页、手动切卡失败只需原位提示，两个调用方处置不同。
+ * card 与 eligibility 只在预检成功后成对写入，绝不出现「卡换了、预检还是旧卡的」。
  */
 async function applyCard(cardId: string) {
   switching.value = true
@@ -306,44 +298,56 @@ async function handleSubmit() {
     submitting.value = false
   }
 }
+
+/**
+ * 吸底栏上展示的阻断原因：按「设备不可用 → 水卡受限 → 表单错误 → 切卡在途」取第一条。
+ * 纯展示挑选，不参与 canSubmit——能不能提交仍只由 canSubmitWater 判定。
+ */
+const blockReason = computed(() => {
+  if (availabilityNotice.value) {
+    return availabilityNotice.value
+  }
+  if (cardBlockNotice.value) {
+    return cardBlockNotice.value
+  }
+  if (formError.value) {
+    return formError.value
+  }
+  return switching.value ? '正在切换水卡' : ''
+})
 </script>
 
 <template>
-  <view class="page-shell">
+  <view
+    class="page-shell"
+    :class="{ 'page-shell--with-bar': pageState === 'ready' && !!context }"
+  >
     <AppNavbar title="取水确认" back-to="U01" />
     <wd-toast />
 
-    <view v-if="pageState === 'loading'" class="page-section loading-box">
-      <wd-loading />
-      <view class="muted-text">
-        正在加载设备信息…
-      </view>
+    <view v-if="pageState === 'loading'" class="page-section">
+      <AppPageState state="loading" :row-col="[1, 1, 1, { width: '70%' }]" />
     </view>
 
     <view v-else-if="pageState === 'error'" class="page-section">
-      <wd-status-tip :image="errorImage" :tip="errorMessage">
-        <template #bottom>
-          <view class="status-actions">
-            <wd-button plain @click="backOr('U01')">
-              返回首页
-            </wd-button>
-          </view>
+      <AppPageState state="error" :message="errorMessage">
+        <template #actions>
+          <wd-button plain @click="backOr('U01')">
+            返回首页
+          </wd-button>
         </template>
-      </wd-status-tip>
+      </AppPageState>
     </view>
 
-    <!--
-      门只看 context，绝不能再叠 eligibility：多卡用户（可用卡≥2）在选卡之前不做预检、
-      eligibility 恒 null，而触发预检的选卡列表本身就在这个门里面——叠上去页面就自锁，
-      正文整块不渲染，用户只能物理返回。预检结论缺失由 canSubmit 的 hasEligibility 兜住。
-    -->
+    <!-- 门只看 context，绝不能再叠 eligibility：多卡用户选卡前 eligibility 恒 null 而选卡列表就在门内，
+         叠上去页面自锁；预检结论缺失由 canSubmit 的 hasEligibility 兜住 -->
     <template v-else-if="context">
       <view class="page-section">
         <wd-card custom-class="block-card">
           <template #title>
             <view class="card-title-row">
               <view class="card-title-text">
-                {{ context.stationName }} · {{ context.deviceNo }}
+                {{ context.stationName }}
               </view>
               <view class="tag-row">
                 <wd-tag :type="context.onlineStatus === 'ONLINE' ? 'success' : 'danger'" plain>
@@ -356,14 +360,13 @@ async function handleSubmit() {
             </view>
           </template>
           <wd-cell-group>
-            <wd-cell title="设备名称" :value="context.deviceName" />
-            <wd-cell title="出水口 / 水种" :value="`${context.outlet.outletNo} 号口 · ${context.outlet.waterTypeName}`" />
+            <wd-cell title="设备名称" :value="context.deviceName" ellipsis />
+            <wd-cell title="设备编号" :value="context.deviceNo" ellipsis />
+            <wd-cell title="出水口" :value="`${context.outlet.outletNo}号口`" />
+            <wd-cell title="水种" :value="context.outlet.waterTypeName" ellipsis />
             <wd-cell title="单价" :value="`${formatFen(context.outlet.unitPriceFenPerLiter)}/升`" />
             <wd-cell title="报价有效至" :value="formatBizTime(context.expiresAt)" />
           </wd-cell-group>
-          <view class="quote-hint">
-            超时或价格变化后需重新扫码。
-          </view>
         </wd-card>
       </view>
 
@@ -389,7 +392,7 @@ async function handleSubmit() {
           </view>
           <view class="volume-row">
             <view class="muted-text">
-              自定义水量（升，步长 1L）
+              自定义水量（升）
             </view>
             <wd-input-number :model-value="planLiters" :min="1" :step="1" input-width="56px" @change="onLitersChange" />
           </view>
@@ -398,9 +401,6 @@ async function handleSubmit() {
             <view class="estimate-value">
               {{ formatFen(estimatedAmountFen) }}
             </view>
-          </view>
-          <view class="muted-text">
-            实际以设备出水结果结算。
           </view>
           <view v-if="formError" class="form-error">
             {{ formError }}
@@ -468,45 +468,58 @@ async function handleSubmit() {
             />
           </wd-cell-group>
           <!-- 只在真的一张卡都没有时才这么说：有卡未选是 choose 态，说成"暂无可用水卡"是误导 -->
-          <view v-else-if="cardHint === 'none'" class="muted-text">
-            当前账号暂无可用水卡，无法完成取水下单。
+          <view v-else-if="cardHint === 'none'" class="hint-with-action">
+            <text class="muted-text">
+              暂无可用水卡
+            </text>
+            <wd-button size="small" plain @click="goTo('U10')">
+              去购卡
+            </wd-button>
           </view>
           <!-- 有卡却没能选中（预检未通过）：不能说"暂无可用水卡"，也不能叫用户去点不存在的列表 -->
-          <view v-else-if="cardHint === 'unresolved'" class="muted-text">
-            暂不能下单，请返回首页重新扫码。
+          <view v-else-if="cardHint === 'unresolved'" class="hint-with-action">
+            <text class="muted-text">
+              本次扫码不能下单
+            </text>
+            <wd-button size="small" plain @click="backOr('U01')">
+              重新扫码
+            </wd-button>
           </view>
         </wd-card>
       </view>
 
-      <view class="page-section confirm-footer">
-        <wd-button block size="large" :disabled="!canSubmit" :loading="submitting" @click="handleSubmit">
-          确认并开始取水
-        </wd-button>
-      </view>
+      <AppBottomActionBar>
+        <!-- 阻断原因贴着主按钮，只显示当前生效的第一条；判据仍在 canSubmit -->
+        <template #summary>
+          <text class="muted-text">
+            {{ blockReason || '预计金额' }}
+          </text>
+          <text v-if="!blockReason" class="money bar-amount">
+            {{ formatFen(estimatedAmountFen) }}
+          </text>
+        </template>
+        <template #primary>
+          <wd-button
+            size="large"
+            type="primary"
+            :disabled="!canSubmit"
+            :loading="submitting || switching"
+            @click="handleSubmit"
+          >
+            确认并开始取水
+          </wd-button>
+        </template>
+      </AppBottomActionBar>
     </template>
   </view>
 </template>
 
 <style scoped lang="scss">
-.quote-hint {
-  padding: 8rpx 32rpx 16rpx;
-  font-size: 24rpx;
-  line-height: 1.5;
-  color: #8c8c8c;
-}
-
-.loading-box {
+.hint-with-action {
   display: flex;
-  flex-direction: column;
+  gap: var(--sp-3);
   align-items: center;
-  gap: 12px;
-  padding: 64px 0;
-}
-
-.status-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 20px;
+  justify-content: space-between;
 }
 
 .card-title-row {
@@ -561,7 +574,8 @@ async function handleSubmit() {
   font-size: 13px;
 }
 
-.confirm-footer {
-  margin-top: 20px;
+.bar-amount {
+  font-size: var(--fs-title);
+  font-weight: 600;
 }
 </style>

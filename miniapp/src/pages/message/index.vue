@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { MessageDomain, MessageItem } from '@/api/message'
+import AppPageState from '@/components/app-page-state.vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { messageApi } from '@/api/message'
@@ -25,7 +26,7 @@ interface DomainTab {
   title: string
 }
 
-/** 业务域筛选：全部 + 路由合同 domain 枚举（C02：water/card/delivery/owner/system）。 */
+/** 业务域筛选：全部 + 路由合同 domain 枚举（C02：water/card/delivery/owner/system/mall）。 */
 const DOMAIN_TABS: DomainTab[] = [
   { name: 'all', title: '全部' },
   { name: 'water', title: '用水' },
@@ -33,6 +34,7 @@ const DOMAIN_TABS: DomainTab[] = [
   { name: 'delivery', title: '配送' },
   { name: 'owner', title: '经营' },
   { name: 'system', title: '系统' },
+  { name: 'mall', title: '商城' },
 ]
 
 const CHANNEL_LABELS: Record<MessageItem['channel'], string> = {
@@ -126,7 +128,7 @@ async function openMessage(item: MessageItem) {
 
       <view class="page-section">
         <view v-if="errorMessage" class="list-error">
-          <wd-status-tip image="network" :tip="errorMessage" />
+          <AppPageState state="error" :message="errorMessage" />
           <view class="list-error-action">
             <wd-button size="small" plain @click="refresh">
               重新加载
@@ -168,10 +170,8 @@ async function openMessage(item: MessageItem) {
             </wd-cell>
           </wd-cell-group>
         </view>
-        <view v-else-if="loading" class="muted-text list-placeholder">
-          加载中…
-        </view>
-        <wd-status-tip v-else image="message" tip="暂无消息" />
+        <AppPageState v-else-if="loading" state="loading" :row-col="[1, 1]" />
+        <AppPageState v-else state="empty" message="暂无消息" />
       </view>
     </view>
   </view>
@@ -218,11 +218,6 @@ async function openMessage(item: MessageItem) {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
-}
-
-.list-placeholder {
-  padding: 24px 0;
-  text-align: center;
 }
 
 .list-error-action {

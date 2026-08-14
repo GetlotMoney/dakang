@@ -14,18 +14,10 @@ import java.security.NoSuchAlgorithmException;
  * REFUND_NO = "RF" + sha256(canonical) 前30位大写   // 总长 32，对齐 varchar(32)
  * </pre>
  *
- * <p><b>为什么以 afterSaleId 而不是 orderId 为基准</b>：一张订单在整个生命周期里可能有
- * 多个售后动作（取消、申诉补偿、核账），而「一个售后动作至多一张退款单」才是 R0-7 的口径，
- * 也正是 {@code uk_refund_after_sale} 所约束的粒度。以 orderId 派生会让同一订单的
- * 第二个售后动作撞上第一个的退款单号，表现为「退款单号已存在」而运营看不懂为什么。</p>
- *
- * <p>不含日期、不含序列、不依赖缓存：跨零点、重启、重放恒定同号。同一售后动作重放
- * 必然撞 {@code uk_refund_no}（也必然撞 {@code uk_refund_after_sale}），
- * 由数据库唯一键收敛为幂等命中（铁律②：幂等靠键，不靠应用层查重）。</p>
- *
- * <p>确定性还有第二重意义：退款单号是发给支付机构的 out_refund_no。若它含随机成分，
- * 一次「本地写库成功但请求发送超时」的重试就会用<b>新号</b>再发一次，
- * 而支付机构那边按 out_refund_no 幂等——两个号即两笔退款，用户收到双份钱。</p>
+ * <p>以 afterSaleId 而非 orderId 为基准：「一个售后动作至多一张退款单」是 R0-7 与
+ * {@code uk_refund_after_sale} 的粒度。不含日期/序列/缓存，重放恒同号、撞唯一键幂等（铁律②）；
+ * 确定性还防双退——含随机成分时「写库成功但发送超时」的重试会用新号再发，
+ * 支付机构按 out_refund_no 幂等，两个号即两笔退款。</p>
  *
  * @author dakang
  * @since 2026-07-29

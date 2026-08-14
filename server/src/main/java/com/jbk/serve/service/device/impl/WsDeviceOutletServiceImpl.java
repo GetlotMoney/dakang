@@ -5,6 +5,7 @@ import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.jbk.serve.mapper.device.WsDeviceMapper;
+import com.jbk.serve.service.trade.WaterBillingMath;
 import com.jbk.serve.mapper.device.WsDeviceOutletMapper;
 import com.jbk.serve.mapper.device.WsQrcodeMapper;
 import com.jbk.serve.service.device.IWsDeviceOutletService;
@@ -55,6 +56,7 @@ public class WsDeviceOutletServiceImpl extends ServiceImpl<WsDeviceOutletMapper,
     public Long saveData(WsDeviceOutletBo outletBo) {
         OptionalUtils.nullToElseThrow(deviceMapper.selectById(outletBo.getDeviceId()), "所属设备不存在");
         checkOutletNoUnique(outletBo.getDeviceId(), outletBo.getOutletNo(), null);
+        requireLegalPrice(outletBo.getOutletPrice());
         WsWaterType waterType = checkWaterType(outletBo.getWaterTypeId());
         WsDeviceOutlet outlet = BeanUtil.copyProperties(outletBo, WsDeviceOutlet.class);
         outlet.setWaterType(waterType.getWaterName());
@@ -67,6 +69,7 @@ public class WsDeviceOutletServiceImpl extends ServiceImpl<WsDeviceOutletMapper,
         WsDeviceOutlet exist = getById(outletBo.getId());
         OptionalUtils.nullToElseThrow(exist, "出水口不存在");
         checkOutletNoUnique(exist.getDeviceId(), outletBo.getOutletNo(), outletBo.getId());
+        requireLegalPrice(outletBo.getOutletPrice());
         WsDeviceOutlet outlet = BeanUtil.copyProperties(outletBo, WsDeviceOutlet.class);
         // 归属设备不允许换绑（出水口是设备的物理部件）；MP 默认策略 null 字段不更新
         outlet.setDeviceId(null);
@@ -91,6 +94,20 @@ public class WsDeviceOutletServiceImpl extends ServiceImpl<WsDeviceOutletMapper,
         }
         // TODO 订单模块接入后：存在关联取水订单的出水口禁删（追溯根），改为禁用
         return removeById(id);
+    }
+
+    /**
+     * 单价写入侧校验：与读侧同一个实现。
+     *
+     * <p>此前写入侧零校验——「abc」「-100」「1.5」「999900」都能保存成功并在设备详情页
+     * 正常列出，直到用户扫到这个出水口才被读侧 fail-closed 打回。运营那一侧看到的是
+     * 「保存成功」，看不出是自己配错了；能看出来的是用户，而用户只会看到取不了水。</p>
+     *
+     * <p>刻意复用 {@link WaterBillingMath#requireOutletPrice}：写侧另写一份校验，
+     * 两份宽严一漂移，最松的那一处就重新变成错误计价的入口。</p>
+     */
+    private void requireLegalPrice(String outletPrice) {
+        WaterBillingMath.requireOutletPrice(outletPrice);
     }
 
     /** 同设备内出水口编号唯一（物理口位不可重复） */

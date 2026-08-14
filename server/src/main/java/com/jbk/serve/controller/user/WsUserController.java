@@ -1,6 +1,7 @@
 package com.jbk.serve.controller.user;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.jbk.serve.service.user.IWsUserService;
 import com.jbk.tool.annotation.MySaCheckOr;
 import com.jbk.tool.data.PageDataVo;
@@ -24,6 +25,11 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>REQ-018 一期口径：mock 用户与只读信息，后台不提供用户新增/编辑；
  * 水卡、授权成员、配送员审核随用户管理模块子页扩展。</p>
  *
+ * <p>权限口径：登录之外再要求 {@code user:user:query}（菜单功能点 1156），与 /user/profile/* 完全一致。
+ * 本控制器的 page/detail 与档案「身份资料」分区返回同一个 {@link WsUserVo}
+ * （{@code WsUserProfileServiceImpl.getIdentity} 就是直接委托 {@code wsUserService.getData}），
+ * 只给档案端点上闸门等于没上：不持该功能点的账号改打这两个老端点即可照读全量 C 端名单与个人详情。</p>
+ *
  * @author dakang
  * @since 2026-07-12
  */
@@ -38,7 +44,8 @@ public class WsUserController {
 
     @PostMapping("/page")
     @Operation(summary = "分页查询（按姓名/手机号筛选）")
-    @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)})
+    @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)}, permission = {
+            @SaCheckPermission(value = "user:user:query", type = StpKit.DRIVER_MANAGE)})
     public R<PageDataVo<WsUserVo>> page(
             @RequestBody @Validated(PageGroup.class) WsUserBo bo) {
         return R.ok(wsUserService.pageData(bo));
@@ -46,7 +53,8 @@ public class WsUserController {
 
     @PostMapping("/detail")
     @Operation(summary = "详情")
-    @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)})
+    @MySaCheckOr(login = {@SaCheckLogin(type = StpKit.DRIVER_MANAGE)}, permission = {
+            @SaCheckPermission(value = "user:user:query", type = StpKit.DRIVER_MANAGE)})
     public R<WsUserVo> detail(
             @RequestBody @Validated(IdGroup.class) WsUserBo bo) {
         return R.ok(wsUserService.getData(bo.getId()));

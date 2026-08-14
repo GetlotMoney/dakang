@@ -41,6 +41,13 @@ public class WsUserAddress extends BaseEntity implements Serializable {
     /** 省市区(max100) */
     private String region;
 
+    /**
+     * 收货区县行政区码(6位)：商城选仓的唯一判据（E2E-09 S2 增列）。
+     * <p>可空：存量地址只有 REGION 自由文本，禁止按文本猜测回填——猜错会把订单
+     * 派给根本不覆盖该地址的前置仓。未选区县的地址在商城结算处 fail-closed 提示补选。</p>
+     */
+    private String districtCode;
+
     /** 详细地址(max200) */
     private String addressDetail;
 

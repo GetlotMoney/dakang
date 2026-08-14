@@ -1,7 +1,7 @@
 # L2 购卡充值链可执行契约 v2
 
 > 日期：2026-07-21（有效期口径于 2026-07-25 被 D-213 修订，见下方失效声明）
-> 状态：内部技术实现已完成；正式微信支付、退款和生产财务能力待接入
+> 状态：以 `docs/requirements/demo-business-chain-matrix.md`（E2E-02 行）为唯一来源
 > 范围：仅 L2 购卡充值；H3 异常取水处理已拆出，不得在本契约中实施
 > 核心需求：REQ-003、REQ-006、REQ-007、REQ-008、REQ-021、REQ-022、REQ-023、REQ-042、REQ-043、REQ-061
 > 决策依据：用户已确认 D1～D8、G1 与 M1～M8
@@ -20,19 +20,7 @@
 公式由测试钉住」），所以这些描述对**代码**仍然准确，只是对**可售业务路径**不再成立——
 读本文推断「系统今天支持买有限期卡」会得出错误结论。
 
-> **本节曾有一处错误断言，2026-08-06 更正**：此前写作「线上无可达路径」，但当时
-> D-213 只写在 decisions.md 与本文里、**代码零守卫**——PC 建套餐时把售价设为正数、
-> 同时填 `expireDays`，校验全部通过、套餐正常上架、小程序判为可购，用户买完就拿到
-> 一张有限期付费卡。所谓"无可达路径"是推断，不是事实。现已在
-> `RechargeLimits.validatePackage` 落 `rejectPaidLimitedExpiry` 硬拒绝，
-> 由 `RechargeLimitsTest.paidPackageMustNotCarryExpiry` 变异验证。
-> 守卫**只加在套餐创建/售卖路径**，不加在 `validateSnapshotValues`——
-> 历史订单快照与权益入账要读旧数据，新规则不得让它们读不出来。
-
-
-
-本节之外的内容（幂等合同、支付两阶段事务、状态机、范围规范化算法、流水与对账口径）未被修订，
-仍然有效。
+守卫已落码：`RechargeLimits.validatePackage` 的 `rejectPaidLimitedExpiry` 硬拒绝付费套餐携带有效期（仅创建/售卖路径；快照回放与入账不受影响，理由见该方法 javadoc）。
 
 ## 1. 目标、范围与完成口径
 
@@ -56,11 +44,7 @@
 
 ### 1.2 三种完成等级
 
-1. **L2-T 内部技术闭环**：隔离 Pay-Sim 下的 Service/API/DB、事件收件箱、两阶段事务、原子入账、唯一流水和跨端查询合同通过。
-2. **L2-WX 外部能力闭环**：正式微信登录、JSAPI/小程序下单、`uni.requestPayment`、APIv3 验签解密、主动查单、关单及对账通过。
-3. **完整购卡充值真实闭环**：L2-A、L2-B、L2-WX、真实到账、小程序与 PC 回看及用户验收全部通过。
-
-E2E-02 已完成模拟环境内部验收。正式微信支付和生产财务状态以 `docs/requirements/demo-business-chain-matrix.md` 为准。
+L2-T＝隔离 Pay-Sim 内部技术闭环；L2-WX＝正式微信支付外部能力闭环；两者之上是含真实到账与用户验收的完整闭环。各等级达成状态见 `docs/requirements/demo-business-chain-matrix.md`（E2E-02 行，唯一来源）。
 
 ### 1.3 当前实现范围之外
 
@@ -69,7 +53,7 @@ E2E-02 已完成模拟环境内部验收。正式微信支付和生产财务状�
 - REQ-061 的完整退款折算与退款审批；
 - H3 取水异常补偿；
 - 正式微信支付、退款、分账和交易账单；
-- 任何测试账号直通、万能密码、按 `userId` 换 Token 或鉴权降级。
+- 万能密码、按 `userId` 换 Token 或鉴权降级；测试登录直通仅有 `/mini/test-login/by-phone` 一个例外，由独立开关 `mini.test-login.enabled` 门控（缺省不注册路由，与 Pay-Sim 开关互相独立，见 `MiniTestLoginController`）。
 
 ### 1.4 G1 宏观旅程治理
 
@@ -123,7 +107,7 @@ E2E-02 已完成模拟环境内部验收。正式微信支付和生产财务状�
 
 ## 3. 正式 AUTH 前置合同
 
-L2 Real 的任何接口都必须运行在合法 `KH_USER` 会话下。正式会话未闭合前，只能进行隔离的 Service/DB 测试，正常小程序构建不得把 recharge 域切 Real。
+L2 的任何接口都必须运行在合法 `KH_USER` 会话下。
 
 ### 3.1 登录接口
 
@@ -155,7 +139,7 @@ UNBOUND:
 - 服务端调用 `code2session`，不向前端返回 `openid` 或 `session_key`。
 - `BOUND` 用户必须同时满足 `DATA_STATUS=0`、`DISABLED_FLAG=1`、`USER_STATUS=1`。
 - 登录成功后显式创建 `StpKit.KH_USER` Token；`tokenName` 要么固定为 `dakang-token`，要么由客户端严格按响应存储，禁止两端口径不一致。
-- 401 清除正式 Token 并返回 C01；禁止回退 Mock 账号。
+- 401 清除正式 Token 并返回 C01。
 
 ### 3.2 手机号绑定
 
@@ -176,14 +160,6 @@ UNBOUND:
 - 手机号命中正常且尚未冲突的既有账号时完成安全绑定；命中其他 openid、禁用、注销或逻辑删除账号时拒绝。
 - 手机号不存在时允许建立最小用户主体：`USER_GENDER=NULL` 表示未知，不伪造男女；`DISABLED_FLAG=1`、`USER_STATUS=1`、`POINTS=0`，中性名称可后续修改，审计字段由系统主体和服务端时间写入。
 
-### 3.3 身份数据迁移约束
-
-- 新增 `uk_user_phone(USER_PHONE)`。
-- `WECHAT_XCX_OPENID` 扩展到能覆盖微信字段上限，并使用区分大小写的精确比较；新增 `uk_user_wechat_xcx_openid(WECHAT_XCX_OPENID)`。
-- 唯一键不包含 `DATA_STATUS`；注销/删除账号仍占用原身份，只能恢复或人工处理。
-- 迁移前检查重复手机号、非空 openid 重复、异常手机号，并将空字符串 openid 规范成 `NULL`。
-- 为支持最小用户主体，`USER_GENDER` 改为可空；后台与 VO 将 `NULL` 显示为“未知”。
-
 ## 4. API 与请求幂等合同
 
 ### 4.1 真实套餐
@@ -191,7 +167,7 @@ UNBOUND:
 `POST /mini/package/list`
 
 - 仅返回 `DATA_STATUS=0 AND PACKAGE_STATUS=1` 的套餐。
-- 返回 `id`、`packageName`、`payAmountFen`、`waterMl`、`bonusAmountFen`、`unitPriceSnap`、`expireDays`、`packageStatus`。
+- 返回字段以 `MiniPackageVo` 为准；其中 `purchasable` 是前端唯一可购判据，前端不得自行解析范围（`miniapp/src/api/recharge.ts`）。
 - 身份 Long ID 序列化为 string；金额、水量在前端经过安全范围校验后才转 number。
 - U10 可依据目标卡有效期类型隐藏/禁用不兼容套餐，创建接口必须再次校验。
 - PC 套餐页接真实 `ws_package` 数据；套餐新增/修改/上下架为 Demo 受控运营配置入口（2026-07-23 用户授权），服务端以 `RechargeLimits`+`WaterCardScope` 终审；审批流/财务菜单/后台充值仍未授权。
@@ -210,7 +186,8 @@ UNBOUND:
 }
 ```
 
-- `cardId/packageId` 为正十进制 Long 字符串；禁止用 JS number 承载身份 ID。
+- `cardId` 可缺省：缺省＝首次购卡（L2-A，支付成功后同事务发卡，见 §1.1），传值＝已有卡充值；同一 `requestId` 不得在两种模式间切换（`MiniRechargeCreateBo`）。
+- `cardId/packageId` 取值为正十进制 Long 字符串；禁止用 JS number 承载身份 ID。
 - `requestId` 必须是规范的小写、带连字符 RFC 4122 UUID；同次网络重试复用，不同购买动作重新生成。
 - 不接受自定义金额、前端金额、前端水量、`userId` 或可信 `PAY_SOURCE`。
 
@@ -227,7 +204,7 @@ ORDER_NO = "RC" + digest 前 30 位大写十六进制
 服务端顺序固定为：
 
 1. 先规范化输入、按会话用户计算订单号，并跨全部 `DATA_STATUS` 查询既有订单；命中后直接进入下述幂等核验，不因卡/套餐后来冻结、下架或改价而创建替代订单。
-2. 仅在确定没有既有订单时读取目标卡和套餐：卡必须 `DATA_STATUS=0`、属于会话用户、`CARD_STATUS=1`、创建时未过期且范围通过第 2.2 节；有限卡从服务端当前时间到 `EXPIRE_TIME` 的剩余有效期必须不少于 1 分钟。套餐必须 `DATA_STATUS=0/PACKAGE_STATUS=1`，全部数值通过第 4.4 节，并与卡的有效期类型和范围兼容。
+2. 仅在确定没有既有订单时读取目标卡和套餐（首次购卡无 cardId：跳过目标卡校验，支付成功后同事务发卡，见 §1.1）：卡必须 `DATA_STATUS=0`、属于会话用户、`CARD_STATUS=1`、创建时未过期且范围通过第 2.2 节；有限卡从服务端当前时间到 `EXPIRE_TIME` 的剩余有效期必须不少于 1 分钟。套餐必须 `DATA_STATUS=0/PACKAGE_STATUS=1`，全部数值通过第 4.4 节，并与卡的有效期类型和范围兼容。
 3. 以同一个服务端 `createTime` 冻结完整套餐、范围与目标卡资格快照，并按第 2.2 节计算不可变 `PAY_EXPIRE_TIME`，再进入 order+payment 同事务创建。并发插入命中唯一键的一方必须重新读取并走同一幂等核验，禁止把 DuplicateKey 直接当成功。
 
 创建事务必须同时写入：
@@ -291,20 +268,7 @@ ORDER_NO = "RC" + digest 前 30 位大写十六进制
 
 ### 5.1 保留与新增唯一键
 
-保留：
-
-- `ws_order.uk_order_no(ORDER_NO)`；
-- `ws_payment.uk_transaction_id(TRANSACTION_ID)`。
-
-新增：
-
-- `ws_payment.uk_payment_order_no(ORDER_NO)`；
-- `ws_payment.uk_payment_order_id(ORDER_ID)`；
-- `ws_wallet_flow.BIZ_IDEMPOTENCY_KEY varchar(64) NULL`；
-- `ws_wallet_flow.uk_wallet_flow_biz_key(BIZ_IDEMPOTENCY_KEY)`；
-- `ws_payment_event.uk_payment_event_source_channel_key(PAY_SOURCE, FACT_CHANNEL, PROVIDER_EVENT_KEY)`；
-- `ws_domain_event.BIZ_IDEMPOTENCY_KEY varchar(64) NULL` 与 `uk_domain_event_biz_key(BIZ_IDEMPOTENCY_KEY)`，仅为需要数据库级幂等的领域事件提供稳定业务键；
-- 第 3.3 节的手机号与 openid 唯一键。
+唯一键清单以 `deploy/mysql/init/02-ws-business.sql` 的 UNIQUE KEY 声明为准；增量迁移 `deploy/mysql/migrations/2026-07-22-l2-db.sql` 逐键校验既有结构并在不符时中止。
 
 充值流水业务键固定为：
 
@@ -327,39 +291,7 @@ RECHARGE:<orderNo>
 
 ### 5.3 `ws_payment_event`
 
-新表遵循项目通用字段顺序，并至少包含：
-
-| 字段 | 类型/可空 | 来源与语义 |
-|---|---|---|
-| `ID` | bigint PK | 自增主键 |
-| 通用审计字段 | 项目标准 | `DATA_STATUS` 必须保持 0，支付事件不做业务逻辑删除 |
-| `PAY_SOURCE` | tinyint NOT NULL | 服务端适配器常量：1 WECHAT、2 PAY_SIM |
-| `FACT_CHANNEL` | tinyint NOT NULL | 1 NOTIFY、2 QUERY、3 PAY_SIM |
-| `PROVIDER_EVENT_KEY` | varchar(100) NOT NULL | 微信通知 id、稳定查询事实键或稳定模拟事件键 |
-| `PAYMENT_ID` | bigint NULL | 可信共键关联后的支付单 ID，未知/错位时允许空 |
-| `ORDER_ID` | bigint NULL | 可信共键关联后的订单 ID，未知/错位时允许空 |
-| `ORDER_NO` | varchar(32) NOT NULL | 已验证/解密的外部商户订单号 |
-| `TRADE_STATE` | varchar(32) NOT NULL | 规范化支付事实状态；一期至少支持 SUCCESS / NOTPAY / CLOSED，其他状态只留证并进入人工核查 |
-| `TRANSACTION_ID` | varchar(64) NULL | SUCCESS 必填；非成功查询事实允许空；Pay-Sim 成功事实使用与微信不重叠的 SIM 命名空间 |
-| `PAY_AMOUNT` | bigint NULL | 支付方实际返回的金额，单位分；SUCCESS 必填，支付方未返回时必须为空，禁止用内部订单金额补造外部事实 |
-| `CURRENCY` | varchar(16) NULL | 支付方实际返回的币种；SUCCESS 必填且为 CNY，未返回时必须为空 |
-| `PAY_SUCCESS_TIME` | varchar(14) NULL | SUCCESS 必填并统一到 Asia/Shanghai；非成功查询事实允许空 |
-| `RAW_BODY` | mediumtext NULL | 原始签名正文或受保护查询证据，受 M5 保护 |
-| `RAW_BODY_SHA256` | char(64) NOT NULL | 完整性摘要，不是不可伪造或不可抵赖证明 |
-| `VERIFY_METHOD` | tinyint NOT NULL | WECHAT_SIGNATURE / WECHAT_QUERY / PAY_SIM_HMAC |
-| `SIGNATURE_SERIAL/TIMESTAMP/NONCE/VALUE` | 可空 | 通知重新核验材料；查询渠道允许空 |
-| `PROCESSING_STATUS` | tinyint NOT NULL | PENDING / PROCESSING / PROCESSED / RETRY_WAIT / RECONCILIATION_REQUIRED |
-| `RETRY_COUNT` | int NOT NULL | 重试次数，初始 0 |
-| `NEXT_RETRY_TIME` | varchar(14) NULL | 下次可 claim 时间 |
-| `CLAIM_TIME/LEASE_UNTIL` | varchar(14) NULL | Worker claim 与崩溃恢复租约 |
-| `RECOVERY_APPROVAL_GROUP_KEY` | varchar(64) NULL | 订单 6 同一支付事实组的恢复授权键；同组事件取值必须一致 |
-| `RECOVERY_APPROVED_BY` | bigint NULL | 订单 6 人工恢复授权人；仅受权对账动作可写 |
-| `RECOVERY_APPROVED_TIME` | varchar(14) NULL | 人工恢复授权时间 |
-| `RECOVERY_APPROVAL_REASON` | varchar(500) NULL | 人工恢复依据，必填且不得含敏感原文 |
-| `LAST_ERROR` | varchar(500) NULL | 最近一次结构化失败原因，不写密钥或原始敏感正文 |
-| `RECEIVED_TIME` | varchar(14) NOT NULL | 服务端接收时间 |
-| `PROCESSED_TIME` | varchar(14) NULL | 该事实完成业务处理的时间；SUCCESS 可为权益完成时间，NOTPAY/CLOSED 为事务 A 完成时间 |
-| `RAW_PURGED_TIME` | varchar(14) NULL | 原始证据清理时间 |
+列定义与语义唯一源见 `deploy/mysql/init/02-ws-business.sql` 的 `ws_payment_event` 建表 DDL（列 COMMENT 即字段合同）。
 
 状态字段约束：SUCCESS 必须同时具备交易号、正整数金额、CNY 和成功时间；NOTPAY/CLOSED 不得被解释为付款成功，缺失的外部字段保持 NULL。QUERY 的 `PROVIDER_EVENT_KEY` 固定为 `Q:` + 下列 UTF-8 规范串的 SHA-256 小写十六进制：`PAY_SOURCE|ORDER_NO|TRADE_STATE|TRANSACTION_ID-or-empty|PAY_SUCCESS_TIME-or-empty|PAY_AMOUNT-or-empty|CURRENCY-or-empty`；字段值字符集先行校验且分隔符不得进入值域。这样同一事实重复查询稳定命中，而同一订单从 NOTPAY 演进到 SUCCESS 或 CLOSED 时形成不同事件，不能被首个查询结果永久占位。NOTIFY 使用支付方通知 id，PAY_SIM 使用测试驱动生成的规范 UUID，三者不得互相复用命名空间。
 
@@ -374,7 +306,7 @@ RECHARGE:<orderNo>
 - 仅 `dev/test profile` 与 `mini.pay-sim.enabled=true` 双门控；production Bean 不注册，接口物理 404。
 - HMAC 密钥只从环境变量读取；空密钥拒绝启动；签名常量时间比较；默认只允许 localhost 或隔离测试网络。
 - 小程序正常路由没有“模拟支付成功”按钮，不保存密钥，也不直接调用 Pay-Sim。
-- 仅 `tools/pay-sim` 或隔离测试驱动页面外触发；HMAC 验证通过后进入与微信相同的事件事务 A 和权益事务 B。
+- 仅隔离环境 e2e 跑批脚本（`miniapp/e2e/run-*.js`）以登录会话在页面外触发；校验通过后进入与微信相同的事件事务 A 和权益事务 B。
 - Pay-Sim 不得绕过 `ws_payment_event` 直接调用权益入账 Service。
 - 持久测试库副作用每次均需用户单独授权。
 
@@ -392,7 +324,7 @@ RECHARGE:<orderNo>
    - `payment 4/order 5` 的迟到成功事实：条件推进为 `payment 2/order 6` 并置 RECONCILIATION_REQUIRED，严禁自动入账；
    - `payment 2/order 4`：新 SUCCESS 事件只允许先持久化为 PENDING。事务 A 禁止基于未锁定的卡或流水读取直接把它置 PROCESSED；必须由 Worker 进入事务 B 的只读幂等核验分支后收敛；
    - `payment 2/order 6`：默认置 RECONCILIATION_REQUIRED。只有同支付事实组已存在一致、仍处于活动 RETRY_WAIT/PROCESSING 的恢复授权组且 canonical 授权审计可核时，才继承同一 `RECOVERY_APPROVAL_GROUP_KEY/RECOVERY_APPROVED_*` 并置 RETRY_WAIT；
-   - `payment 2/order 7`：当前退款合同未启用，新 SUCCESS 一律置 RECONCILIATION_REQUIRED，不得自行宣称完成或进入权益 Worker。
+   - `payment 2/order 7`：新 SUCCESS 一律置 RECONCILIATION_REQUIRED，不得自行宣称完成或进入权益 Worker。
    禁止任何分支回退支付事实或重复入账；所有 payment/order 状态变化必须使用精确前态的条件 UPDATE 并校验影响行数。
 5. NOTPAY 且共键正确时：仅允许 `payment 1/order 1` 保持不变并将该查询事件置 PROCESSED；若内部已进入其他状态则置 RECONCILIATION_REQUIRED，不得回退。
 6. CLOSED 且共键正确时：仅允许支付方权威查单驱动 `payment 1/order 1 → payment 4/order 5` 并把事件置 PROCESSED；重复 CLOSED 只能在精确 `payment 4/order 5` 下幂等置 PROCESSED。与任何成功态冲突时进入人工对账。
@@ -460,14 +392,7 @@ payment → order → card → 同支付事实组事件 → 目标卡流水
 
 ### 7.1 主链与分支
 
-| payment | order | 充值语义 |
-|---:|---:|---|
-| 1 | 1 | 待支付 |
-| 2 | 2 | 外部支付成功、权益待入账或可恢复重试 |
-| 2 | 4 | 权益和唯一流水全部完成 |
-| 4 | 5 | 支付方确认未支付并关闭 |
-| 2 | 6 | 已付款但权益不可自动完成，人工对账 |
-| 2 | 7 | 异常付款已完成真实退款 |
+payment×order 合法组合与语义的唯一精确矩阵见本文 §9.1（含 `order 7/8` 退款双终态；代码由 `RechargePayStatus` 钉住）。
 
 规则：
 
@@ -475,9 +400,9 @@ payment → order → card → 同支付事实组事件 → 目标卡流水
 - 支付方返回 NOTPAY 时保持 1；仅支付方确认 CLOSED 后才进入 payment 4/order 5。
 - `paySuccessTime <= PAY_EXPIRE_TIME` 的权威成功事实才允许进入正常 `payment 2/order 2`；超过不可变截止时间的成功事实必须进入 `payment 2/order 6`，不得因卡被其他充值延长而追溯恢复自动入账资格。
 - 可恢复入账失败保持 order 2；不可恢复才进入 6。
-- order 6 修复后允许 6→4；6→7 只为后续真实退款合同预留，必须另行完成 REQ-044 的退款请求、回调幂等和退款证据合同并取得实施授权，L2-T 不得模拟该迁移。
+- order 6 修复后允许 6→4；6→7/6→8 由 E2E-04 售后退款链驱动，读取端按 §9.1 校验退款终态证据。
 - order 5 收到权威迟到支付时 payment 4→2、order 5→6，不自动入账，由人工决定 6→4 或退款后 6→7。
-- order 4 收到同一支付事实的新 SUCCESS 时先保存 PENDING，只能由事务 B 在锁内完成只读幂等核验后收敛；order 7 收到新 SUCCESS 时在当前退款合同未启用的情况下进入人工对账，不得自行宣称完成。
+- order 4 收到同一支付事实的新 SUCCESS 时先保存 PENDING，只能由事务 B 在锁内完成只读幂等核验后收敛；order 7 收到新 SUCCESS 时进入人工对账，不得自行宣称完成。
 - orderType=2 的状态 6 在 PC/小程序显示“支付成功、权益待处理/人工对账”，不得显示“出水异常待补偿”。
 
 ## 8. 流水与对账
@@ -520,7 +445,7 @@ Service 必须以 `KH_USER` 会话强制过滤本人，并核验：
 
 多事件 `processingStatus` 聚合优先级固定为 `RECONCILIATION_REQUIRED > PROCESSING > RETRY_WAIT > PENDING > PROCESSED`；待支付且无事件时返回 `WAITING_PAYMENT`。聚合只用于展示，不能替代上面的逐事件共键和合法组合校验。
 
-任一关键对象缺失、重复、错位或来源不一致均 fail-closed，返回结构化 mismatch/error，不回退 Mock。
+任一关键对象缺失、重复、错位或来源不一致均 fail-closed，返回结构化 mismatch/error。
 
 响应至少包含：
 
@@ -567,9 +492,9 @@ finishTime?
 ## 11. 小程序 API 唯一来源与页面行为
 
 - `miniapp/src/api/recharge.ts`：套餐列表、充值订单创建、pay-status、支付意图恢复，是充值域唯一合同。
-- `miniapp/src/api/order.ts`：三类订单通用列表和详情；退役旧 `OrderApi.createRechargeOrder`、旧自定义金额 DTO/Mock/Real pending 及依赖测试。
+- `miniapp/src/api/order.ts`：三类订单通用列表和详情。
 - `miniapp/src/api/card.ts`：本人主卡、卡详情和到账后余额刷新。
-- L2 Real 下 AUTH、card、order、recharge 任一关键依赖失败或数据源不一致时明确报错，不读取 `scenarioStore`，不回退 Mock。
+- AUTH、card、order、recharge 任一关键依赖失败或数据源不一致时明确报错，fail-closed。
 
 页面：
 
@@ -582,27 +507,7 @@ finishTime?
 
 ## 12. 历史数据与迁移策略
 
-### 12.1 当前已知历史
-
-- 充值订单 #2 为待支付样例，`CARD_ID` 为空、无 payment、快照不完整，不得伪装正常支付。
-- 开户流水 #1 的金额和水量是历史组合基线，`ORDER_ID` 为空，不得随意挂到待支付订单 #2。
-- 历史有限/永久交叉快照仅作证据保留，不追溯修改。
-
-### 12.2 精确策略
-
-- 对现有运行库，订单 #2 迁移必须具备三分支且以 canonical 归档事件业务键保证幂等：
-  1. 在同一事务中先以 `SELECT ... FOR UPDATE` 锁定订单 #2；ID、订单号、类型、用户、空 `CARD_ID`、套餐、金额、支付方式、待支付状态、空完成时间和不完整快照全部与冻结旧种子一致，且跨全部 `DATA_STATUS` 查询确认 payment、充值流水、canonical 归档事件均为 0 条时，条件更新为 `ORDER_STATUS=5`，`CANCEL_REASON` 写“历史 Demo 不完整充值种子归档：未发生真实支付”，保持 `DATA_STATUS=0` 和 `FINISH_TIME=NULL`，并在同一事务插入恰好一条 canonical 订单状态归档事件；
-  2. 已处于上述精确归档终态、跨全部 `DATA_STATUS` 的 payment/充值流水仍为 0 条且 canonical 归档事件恰好一条并全字段一致时，幂等 no-op；
-  3. 任何部分归档、事件缺失/重复、身份/金额/状态/快照/业务键错位均 `SIGNAL` 并全事务回滚。
-  不得补造 payment、卡、交易号或成功流水；fresh init 直接落分支 2 的完整终态和 canonical 事件。
-- canonical 事件固定写入 `ws_domain_event`：`EVENT_TYPE=1`、`EVENT_KEY=<orderNo>`、`BIZ_IDEMPOTENCY_KEY=L2:ARCHIVE:ORDER:<orderNo>`、`DATA_STATUS=0`、`WHITELIST_FLAG=1`、`CONSUMED_FLAG=1`；`EVENT_PAYLOAD` 使用 `schemaVersion=L2_ARCHIVE_V1`，并完整保存 string 型 orderId/orderNo、fromStatus=1、toStatus=5、固定归档原因、paymentCount=0、rechargeFlowCount=0。第 5.1 节可空唯一键从数据库层保证并发只会留下一个 canonical 事件，任何删除态同键事件仍占用该键。
-- 开户流水 #1 保持原有金额、水量、空 `ORDER_ID` 和空充值业务幂等键，不挂订单 #2、不改写成单次套餐支付；fresh init 注释明确它是历史组合开户基线，运行库迁移不凭推测改写该资金流水。
-- 对 fresh init：订单 #2 直接以同一“历史不完整样例已关闭”口径初始化；新的成功充值种子只有在 order/payment/event/flow/card 全部共键和账本连续时才允许加入。
-- 任一身份、金额、状态或快照不符合预期时迁移 `SIGNAL` 并全事务回滚，禁止按固定 ID 覆盖未知业务数据。
-- 迁移前检查支付单重复/孤儿/共键错位、充值流水重复/孤儿/断裂、用户身份重复、非法套餐和卡终值。
-- 新增/修改交易表同步 `server/sql/ws_trade.sql` 与 `deploy/mysql/init/02-ws-business.sql`；用户身份表同步权威 init 与增量迁移；字典同步 SQL 与 `ApiEnum.DictType`。
-- 增量迁移只先在无宿主端口、无主库挂载的独立临时 MySQL 运行 fresh、旧态、冲突、幂等和快照零变化测试。
-- 主库迁移必须另行取得用户授权、先备份并在维护窗口执行。
+本节原有的「充值订单 #2 归档」迁移合同（canonical 事件 `L2:ARCHIVE:ORDER` / `L2_ARCHIVE_V1`）从未落地，全仓无对应迁移与种子，合同作废。数据库迁移纪律唯一源见 `server/.agents/skills/mysql8/SKILL.md`。
 
 ## 13. 支付证据数据保护（M5）
 
@@ -624,7 +529,7 @@ finishTime?
 - bindTicket 过期、重放、purpose/appid 错位拒绝；
 - 手机号/openid 20 并发绑定只允许一个主体成功；
 - 冲突不覆盖已有账号；自动建用户不伪造性别；
-- 不存在 dev-auth、万能密码或 userId 换 Token。
+- 不存在万能密码或 userId 换 Token；测试登录直通仅 `mini.test-login.enabled=true` 时注册 `/mini/test-login/by-phone`，与 Pay-Sim 开关互相独立，缺省该路由不存在。
 
 ### 14.2 创建幂等与输入
 
@@ -650,7 +555,7 @@ finishTime?
 - 先 CLOSED，再由 NOTIFY/QUERY 并发写入同一迟到 SUCCESS：两条事件都进入 RECONCILIATION_REQUIRED；一次事实组级人工授权后只生成一条充值流水、订单 6→4、卡只增加一次，全部同事实 SUCCESS 最终均为 PROCESSED，pay-status 不得 mismatch；
 - 权威 SUCCESS 恰好等于 PAY_EXPIRE_TIME 时可进入正常链；晚 1 秒时必须保留 `payment=2`、订单进入 6、事件进入人工对账且无权益副作用；
 - `payment 2/order 4` 收到新的同事实 SUCCESS 时，事务 A 只写 PENDING；Worker 在事务 B 锁内核验唯一流水、credit、两个 AFTER、卡终值和账本连续性后才置 PROCESSED，且卡、流水、订单均零写入；
-- `payment 2/order 7` 收到新 SUCCESS 时必须进入 RECONCILIATION_REQUIRED，不得在当前未启用退款合同下自行完成；
+- `payment 2/order 7` 收到新 SUCCESS 时必须进入 RECONCILIATION_REQUIRED，不得自行宣称完成；
 - PAY_SIM 不能写成 WECHAT，payment/event 来源错位拒绝；
 - 内部 order/payment 缺失或共键错位时外部事实仍保存但不入账；
 - 事务 B 强制失败不回滚事务 A；
@@ -668,45 +573,23 @@ finishTime?
 - 付款截止前成功、处理时卡仅自然过期为状态 3 时可继续计算；状态 2 冻结保持订单 2 重试，状态 4 注销、归属变化或 scope 变化进入订单 6；
 - 有限卡按 `max(currentExpireTime,paySuccessTime)+expireDays` 续期；结果不晚于 processingTime 时不生成已过期权益并进入订单 6，结果晚于处理时间时权益、有效期和状态 1 必须原子写入；永久卡与永久套餐始终保持 `EXPIRE_TIME=NULL`；
 - 客户端取消不直接关闭；仅支付方 CLOSED 进入 5；
-- 订单 5 迟到支付进入 6且付款事实保留；6→4 只产生原唯一流水；6→7 必须由另行授权的真实退款合同驱动，L2-T 不得模拟；
+- 订单 5 迟到支付进入 6 且付款事实保留；6→4 只产生原唯一流水；6→7/6→8 由 E2E-04 售后退款链驱动；
 - 验签/HMAC 未通过或请求事实不完整时，不生成可信支付事件，order/payment/card/flow 零变化；
 - 验签、解密或权威查单已证明外部事实但内部对象缺失/错位时，可信事件必须保留，card/flow 零变化，payment/order 只能按第 6.2 节的精确状态分支变化，禁止用“拒绝路径零变化”掩盖真实外部事实。
 
 ### 14.5 查询与跨端
 
 - pay-status 水平越权、非充值单、缺/重复 payment、来源错位均拒绝；
-- pay-status 对 payment/order 合法组合逐项测试；充值单状态 3/8 以及其他非法组合必须 mismatch，禁止用数值大小推断生命周期；
+- pay-status 对 payment/order 合法组合逐项测试；充值单状态 3 及其他未列组合必须 mismatch，禁止用数值大小推断生命周期；
 - Long 身份 ID 全程 string；
 - U06/PC 同一订单号的 payment/event/flow/card/status 一致；
 - PC 坏关联只显示 mismatch，不显示充值成功；
-- L2 Real 任一关键依赖失败不读取 scenarioStore、不回退 Mock；
 - 普通页面和日志不泄露原始报文、openid、签名和完整 transactionId。
-
-### 14.6 历史迁移
-
-- 精确旧态订单 #2 只归档一次并生成一条 canonical 事件；
-- 已归档精确终态重复运行幂等 no-op；
-- 部分归档、canonical 事件缺失/重复、payment/充值流水意外存在、身份/金额/快照任一错位时 `SIGNAL` 且整事务回滚；
-- 独立临时 MySQL 中验证 fresh、旧态、幂等和冲突场景，主库保持零写入。
 
 ## 15. 实施状态
 
-已完成：
-
-- 正式登录和手机号绑定代码；
-- 本人水卡、套餐和范围读取；
-- 首次购卡与已有卡充值订单；
-- Pay-Sim 支付事实、两阶段事务、原子入账和唯一流水；
-- 小程序支付状态、订单详情和余额回读；
-- PC 支付、事件、水卡和流水追溯；
-- 首次发卡、有效期、范围继承和并发幂等保护。
-
-待实施：
-
-- 正式微信 JSAPI 支付、通知验签、主动查单和关单；
-- 退款、退款回调、日对账和差错处理；
-- 实体卡、后台人工充值和生产财务审批。
+实施与验收状态唯一源见 `docs/requirements/demo-business-chain-matrix.md`（E2E-02 行）。
 
 ## 16. 生产接入条件
 
-正式微信支付接入前需要准备 AppID、商户号、APIv3 Key、平台证书、回调域名、退款权限和对账规则。生产迁移和真实资金操作按照项目资金安全规范执行。
+生产微信支付配置项唯一源见 `.env.example` 的 `WECHAT_PAY_*` 段与 `WechatPayCredentials` 的 @Value 清单（fail-closed）。生产迁移和真实资金操作按照项目资金安全规范执行。
