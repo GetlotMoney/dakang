@@ -114,7 +114,17 @@ cmd_backend_start() {
   # Refund-Sim 与 Pay-Sim 是**两个独立开关**：退款是出账，比收款危险一个量级，
   # 任何为了跑通支付而开模拟的环境不该连模拟退款一起打开。验收环境两者都要开，
   # 但必须各自显式写出来——生产 application-prod.yml 里两者都显式 false。
-  # Pay-Sim 与测试登录同开关（mini.pay-sim.enabled）；设备监控关闭：验收场景不依赖离线/超时兜底，
+  # 商城（E2E-09）另有一对独立开关 mall.pay-sim / mall.refund-sim：与一期水业务的
+  # mini.* 分开配置，好让「只想跑商城链」的环境不必把水业务的资金模拟一起打开。
+  # mall.logistics-sim 是第三块独立开关（L1）：它不动钱，但会推进真实订单状态，
+  # 所以同样不许搭在支付开关上顺带打开。出站 Worker 的节拍在验收里调到秒级——
+  # 生产缺省 30s 是为了不给承运方压力，而验收要在一次运行里看到运单号真的写回。
+  # 自动补货（B08）默认仍关：它会**无用户交互地真实扣款**，只有跑 run-auto-refill.js
+  # 的那一轮才由 runner 显式打开（ACC_AUTO_REFILL_ENABLED=true），并把节拍调快到秒级；
+  # 默认开着的话，任何一轮别的验收都会在后台悄悄给种子用户扣钱。
+  # Pay-Sim 与测试登录**各自独立**开关：九个 e2e 跑批脚本按手机号直签会话，故隔离环境显式开
+  # mini.test-login.enabled；演示与生产一律缺省 false（它凭手机号即可取得完整会话）。
+  # 设备监控关闭：验收场景不依赖离线/超时兜底，
   # 且避免无模拟器的 ACC-DEV-0002 在长跑中被翻离线，污染 S6「因范围被拒」的语义。
   TZ=Asia/Shanghai nohup "${JAVA_HOME}/bin/java" -Xms256m -Xmx512m -Dfile.encoding=UTF-8 \
     -jar "${JAR}" \
@@ -132,7 +142,16 @@ cmd_backend_start() {
     --mqtt.broker-url=tcp://127.0.0.1:1884 \
     --mqtt.client-id=dakang-server-acc \
     --mini.pay-sim.enabled=true \
+    --mini.test-login.enabled=true \
     --mini.refund-sim.enabled=true \
+    --mall.pay-sim.enabled=true \
+    --mall.refund-sim.enabled=true \
+    --mall.logistics-sim.enabled=true \
+    --mall.logistics-outbox.fixed-delay="${ACC_LOGISTICS_OUTBOX_DELAY:-5000}" \
+    --mall.logistics-outbox.initial-delay="${ACC_LOGISTICS_OUTBOX_INITIAL_DELAY:-5000}" \
+    --delivery.auto-refill.enabled="${ACC_AUTO_REFILL_ENABLED:-false}" \
+    --delivery.auto-refill.fixed-delay="${ACC_AUTO_REFILL_FIXED_DELAY:-300000}" \
+    --delivery.auto-refill.initial-delay="${ACC_AUTO_REFILL_INITIAL_DELAY:-60000}" \
     --dakang.device.monitor-enabled="${ACC_MONITOR_ENABLED:-false}" \
     --dakang.device.control-ticket-ttl-seconds="${ACC_CONTROL_TICKET_TTL:-120}" \
     > "${RUN_DIR}/backend.log" 2>&1 &
@@ -223,10 +242,20 @@ case "${1:-}" in
     echo "  backend-start  以验收数据源/Redis/EMQX + Pay-Sim 开启启动后端（端口 ${BACKEND_PORT}）"
     echo "  sim-start      启动 tools/device-sim（默认 ACC-DEV-0001；可带设备号与模式参数，连验收 EMQX 1884）"
     echo ""
+    echo "B08 自动补货验收（run-auto-refill.js）环境变量："
+    echo "  ACC_AUTO_REFILL_ENABLED=true       开启固定周期触发方（默认 false：它会无交互真实扣款）"
+    echo "  ACC_AUTO_REFILL_FIXED_DELAY=5000   扫描间隔调快，避免验收等 5 分钟一轮"
+    echo "  ACC_AUTO_REFILL_INITIAL_DELAY=3000 首轮延迟调快"
+    echo ""
     echo "E2E-05 设备运营验收（run-device-ops.js）环境变量："
     echo "  ACC_MONITOR_ENABLED=true      开启离线扫描/指令超时任务（S2/S8/S11 依赖）"
     echo "  ACC_CONTROL_TICKET_TTL=8      高风险控制凭据时效调短（S12 过期拒绝依赖）"
     echo "  模拟器由 runner 自管，请勿预先 sim-start"
+    echo ""
+    echo "E2E-09 L1 多渠道物流验收（run-mall-logistics.js）环境变量："
+    echo "  ACC_LOGISTICS_OUTBOX_DELAY=5000          出站 Worker 节拍调快（默认已 5s；生产缺省 30s）"
+    echo "  ACC_LOGISTICS_OUTBOX_INITIAL_DELAY=5000  首轮延迟调快"
+    echo "  Logistics-Sim 恒开（mall.logistics-sim.enabled=true）：它不动钱，但会推进真实订单状态"
     exit 2
     ;;
 esac

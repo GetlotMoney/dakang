@@ -217,12 +217,15 @@ BEGIN
                     AND o.USER_ID = 1
                     AND o.ORDER_STATUS = 2);
 
-  -- 3b) 运行库补齐领域事件类型 8。fresh init 已存在时 INSERT IGNORE 零影响。
-  INSERT IGNORE INTO api_dict_type(DICT_NAME, DICT_TYPE, DICT_REMARK)
+  -- 3b) 运行库补齐领域事件类型 8。
+  -- 幂等由下面的 WHERE NOT EXISTS 提供，不是 IGNORE——这两张表除主键外没有唯一键，
+  -- IGNORE 无键可撞、等于普通 INSERT。原先两者并写，读的人会以为 IGNORE 才是那道保险，
+  -- 照着抄到没有 NOT EXISTS 的地方就会翻倍（2026-07-31-settlement-e2e08-a 正是这么中的）。
+  INSERT INTO api_dict_type(DICT_NAME, DICT_TYPE, DICT_REMARK)
   SELECT '事件类型', '1363', '领域事件类型（n8n白名单订阅源）'
     FROM DUAL
    WHERE NOT EXISTS (SELECT 1 FROM api_dict_type WHERE DICT_TYPE = '1363');
-  INSERT IGNORE INTO api_dict_data(DICT_CLASS, DICT_DEFAULT_FLAG, DICT_TYPE, DICT_SORT, DICT_VALUE, DICT_LABEL)
+  INSERT INTO api_dict_data(DICT_CLASS, DICT_DEFAULT_FLAG, DICT_TYPE, DICT_SORT, DICT_VALUE, DICT_LABEL)
   SELECT NULL, 1, '1363', 8, 8, '指令状态变化'
     FROM DUAL
    WHERE NOT EXISTS (SELECT 1 FROM api_dict_data WHERE DICT_TYPE = '1363' AND DICT_VALUE = 8);

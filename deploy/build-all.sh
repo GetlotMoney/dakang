@@ -80,6 +80,10 @@ build_server() {
     fi
     rmdir "$jar_target"
   fi
+  # 覆盖前留旧副本作回滚门：新 jar 起不来时 cp 回 .prev 再 recreate 即可
+  if [[ -f "$jar_target" ]]; then
+    cp -p "$jar_target" "${jar_target}.prev"
+  fi
   # 原位更新 JAR，保持 bind mount 源路径稳定。
   rsync -a "$ROOT/server/target/dakang-server.jar" "$jar_target"
   # 再次扫描落地到 deploy/dist 的副本，确保挂载进容器的正是干净产物。

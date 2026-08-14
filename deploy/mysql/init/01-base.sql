@@ -387,8 +387,11 @@ INSERT IGNORE INTO `api_rbac_menu` (`ID`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY
 (613,1,'20260714120000',1,'20260714120000',0,'菜单管理',2,NULL,607,3,'menu','/system/menu/index',1,NULL,NULL,NULL,1,1),
 (614,1,'20260714120000',1,'20260714120000',0,'职务管理',2,NULL,607,2,'position','/system/position/index',1,NULL,NULL,NULL,1,1),
 (615,1,'20260714120000',1,'20260714120000',0,'日志管理',1,'ri:newspaper-line',0,1,'/system/log','/index/index',1,NULL,NULL,NULL,1,1),
-(616,1,'20260714120000',1,'20260714120000',0,'登录日志',2,NULL,615,2,'login','/system/log/login/index',1,NULL,'api:logLogin:query','api:logLogin:query',1,1),
-(617,1,'20260714120000',1,'20260714120000',0,'操作日志',2,NULL,615,1,'operation','/system/log/operation/index',1,NULL,'api:logOperation:query','api:logOperation:query',1,1),
+-- 616/617 的 MENU_API_PERMS 已下沉到功能点 1162/1163（03-demo-baseline.sql）：授权弹窗的「菜单权限」树按
+-- MENU_TYPE<>3 过滤，页面行自带权限码会让弹窗上「勾选菜单不会同时授予操作权限」这句话对日志两页失效。
+-- 老库同步语句在 migrations/2026-08-13-lwkm-perms.sql（含权限等价搬迁）。
+(616,1,'20260714120000',1,'20260714120000',0,'登录日志',2,NULL,615,2,'login','/system/log/login/index',1,NULL,NULL,NULL,1,1),
+(617,1,'20260714120000',1,'20260714120000',0,'操作日志',2,NULL,615,1,'operation','/system/log/operation/index',1,NULL,NULL,NULL,1,1),
 (640,1,'20260714120000',1,'20260714120000',0,'标签管理',2,NULL,607,1,'tag','/system/tag/index',1,NULL,NULL,NULL,1,1),
 (619,1,'20260714120000',1,'20260714120000',0,'新增部门',3,NULL,608,1,NULL,NULL,1,NULL,'api:dept:add','api:dept:add',2,1),
 (633,1,'20260714120000',1,'20260714120000',0,'删除部门',3,NULL,608,2,NULL,NULL,1,NULL,'api:dept:delete','api:dept:delete',2,1),

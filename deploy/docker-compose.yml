@@ -110,6 +110,19 @@ services:
       # 微信小程序凭据：未接入正式登录前保持空；填入即 wechat.xcx.appid/appsecret 生效。
       WECHAT_XCX_APPID: ${WECHAT_XCX_APPID:-}
       WECHAT_XCX_APPSECRET: ${WECHAT_XCX_APPSECRET:-}
+      # 微信支付 APIv3 商户凭据（WX-ECO S3）：六项缺任何一项即未配置，支付组件 fail-closed。
+      # 两个 *_PATH 指向容器内路径——PEM 文件需另行以 secret/只读卷挂载进容器，
+      # 例如 ./secrets/wxpay:/run/secrets/wxpay:ro，则 PATH 填 /run/secrets/wxpay/merchant.pem。
+      WECHAT_PAY_MCHID: ${WECHAT_PAY_MCHID:-}
+      WECHAT_PAY_MERCHANT_SERIAL: ${WECHAT_PAY_MERCHANT_SERIAL:-}
+      WECHAT_PAY_PRIVATE_KEY_PATH: ${WECHAT_PAY_PRIVATE_KEY_PATH:-}
+      WECHAT_PAY_API_V3_KEY: ${WECHAT_PAY_API_V3_KEY:-}
+      WECHAT_PAY_PLATFORM_PUBLIC_KEY_ID: ${WECHAT_PAY_PLATFORM_PUBLIC_KEY_ID:-}
+      WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH: ${WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH:-}
+      # 三个出站适配器开关：默认 false=fail-closed 兜底在位；联调授权后逐项置 true
+      WECHAT_PAY_HTTP_CLIENT_ENABLED: ${WECHAT_PAY_HTTP_CLIENT_ENABLED:-false}
+      WECHAT_NOTIFY_HTTP_SENDER_ENABLED: ${WECHAT_NOTIFY_HTTP_SENDER_ENABLED:-false}
+      WECHAT_SHIPPING_HTTP_CLIENT_ENABLED: ${WECHAT_SHIPPING_HTTP_CLIENT_ENABLED:-false}
       # 8081 使用固定 Demo 快照，关闭心跳与指令超时扫描，避免定时任务修改验收样例。
       # 真实环境应保留默认值 true，并由真实设备或 tools/device-sim 持续上报心跳。
       DAKANG_DEVICE_MONITOR_ENABLED: "false"
@@ -121,10 +134,27 @@ services:
       # 开启后 /mini/pay-sim/** 才注册，且支付单被永久打上 PAY_SOURCE=2，
       # 模拟收款不可能混进真实微信对账口径。生产环境 .env 必须保持 false。
       MINI_PAYSIM_ENABLED: ${MINI_PAYSIM_ENABLED:-false}
+      # 商城 Pay-Sim 与一期充值 Pay-Sim 分域、分开授权。缺少这条透传时，
+      # application-prod.yml 虽支持 MALL_PAYSIM_ENABLED，容器内仍永远只能读到 false。
+      # 默认值保持 false，避免普通部署误开模拟收款。
+      MALL_PAYSIM_ENABLED: ${MALL_PAYSIM_ENABLED:-false}
       # Refund-Sim 模拟退款：默认 false（安全默认），演示环境在 .env 里置 true 才开。
       # 关闭时生效的是 fail-closed 的 WechatRefundSourceAdapter（拒绝发起退款）；
       # 开启才注册 RefundSimSourceAdapter 与 /mini/refund-sim/**。生产环境 .env 必须保持 false。
       MINI_REFUNDSIM_ENABLED: ${MINI_REFUNDSIM_ENABLED:-false}
+      # 商城 Refund-Sim 与一期退款 Refund-Sim 分域、分开授权。与 MALL_PAYSIM_ENABLED 同理：
+      # 缺这条透传时 application-prod.yml 里的 ${MALL_REFUNDSIM_ENABLED:false} 永远读到 false，
+      # 受控演示要开模拟退款只能临时改 compose——那是最不该在压力下动的文件。
+      # 退款是出账，比收款危险一个量级，故与商城收款仍分两个开关，默认 false。
+      MALL_REFUNDSIM_ENABLED: ${MALL_REFUNDSIM_ENABLED:-false}
+      # 商城第三方承运商模拟适配器。**2026-08-12 补**：此前漏了这条透传，
+      # 后果与上面两条注释预告的完全一致——application-prod.yml 的
+      # ${MALL_LOGISTICSSIM_ENABLED:false} 在容器内永远读到 false，
+      # ILogisticsProviderAdapter 唯一实现 LogisticsSimAdapter 不注册，
+      # requireRegisteredProvider 恒抛「未启用任何承运商适配器」，
+      # PC 承运商下拉恒空，第三方物流分支从未在主环境执行过一次。
+      # 默认 false：它会产生对外运单动作，与收款/退款同级别按需授权。
+      MALL_LOGISTICSSIM_ENABLED: ${MALL_LOGISTICSSIM_ENABLED:-false}
       # 仅微信身份建号：默认 false（手机号是唯一的人工找回凭据）。小程序主体未过微信认证时
       # getPhoneNumber 组件被平台禁用、新用户注册不了，此时才在 .env 里置 true——新 openid
       # 直接建号、手机号留空，登录后在小程序内自助补绑。完成微信认证后撤回 false。
@@ -149,13 +179,23 @@ services:
       # 应用层刻意保持全网卡监听：小程序真机调试需要手机经局域网访问本机后端。
       # 生产改回 127.0.0.1 并由反向代理承接 TLS。
       - "13330:13330"
+    # 就绪判据：Tomcat 端口可连即 Spring 上下文已起（内嵌容器在启动序列末尾才监听）。
+    # 基镜像无 curl/wget；/dev/tcp 是 bash 专属重定向，CMD-SHELL 走 /bin/sh(dash) 必假阴，
+    # 故显式调 bash（Ubuntu 基镜像自带）。docker ps 的 Up 只代表 JVM 进程活着。
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/13330"]
+      interval: 15s
+      timeout: 3s
+      retries: 8
+      start_period: 60s
 
   web:
     image: nginx:1.27-alpine
     container_name: dakang-web
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./dist/client:/usr/share/nginx/html/pc:ro
