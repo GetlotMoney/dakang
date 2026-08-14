@@ -41,6 +41,20 @@ jobs:
       - name: 凭据未入库
         run: bash .github/scripts/check-secrets.sh
 
+      # R-202 后补：以下四道此前只在交付前人工执行（development-workflow §交付检查），
+      # 「固化为流水线」的初衷要求它们与基线同批常态运行
+      - name: 跨端枚举同源
+        run: python3 tools/check-enum-parity.py
+
+      - name: 迁移无破坏性语句与无效幂等
+        run: python3 tools/check-migration-safety.py
+
+      - name: .env 值未泄漏进入库文件
+        run: python3 tools/check-secret-leak.py
+
+      - name: 小程序业务代码无新增颜色字面量
+        run: python3 tools/check-miniapp-colors.py
+
   # ---------------------------------------------------------------
   # 后端：编译 + 全量测试。真库用例依赖 Docker，runner 自带
   # ---------------------------------------------------------------

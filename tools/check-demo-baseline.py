@@ -186,7 +186,10 @@ def main(argv: list[str] | None = None) -> int:
     if duplicate_ids:
         fail(errors, f"产品需求被重复映射：{duplicate_ids}")
 
-    expected_statuses = Counter({"闭环候选": 6, "部分": 16, "契约": 2})
+    # 2026-08-12 B01 由「契约」上调为「部分」：正式 wx.login→code2session→建号→签发
+    # 已全量接真（AppID 已认证），审计逐条核过调用链与出货配置可达性。
+    # 仍记「部分」而非闭环：账号停用无写入口、老账号无自助认领路径、627 端上出口只覆盖 2/9。
+    expected_statuses = Counter({"闭环候选": 6, "部分": 17, "契约": 1})
     actual_statuses = Counter(whole_statuses)
     if actual_statuses != expected_statuses:
         fail(errors, f"整链状态应为 {dict(expected_statuses)}，实际为 {dict(actual_statuses)}")
@@ -208,6 +211,9 @@ def main(argv: list[str] | None = None) -> int:
 
     e2e_lines = [line for line in matrix_text.splitlines() if re.match(r"^\|\s*E2E[^|]*\|", line)]
     expected_e2e_ids = {f"E2E-{index:02d}" for index in range(1, 9)}
+    # 二期宏观链显式登记制：新链必须在此列名才允许出现在矩阵，防止编号私自生长；
+    # 一期 8 条的存在性与计数断言保持原样不放宽
+    allowed_phase2_e2e_ids = {"E2E-09"}
     e2e_ids: list[str] = []
     allowed_internal_statuses = {"待开工", "开发中", "已完成（模拟环境）"}
     allowed_external_statuses = {"未接入", "部分接入", "已接入"}
@@ -245,8 +251,12 @@ def main(argv: list[str] | None = None) -> int:
     duplicate_e2e_ids = sorted(e2e_id for e2e_id, count in Counter(e2e_ids).items() if count > 1)
     if duplicate_e2e_ids:
         fail(errors, f"宏观 E2E 编号重复：{duplicate_e2e_ids}")
-    if set(e2e_ids) != expected_e2e_ids:
-        fail(errors, f"宏观 E2E 编号应恰为 {sorted(expected_e2e_ids)}，实际为 {sorted(set(e2e_ids))}")
+    actual_e2e_ids = set(e2e_ids)
+    if not expected_e2e_ids <= actual_e2e_ids:
+        fail(errors, f"一期宏观 E2E 缺失：{sorted(expected_e2e_ids - actual_e2e_ids)}")
+    unknown_phase2_ids = actual_e2e_ids - expected_e2e_ids - allowed_phase2_e2e_ids
+    if unknown_phase2_ids:
+        fail(errors, f"矩阵出现未登记的宏观 E2E 编号：{sorted(unknown_phase2_ids)}")
 
     governance_section = matrix_text.split("## 4. 7 条项目与工程治理需求", 1)
     if len(governance_section) != 2:
@@ -355,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print("一期基线检查通过：110 总需求；55 MVP/骨架；48 产品业务 + 7 工程治理；24 条 B 链 = 6 闭环候选 + 16 部分 + 2 契约；8 条宏观业务链校验通过。")
+    print("一期基线检查通过：110 总需求；55 MVP/骨架；48 产品业务 + 7 工程治理；24 条 B 链 = 6 闭环候选 + 17 部分 + 1 契约；8 条宏观业务链校验通过。")
     return 0
 
 
