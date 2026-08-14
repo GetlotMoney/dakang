@@ -36,13 +36,11 @@
 价格同步为平台内部命令类型（E2E-05）：`payload={priceVersion,...}`，设备模拟器支持并在 result 回带
 
 参数类指令（6参数同步 / 8价格同步）的 payload 结构约束（REQ-213，平台侧恒生效，与厂家无关）：
-扁平 JSON 对象、键名 `^[A-Za-z][A-Za-z0-9_]{0,31}$`、值只允许字符串/数字/布尔、
-禁止嵌套与 null、键数 ≤32、字符串值 ≤64 字符。已在 `ws_device_param_def` 登记的键
-额外按类型/单位/值域/枚举校验；未登记键放行但标记（单调收紧：登记只会更严，永不更松）。
+唯一解析与校验口径见 `server/src/main/java/com/jbk/serve/service/device/DeviceParamPayload.java`。
 result **成功**（非 partial、非失败）后平台把下发值写入 `ws_device_param` 快照并抬升版本，
 ACK 不触发回写——受理不等于生效。业务参数键集待厂家答复 V-12.3，当前仅登记 priceVersion。
-`priceVersion`；**厂商映射待外部协议确认**。批量控制（含价格同步/紧急停止）经
-`ws_command_batch` 聚合，一台设备一条 `ws_command`（`uk_cmd_batch_device` 防重复展开）。
+批量控制（含价格同步/紧急停止）经 `ws_command_batch` 聚合，
+一台设备一条 `ws_command`（`uk_cmd_batch_device` 防重复展开）。
 
 ## 状态机与超时
 
@@ -50,9 +48,3 @@ ACK 不触发回写——受理不等于生效。业务参数键集待厂家答�
 ws_command: 1待下发 → 2已下发 → 3已回执 → 4成功 / 5失败 / 7部分完成
                 └─(30s无ack)──┴─(120s无result)→ 6超时（定时任务扫描，产生"指令超时"告警）
 ```
-
-## 平台侧落地位置（开发时对号入座）
-
-- 依赖：`spring-integration-mqtt`（pom 已留注释位）；配置 `mqtt.*`（`application-*.yml`，`mqtt.enabled` 开关，默认 false 不影响无 broker 启动）
-- 计划包结构：`com.jbk.serve.mqtt`（`MqttConfig` / `DeviceUplinkHandler` / `CommandPublisher`）+ `serve/service/command`
-- 设备模拟器：独立小工具（Node 或 Java main），按本文档主题收 cmd、回 ack/result，用于无物理样机时的协议联调
