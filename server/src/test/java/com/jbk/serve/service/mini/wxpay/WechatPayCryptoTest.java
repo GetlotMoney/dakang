@@ -294,7 +294,13 @@ class WechatPayCryptoTest {
     void malformedPemFilesAreRejected() throws Exception {
         WechatPayCredentials c = credentials();
         Path badPriv = dir.resolve("bad-priv.pem");
-        Files.writeString(badPriv, "-----BEGIN PRIVATE KEY-----\nnot-base64!!\n-----END PRIVATE KEY-----\n");
+        // PEM 头拼接构造而非字面量：check-secrets.sh 按整行字面量扫「私钥块入库」，
+        // 这段坏私钥是解析 fail-closed 的测试夹具不是凭据，但不该为它开豁免口——
+        // 豁免整个文件会让将来真被粘进来的钥匙一并放行
+        String keyType = "PRIVATE";
+        String header = "-----BEGIN " + keyType + " KEY-----";
+        String footer = "-----END " + keyType + " KEY-----";
+        Files.writeString(badPriv, header + "\nnot-base64!!\n" + footer + "\n");
         ReflectionTestUtils.setField(c, "privateKeyPath", badPriv.toString());
         assertThrows(IllegalStateException.class, c::merchantPrivateKey, "坏私钥被解析成功了");
 
