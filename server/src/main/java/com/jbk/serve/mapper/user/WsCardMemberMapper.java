@@ -29,10 +29,8 @@ public interface WsCardMemberMapper extends BaseMapper<WsCardMember> {
             + "EFFECTIVE_TIME AS effectiveTime, EXPIRE_TIME AS expireTime, MEMBER_STATUS AS memberStatus";
 
     /**
-     * 取水事务锁成员关系（SELECT ... FOR UPDATE，命中 uk_card_member_user 单行锁）。
-     * <p>为什么必须锁这一行：成员日限额没有独立统计表，靠「先锁成员关系、再统计当天订单」
-     * 把同一成员对同一张卡的并发下单串行化——不锁就会出现 20 并发同时读到旧占用、集体突破限额。
-     * 跨全部 DATA_STATUS：删除态也要锁到再由 Java 侧显式拒绝（与锁卡口径一致）。</p>
+     * 取水事务锁成员关系（FOR UPDATE，命中 uk_card_member_user 单行锁）：日限额靠「先锁成员关系、再统计当天订单」串行化，不锁会并发突破限额。
+     * 跨全部 DATA_STATUS：删除态也要锁到再由 Java 侧显式拒绝（与锁卡口径一致）。
      */
     @Select("SELECT " + COLUMNS + " FROM ws_card_member "
             + "WHERE CARD_ID = #{cardId} AND MEMBER_USER_ID = #{memberUserId} FOR UPDATE")

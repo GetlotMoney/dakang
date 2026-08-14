@@ -22,18 +22,10 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 小程序入口配置实现（S6）。
- *
- * <h3>安全边界</h3>
- * <ul>
- *   <li>内部路由白名单：与 miniapp 路由合同（README 页面编号表）同源的显式集合，
- *       Tabbar 三页（U01/U02/U03）与登录页（C01）刻意不在集合内——固定导航不受配置覆盖。</li>
- *   <li>外链：仅 https；域名必须命中 {@code mini.entry.external-domain-whitelist}
- *       （默认空=全部拒绝，甲方批准域名前不放行任何外链）；javascript:/data:/
- *       任意 scheme 在 URI 解析层直接拒绝。</li>
- *   <li>并发发布：VERSION CAS，同一行只有一个流转赢家；同键唯一由库层
- *       uk_mini_entry_key 兜底。</li>
- * </ul>
+ * 小程序入口配置实现（S6）。安全边界：内部路由白名单与 miniapp 路由合同同源，
+ * Tabbar 三页与登录页刻意不在集合内（固定导航不受配置覆盖）；外链仅 https 且域名须命中
+ * {@code mini.entry.external-domain-whitelist}（默认空=全部拒绝），javascript:/data: 等
+ * scheme 在 URI 解析层直接拒绝；并发发布 VERSION CAS + 库层 uk_mini_entry_key 兜底。
  */
 @Slf4j
 @Service

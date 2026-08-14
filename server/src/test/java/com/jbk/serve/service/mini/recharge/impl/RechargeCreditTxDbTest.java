@@ -27,6 +27,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -51,17 +52,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * 事务 B 的<b>真实 MySQL + 真实 Spring 事务</b>集成测试（L2 契约 v2 §6.4，决策 L2-D4）。
- *
- * <p>这里测的三件事都无法用单测证明：</p>
- * <ol>
- *   <li><b>有限卡续期</b> {@code newExpireTime = max(currentExpireTime, paySuccessTime) + expireDays}
- *       必须与余额、水量、卡状态在<b>同一条 UPDATE</b> 里落地——拆开就会出现「加了钱但有效期没续上」。</li>
- *   <li><b>入账不重复</b>靠 InnoDB 唯一键 + Spring 回滚共同保证，Mock 掉任一边测的就不是这条性质。</li>
- *   <li><b>CAS 前态</b>在并发下真的挡得住丢失更新。</li>
- * </ol>
- *
- * <p>无 Docker 环境自动跳过。</p>
+ * 事务 B 真实 MySQL + Spring 事务集成测试（L2 契约 v2 §6.4，决策 L2-D4）。
+ * 验证：续期 max(当前有效期,支付时间)+expireDays 与余额/水量/状态同一 UPDATE 落地、
+ * 唯一键+回滚防重复入账、CAS 前态防丢失更新。无 Docker 自动跳过。
  */
 @Testcontainers(disabledWithoutDocker = true)
 @ExtendWith(SpringExtension.class)
@@ -96,6 +89,22 @@ class RechargeCreditTxDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+        /** 通知登记用真实实现：要验「回滚后库里没有那一行」，mock 证不了。 */
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper>
+                wechatNotifyOutboxMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue(
+                com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper m) {
+            return new com.jbk.serve.service.mini.notify.WechatNotifyEnqueue(m);
+        }
+
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -119,6 +128,11 @@ class RechargeCreditTxDbTest {
                     new com.baomidou.mybatisplus.core.MybatisConfiguration();
             cfg.setMapUnderscoreToCamelCase(true);
             factory.setConfiguration(cfg);
+            // 与生产同款自动填充：缺了它，填充字段以 NULL 落库，NOT NULL 列报错、可空列假绿。
+            com.baomidou.mybatisplus.core.config.GlobalConfig globalConfig =
+                    new com.baomidou.mybatisplus.core.config.GlobalConfig();
+            globalConfig.setMetaObjectHandler(new com.jbk.tool.config.system.mybatis.MpMetaObjectHandler());
+            factory.setGlobalConfig(globalConfig);
             factory.setMapperLocations(new org.springframework.core.io.support
                     .PathMatchingResourcePatternResolver()
                     .getResources("classpath*:mapper/trade/TradeCardMapper.xml"));
@@ -154,8 +168,9 @@ class RechargeCreditTxDbTest {
         RechargeCreditTxImpl creditTx(RechargeCreditMapper mapper, RechargeLockedState locked,
                                       RechargeLedgerVerifier ledger,
                                       WsCardEntitlementBatchMapper batchMapper,
-                                      EntitlementLedger entitlementLedger) {
-            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger);
+                                      EntitlementLedger entitlementLedger,
+                                      com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue) {
+            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger, notifyEnqueue);
         }
 
         @Bean
@@ -203,11 +218,7 @@ class RechargeCreditTxDbTest {
         }
     }
 
-    /**
-     * 按<b>接口</b>注入：Spring 为 @Transactional 生成的是 JDK 接口代理，按实现类注入会失败。
-     * 这条注入本身即是「事务增强确实织入了」的证据——注解被删掉时这里会退化成裸实现类，
-     * 下面所有回滚断言随即失效。
-     */
+    /** 按接口注入：@Transactional 生成 JDK 接口代理，按实现类注入会失败。 */
     @Autowired
     private IRechargeCreditTx actualCreditTx;
     @Autowired
@@ -217,12 +228,15 @@ class RechargeCreditTxDbTest {
     private TestCreditHarness creditTx;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private PlatformTransactionManager txManager;
 
     @BeforeEach
     void reset() {
-        // E2E-04 包D：充值入账同事务建立权益批次，故本类的 schema 必须包含它。
-        // uk_batch_order 是「每笔充值恰好一个批次」的物理保证——本类的重放用例
-        // 正是靠它与 uk_card_issue_order 一起把「重放不得二次发权益」钉死。
+        // E2E-04 包D：入账同事务建批次，uk_batch_order 保证每笔充值恰一个批次、重放不二次发权益。
+        // 通知 outbox 表缺失会让整个入账事务失败
+        com.jbk.serve.service.mini.notify.WechatNotifyTestSchema.create(jdbc);
+        com.jbk.serve.service.mini.notify.WechatNotifyTestSchema.truncate(jdbc);
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_card_entitlement_batch (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -281,7 +295,7 @@ class RechargeCreditTxDbTest {
                   LAST_ERROR VARCHAR(500), PROCESSED_TIME VARCHAR(20), DATA_STATUS TINYINT DEFAULT 0,
                   UPDATE_TIME VARCHAR(20)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
-        // uk_wallet_flow_biz_key 是本测试的主角：它，而不是应用层判断，才是防重复入账的那道闸
+        // uk_wallet_flow_biz_key（而非应用层判断）是防重复入账的那道闸
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_wallet_flow (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -299,8 +313,7 @@ class RechargeCreditTxDbTest {
                   ID BIGINT PRIMARY KEY, DATA_STATUS TINYINT DEFAULT 0
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
         jdbc.update("INSERT IGNORE INTO ws_user(ID, DATA_STATUS) VALUES(9, 0)");
-        // 包D 批次表逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键，
-        // 表现为与被测逻辑无关的 DuplicateKey，掩盖真正的断言
+        // 批次表逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键
         jdbc.execute("TRUNCATE TABLE ws_card_entitlement_batch");
         jdbc.execute("TRUNCATE TABLE ws_wallet_flow");
         jdbc.execute("DELETE FROM ws_payment_event");
@@ -331,6 +344,42 @@ class RechargeCreditTxDbTest {
                 CARD_ID, "VC001", USER_ID, 5500L, 470120L, SCOPE, expireTime, status);
     }
 
+    // ================= 0：到账通知与入账同事务 =================
+
+    /** 入账成功 → 通知登记恰一行，键带订单号（查真表而非 mock）。 */
+    @Test
+    void creditEnqueuesRechargeCreditedNotice() {
+        assertEquals(IRechargeCreditTx.Outcome.CREDITED,
+                creditTx.credit(order(), snap(EXPIRE_DAYS), PAID_EARLY, PROCESSING).outcome());
+        assertEquals(1, noticeCount("RECHARGE_CREDITED"), "入账成功却没登记到账通知——用户不知道水到卡了");
+        assertEquals("WXN:RECHARGE_CREDITED:ORDER:" + ORDER_NO,
+                jdbc.queryForObject("SELECT BIZ_NOTIFY_KEY FROM ws_wechat_notify_outbox", String.class),
+                "通知键必须带订单号：不带的话同一用户第二次充值会被判成重复而静默丢弃");
+    }
+
+    /** 入账回滚 → 通知一并消失：REQUIRES_NEW 会留下通知且 Worker 真发，故必须 REQUIRED。 */
+    @Test
+    void rolledBackCreditLeavesNoNotice() {
+        // 回滚必须由外层事务驱动：前置守卫失败在登记点之前就返回，无论传播设置结果都是 0 行
+        PlatformTransactionManager tm = txManager;
+        TransactionTemplate outer = new TransactionTemplate(tm);
+        try {
+            outer.execute(status -> {
+                assertEquals(IRechargeCreditTx.Outcome.CREDITED,
+                        creditTx.credit(order(), snap(EXPIRE_DAYS), PAID_EARLY, PROCESSING).outcome());
+                // 事务内先证明确实登记到了，否则被前置守卫挡住也会伪装成通过
+                assertEquals(1, noticeCount("RECHARGE_CREDITED"), "事务内应已登记，否则本用例什么都没验");
+                throw new IllegalStateException("制造外层回滚");
+            });
+        }
+        catch (IllegalStateException expected) {
+            // 外层回滚正是本用例的前提
+        }
+        assertEquals(0, noticeCount("RECHARGE_CREDITED"),
+                "入账已回滚，却留下一条到账通知——Worker 会真的把它发出去，且无法撤回");
+        assertEquals(0, flowCount(), "同一事务里的流水也该一起消失（回滚是否真的发生的对照）");
+    }
+
     // ================= 1/2：续期基准取 max(当前有效期, 支付成功时间) =================
 
     /** 卡还没过期：应在**当前有效期**上叠加，用户不吃亏。20270710+365 天 = 20280710。 */
@@ -357,10 +406,7 @@ class RechargeCreditTxDbTest {
         assertEquals("20270722194314", expire(), "已过期卡必须从支付时间起算");
     }
 
-    /**
-     * 续期基准必须是**支付成功时间**而不是处理时间。
-     * 异步 Worker 晚跑一个月时，用处理时间起算会凭空多送用户一个月有效期，且重放结果不稳定。
-     */
+    /** 续期基准必须是支付成功时间：用处理时间会因 Worker 晚跑凭空多送有效期。 */
     @Test
     void neverUsesProcessingTimeAsExtensionBase() {
         seedCard("20260101000000", 1);
@@ -391,10 +437,7 @@ class RechargeCreditTxDbTest {
 
     // ================= 4：算得的新有效期已过期 → 零权益 + 不可恢复 =================
 
-    /**
-     * Worker 延迟到新有效期都已经过去：绝不写一段当场作废的权益，也不顺手把卡恢复成正常态。
-     * 用户已经付了钱，静默发放一份作废权益比不发放更糟。
-     */
+    /** Worker 延迟到新有效期已过去：不写当场作废的权益，也不恢复卡状态。 */
     @Test
     void refusesWhenComputedExpiryAlreadyPassed() {
         seedCard("20260101000000", 3);
@@ -426,10 +469,7 @@ class RechargeCreditTxDbTest {
 
     // ================= 6：冻结可恢复；注销/换主/范围变化不可恢复 =================
 
-    /**
-     * 冻结是<b>可恢复</b>的：冻结限制的是用卡，不是没收已付款项。
-     * 订单必须保持 2 等待重试，绝不能推进到 6——那会把可自动恢复的单堆进人工队列。
-     */
+    /** 冻结可恢复：订单保持 2 等待重试，不得推进 6 进人工队列。 */
     @Test
     void frozenCardIsRecoverableAndKeepsOrderPending() {
         seedCard(CARD_EXPIRE, 2);
@@ -476,10 +516,7 @@ class RechargeCreditTxDbTest {
 
     // ================= 7：重复处理，有效期只增加一次 =================
 
-    /**
-     * 第二次必须撞唯一键并整事务回滚。这是最贵的一条断言：
-     * 它同时验证了唯一键存在、事务确实回滚、<b>以及有效期不会被续第二次</b>。
-     */
+    /** 重放撞唯一键整事务回滚：有效期/水量不得续第二次。 */
     @Test
     void replayNeitherCreditsNorExtendsTwice() {
         creditTx.credit(order(), snap(EXPIRE_DAYS), PAID_EARLY, PROCESSING);
@@ -532,14 +569,10 @@ class RechargeCreditTxDbTest {
 
     // ================= 9：CAS 前态不匹配整体回滚 =================
 
-    /**
-     * 模拟并发：锁卡读到旧有效期后、UPDATE 之前被别人改掉。
-     * CAS 的 {@code EXPIRE_TIME <=> 旧值} 会让影响行数为 0，整事务回滚。
-     * 这条守卫没了就是经典的丢失更新——两笔充值只有一笔的有效期生效。
-     */
+    /** CAS 前态 {@code EXPIRE_TIME <=> 旧值} 失配 → 影响行数 0，防丢失更新。 */
     @Test
     void staleExpiryCasBlocksTheWrite() {
-        // 直接调 mapper 用一个**过期的**前态值发起 UPDATE，模拟 CAS 失配
+        // 用过期的前态值发起 UPDATE，模拟 CAS 失配
         int rows = jdbc.update(
                 "UPDATE ws_card SET BALANCE_ML = BALANCE_ML + ?, EXPIRE_TIME = ? "
                         + "WHERE ID = ? AND USER_ID = ? AND DATA_STATUS = 0 AND CARD_STATUS IN (1,3) "
@@ -591,10 +624,7 @@ class RechargeCreditTxDbTest {
         addEvent(1000L, 1);
         jdbc.update("UPDATE ws_order SET ORDER_STATUS=2, FINISH_TIME=NULL WHERE ID=?", ORDER_ID);
         jdbc.update("DELETE FROM ws_wallet_flow");
-        // 本用例人为把状态回退到「可再次入账」以模拟多事件收敛：删流水是为了绕开
-        // RECHARGE:<orderNo> 的幂等键。包D 之后批次也是这份状态的一部分
-        // （uk_batch_order 同样是一道入账幂等闸），故一并回退——
-        // 不回退的话失败原因会变成与被测收敛逻辑无关的 DuplicateKey。
+        // 回退到「可再次入账」以模拟多事件收敛：删流水绕开幂等键，批次一并回退防撞 uk_batch_order
         jdbc.update("DELETE FROM ws_card_entitlement_batch");
         seedCard(CARD_EXPIRE, 1);
         jdbc.update("UPDATE ws_payment_event SET PROCESSING_STATUS=2 WHERE ID=?", EVENT_ID);
@@ -617,10 +647,7 @@ class RechargeCreditTxDbTest {
         assertEquals(4, orderStatus(), "污染流水不得覆盖已完成订单");
     }
 
-    /**
-     * 历史污染可能已经给同一订单写过 FLOW_TYPE=1，却把幂等键写错。只查正确 bizKey 会把它当未入账，
-     * 再发一次权益；必须同时按 ORDER_ID+FLOW_TYPE 跨全部 DATA_STATUS 阻断。
-     */
+    /** 污染流水可能幂等键写错：必须按 ORDER_ID+FLOW_TYPE 跨全部 DATA_STATUS 阻断，否则二次发权益。 */
     @Test
     void pollutedRechargeFlowWithWrongBizKeyCannotCreditOrderAgain() {
         RechargeSnapshot.Parsed parsed = snap(EXPIRE_DAYS);
@@ -892,9 +919,8 @@ class RechargeCreditTxDbTest {
     }
 
     /**
-     * 审计 P0-2：过期赠卡的旧权益必须先作废再入新账——转正后的卡终值只等于本次
-     * 新充值权益（余额 0、水量 500000），绝不含过期前剩余的 5500分/470120mL。
-     * 旧批次同事务置5清零并留 EXPIRE_CLEAR 流水，新权益另建永久批次。
+     * 审计 P0-2：过期赠卡旧权益先作废再入新账，终值只含新充值权益；
+     * 旧批次同事务置5清零并留 EXPIRE_CLEAR 流水。
      */
     @Test
     void promoteClearsExpiredEntitlementBeforeCreditingNew() {
@@ -937,10 +963,7 @@ class RechargeCreditTxDbTest {
                 Long.class), "重放不得追加 EXPIRE_CLEAR 流水");
     }
 
-    /**
-     * 审计 R2 P0-1：过期赠卡上存在退款锁定(2)的正余额批次——settleExpired 刻意不动它，
-     * 资格重验必须发现「批次仍有正剩余」并拒绝转正，绝不让锁定余额随转正永久化。
-     */
+    /** 审计 R2 P0-1：退款锁定(2)批次仍有正剩余时拒绝转正，锁定余额不得随转正永久化。 */
     @Test
     void promoteRejectedWhenRefundLockedBatchStillHoldsBalance() {
         seedCard(GIFT_EXPIRED_AT, 3);
@@ -961,10 +984,7 @@ class RechargeCreditTxDbTest {
         assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow", Long.class));
     }
 
-    /**
-     * 审计 R2 P0-1：耗尽资格在创单时成立、入账前被退款/补偿恢复——锁内重验必须拒绝，
-     * 旧赠送权益绝不与新充值一起永久化。
-     */
+    /** 审计 R2 P0-1：创单后权益被退款/补偿恢复的，锁内重验必须拒绝。 */
     @Test
     void promoteRejectedWhenEntitlementRestoredAfterPlacing() {
         seedCard(GIFT_EXPIRED_AT, 3);
@@ -985,10 +1005,7 @@ class RechargeCreditTxDbTest {
         assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM ws_wallet_flow", Long.class));
     }
 
-    /**
-     * 审计 P1-1：入账锁内名额复查——创单到入账窗口内用户又有了付费卡时，
-     * 转正必须终止转人工（unrecoverable → 订单6/事实待对账），零权益写入。
-     */
+    /** 审计 P1-1：创单到入账窗口内用户又有付费卡 → 转人工（订单6/事实待对账），零写入。 */
     @Test
     void promoteRejectedWhenAnotherPaidCardAppearedSincePlacing() {
         seedCard(GIFT_EXPIRED_AT, 3);
@@ -1014,10 +1031,8 @@ class RechargeCreditTxDbTest {
     }
 
     /**
-     * 审计 P1-1 并发矩阵：同一用户两张过期赠卡、两笔已支付转正单并发入账。
-     * 用户行锁（payment→order→user→card 锁序）串行化两个事务：先到者转正成功，
-     * 后到者锁内名额复查发现已有付费卡 → unrecoverable（订单6/事实待对账通道），
-     * 零权益写入。最终恰一张付费卡、恰一条充值流水。
+     * 审计 P1-1：两张过期赠卡并发转正，用户行锁（payment→order→user→card 锁序）串行化，
+     * 后到者名额复查拒绝——最终恰一张付费卡、恰一条充值流水。
      */
     @Test
     void concurrentPromotionsOfTwoGiftCardsYieldExactlyOnePaidCard() throws Exception {
@@ -1143,6 +1158,12 @@ class RechargeCreditTxDbTest {
 
     private long amount() {
         return jdbc.queryForObject("SELECT BALANCE_AMOUNT FROM ws_card WHERE ID = ?", Long.class, CARD_ID);
+    }
+
+    /** 某类通知的登记条数。查真表，不查 mock。 */
+    private int noticeCount(String eventType) {
+        return jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ws_wechat_notify_outbox WHERE EVENT_TYPE = ?", Integer.class, eventType);
     }
 
     private String expire() {

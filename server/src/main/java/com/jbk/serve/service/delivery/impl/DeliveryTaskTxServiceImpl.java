@@ -20,9 +20,11 @@ import com.jbk.serve.service.delivery.DeliveryTransitions;
 import com.jbk.serve.service.delivery.IDeliveryMediaService;
 import com.jbk.serve.service.delivery.IDeliveryTaskTxService;
 import com.jbk.serve.service.message.IWsMessageService;
+import com.jbk.serve.service.mini.notify.WechatNotifyEnqueue;
 import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.tool.consts.delivery.DeliveryEnum;
 import com.jbk.tool.consts.message.MessageEnum;
+import com.jbk.tool.consts.mini.WechatNotifyEnum;
 import com.jbk.tool.consts.ops.OpsEnum;
 import com.jbk.tool.consts.trade.TradeEnum;
 import com.jbk.tool.data.delivery.bo.DeliveryExceptionReportBo;
@@ -53,6 +55,12 @@ import java.util.Set;
 @Service
 public class DeliveryTaskTxServiceImpl implements IDeliveryTaskTxService {
 
+    /**
+     * 订阅通知登记。与站内信同事务：本事务回滚意味着那件事没有发生，
+     * 通知必须一起消失，否则会出现"任务没接成，用户却收到已接单通知"。
+     */
+    @Autowired
+    private WechatNotifyEnqueue notifyEnqueue;
     @Autowired
     private WsDeliveryTaskMapper taskMapper;
     @Autowired
@@ -126,6 +134,11 @@ public class DeliveryTaskTxServiceImpl implements IDeliveryTaskTxService {
         messageService.sendInApp(task.getUserId(), MessageEnum.MsgDomain.DELIVERY, "配送员已接单",
                 "订单 " + order.getOrderNo() + " 已由配送员接单，备货后将从水站出发。",
                 "order", order.getOrderNo(), acceptTime);
+        // 订阅通知与站内信同事务登记：本事务若回滚，"已接单"这件事就没有发生，
+        // 通知也必须一起消失（与冲突留痕的 REQUIRES_NEW 方向相反，理由见 WechatNotifyEnqueue）
+        notifyEnqueue.enqueue(WechatNotifyEnum.EventType.DELIVERY_ACCEPTED,
+                WechatNotifyEnum.BizObjectType.DELIVERY_TASK, task.getTaskNo(), task.getUserId(),
+                JSONUtil.createObj().set("orderNo", order.getOrderNo()).set("acceptTime", acceptTime));
         recordNode(task.getTaskNo(), order.getOrderNo(), "accept", acceptTime, actorUserId,
                 DeliveryEnum.TaskStatus.PENDING, DeliveryEnum.TaskStatus.ACCEPTED);
         return reload(task.getId());
@@ -171,6 +184,9 @@ public class DeliveryTaskTxServiceImpl implements IDeliveryTaskTxService {
             messageService.sendInApp(task.getUserId(), MessageEnum.MsgDomain.DELIVERY, "已送达，等待签收确认",
                     "订单 " + order.getOrderNo() + " 已送达收货地址，等待三照签收。",
                     "order", order.getOrderNo(), actionTime);
+            notifyEnqueue.enqueue(WechatNotifyEnum.EventType.DELIVERY_ARRIVING,
+                    WechatNotifyEnum.BizObjectType.DELIVERY_TASK, task.getTaskNo(), task.getUserId(),
+                    JSONUtil.createObj().set("orderNo", order.getOrderNo()).set("arriveTime", actionTime));
         }
         recordNode(task.getTaskNo(), order.getOrderNo(), depart ? "depart" : "arrive", actionTime,
                 actorUserId, DeliveryEnum.TaskStatus.values()[expectedCurrent - 1],
@@ -395,14 +411,6 @@ public class DeliveryTaskTxServiceImpl implements IDeliveryTaskTxService {
         return array.toString();
     }
 
-    /**
-     * 履约节点审计（E2E-03 验收 P1-3）：接单/离站/送达/签收是关键状态变化，走可靠路径
-     * （与业务动作同一事务 + 业务幂等键：写入失败抛出令动作整体回滚，撞键读回核验语义，
-     * 绝不静默丢审计、也不留先于业务提交的幽灵审计）；
-     * 每个节点在任务生命周期内至多发生一次，幂等键 DNODE_<节点>:<任务号> 天然唯一。
-     * 操作者是配送员：portal 由领域层按能力校验结论显式记 COURIER，不走会话推断（推断只会得到 USER）。
-     * 时间与节点动作同源（规则13）。
-     */
     /** 分账机主解析（E2E-08）：配送单按任务所属站归属；无归属返回 null=该单无机主收款方。 */
     private Long stationOwnerOf(Long stationId) {
         if (stationId == null) {
@@ -412,6 +420,14 @@ public class DeliveryTaskTxServiceImpl implements IDeliveryTaskTxService {
         return station == null ? null : station.getOwnerUserId();
     }
 
+    /**
+     * 履约节点审计（E2E-03 验收 P1-3）：接单/离站/送达/签收是关键状态变化，走可靠路径
+     * （与业务动作同一事务 + 业务幂等键：写入失败抛出令动作整体回滚，撞键读回核验语义，
+     * 绝不静默丢审计、也不留先于业务提交的幽灵审计）；
+     * 每个节点在任务生命周期内至多发生一次，幂等键 {@code DNODE_<节点>:<任务号>} 天然唯一。
+     * 操作者是配送员：portal 由领域层按能力校验结论显式记 COURIER，不走会话推断（推断只会得到 USER）。
+     * 时间与节点动作同源（规则13）。
+     */
     private void recordNode(String taskNo, String orderNo, String node, String actionTime,
                             Long courierUserId, DeliveryEnum.TaskStatus from, DeliveryEnum.TaskStatus to) {
         domainEventService.recordReliableOnceAs(OpsEnum.ActorPortal.COURIER, courierUserId,

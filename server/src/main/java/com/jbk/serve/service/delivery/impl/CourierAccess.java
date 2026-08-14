@@ -22,6 +22,9 @@ import java.util.Set;
 @Component
 public class CourierAccess {
 
+    /** 绑号闸：履约主体必须可联系。 */
+    @Autowired
+    private com.jbk.serve.service.mini.auth.MiniPhoneGate phoneGate;
     @Autowired
     private WsCourierMapper courierMapper;
 
@@ -41,6 +44,10 @@ public class CourierAccess {
         if (actorUserId == null || actorUserId <= 0) {
             throw new JbkException("会话用户非法");
         }
+        // 绑号闸：配送员是要对真实用户上门的履约主体，下单人会拿到「谁来送」这条信息，
+        // 出问题时平台必须能立刻联系上他。这里是一期水配送全部动作
+        //（接单/推进/签收/异常上报/申诉举证）的唯一准入口，挂一处即全覆盖。
+        phoneGate.requirePhoneBound(actorUserId, "配送员履约");
         WsCourier courier = courierMapper.selectOne(Wrappers.lambdaQuery(WsCourier.class)
                 .eq(WsCourier::getUserId, actorUserId)
                 .orderByDesc(WsCourier::getId)

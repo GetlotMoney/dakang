@@ -58,6 +58,9 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
     /** 待接单取消的订单取消原因；同时是台账与审计里的口径来源。 */
     private static final String CANCEL_REASON = "用户在配送员接单前自助取消配送订单";
 
+    /** 绑号闸：配送扣款 + 上门履约，两类判据同时命中。 */
+    @Autowired
+    private com.jbk.serve.service.mini.auth.MiniPhoneGate phoneGate;
     @Autowired
     private TradeCardMapper tradeCardMapper;
     @Autowired
@@ -88,9 +91,8 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
         if (ruleId == null || ruleId <= 0) {
             throw new JbkException("自动补货规则ID非法");
         }
-        // 取消/暂停与扫描并发的裁决点（S2）：扫描的 ENABLED 快照可能已过期，
-        // 资金事务内锁行复核当前状态——用户先取消则此处 fail-closed，本期零订单零扣款；
-        // 用户取消动作后到达则等待本事务提交（该期属取消前已到期，生成合法）
+        // 取消/暂停与扫描并发的裁决点（S2）：扫描的 ENABLED 快照可能已过期，锁行复核当前状态——
+        // 用户先取消则 fail-closed，本期零订单零扣款
         WsDeliveryAutoRule rule = autoRuleMapper.selectByIdForUpdate(ruleId);
         if (ObjectUtil.isNull(rule) || ObjectUtil.notEqual(rule.getRuleStatus(),
                 DeliveryEnum.AutoRuleStatus.ENABLED.getValue())) {
@@ -108,6 +110,10 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
         // 抵扣水量的唯一权威值来自创单冻结快照（buildSnap.waterMl）：扣的必须恰是快照里冻结的量
         long deductMl = payByMl ? requireSnapWaterMl(order) : 0L;
         Long userId = order.getUserId();
+
+        // 绑号闸：配送既扣卡里的钱又要按账号上门；位置在锁卡与任何写之前，拒绝路径零副作用。
+        // 自动补货同样过闸——不让系统替联系不上的人反复扣款送货。
+        phoneGate.requirePhoneBound(userId, autoRule == null ? "配送下单扣款" : "自动补货扣款");
 
         // ① 锁卡（绕过 @TableLogic 读全部 DATA_STATUS：删除卡也要锁到并显式拒绝）
         WsCard card = tradeCardMapper.selectByIdForUpdate(order.getCardId());
@@ -159,9 +165,8 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
         WsWalletFlow consumeFlow = buildConsumeFlow(order, after, deductMl);
         walletFlowMapper.insert(consumeFlow);
 
-        // ⑥bis 权益批次分摊（E2E-04 包D-4，REQ-061）：与 ④ 的扣减同事务落到具体批次。
-        //      两维额度与 ④ 逐维相等——payWay=3 的水量与配送费分别摊，绝不互相折算。
-        //      分摊键与 ⑥ 的流水幂等键同源（DeliveryConsumeFlow），返还时才找得回这次消费。
+        // ⑥bis 权益批次分摊（E2E-04 包D-4，REQ-061）：与 ④ 同事务、两维额度逐维相等不互相折算；
+        //      分摊键与流水幂等键同源（DeliveryConsumeFlow），返还时才找得回这次消费
         entitlementLedger.allocateOnConsume(
                 new EntitlementLedger.ConsumeRef(order.getCardId(), userId, order.getId(),
                         consumeFlow.getId(), EntitlementLedger.consumeKey(order)),
@@ -229,9 +234,8 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
             throw new JbkException("配送员已接单或任务已推进，无法自助取消，请联系客服");
         }
 
-        // 返还额度先算：额度锚点取创单冻结快照，并与创单写下的那条扣款流水逐维精确相等
-        // （AfterSaleQuota.caps 内部断言，不等即账实不符 fail-closed）。
-        // 取消 = 原样退回，返还恒等于封顶上限，故直接取 fullRefund——此处没有、也不该有 payWay 分支。
+        // 返还额度锚点取创单冻结快照，并与原扣款流水逐维精确相等（AfterSaleQuota.caps 内部断言）；
+        // 取消=原样退回，返还恒等于封顶上限，直接取 fullRefund，无 payWay 分支
         DeliveryRefundSnapshot.Parsed snap = DeliveryRefundSnapshot.require(order);
         WsWalletFlow deduct = DeliveryConsumeFlow.require(walletFlowMapper, order);
         AfterSaleQuota.Caps caps = AfterSaleQuota.caps(snap,
@@ -239,9 +243,8 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
                 DeliveryConsumeFlow.requireChange(deduct.getMlChange(), "原扣款流水水量"));
         AfterSaleStrategy.Refund refund = AfterSaleStrategy.fullRefund(caps);
 
-        // ① 任务 1→6：WHERE 带 ID + 前态 + VERSION + COURIER_ID IS NULL，影响行必须 == 1（铁律①）。
-        //    COURIER_ID IS NULL 是与「1待接单」互为印证的第二条件：接单事务同时写状态与配送员，
-        //    只认状态时，一个被外力改回 1 却仍挂着配送员的任务会被当成可取消
+        // ① 任务 1→6：WHERE 带 ID+前态+VERSION+COURIER_ID IS NULL，影响行必须==1（铁律①）；
+        //    COURIER_ID IS NULL 与「1待接单」互为印证，防被外力改回 1 却仍挂配送员的任务被取消
         int taskMoved = taskMapper.update(null, Wrappers.lambdaUpdate(WsDeliveryTask.class)
                 .set(WsDeliveryTask::getTaskStatus, cancelled)
                 .set(WsDeliveryTask::getVersion, task.getVersion() + 1)
@@ -255,9 +258,8 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
             throw new JbkException("配送任务已被接单或状态已变化，取消失败");
         }
 
-        // ② 订单 2→7已退款：影响行必须 == 1。这里就把订单落成"已退款"而钱尚未退，是本链路刻意
-        //    承担的中间态——订单状态必须先于资金独占，否则两个并发取消会各自登记一笔满额返还。
-        //    代价是「订单已是 7 但钱在途」，由售后动作的终态与用户提示兜底（见接口注释）。
+        // ② 订单 2→7已退款：订单状态必须先于资金独占，否则两个并发取消会各自登记满额返还；
+        //    代价「订单已 7 但钱在途」由售后动作终态与用户提示兜底（见接口注释）
         int orderMoved = orderMapper.update(null, Wrappers.lambdaUpdate(WsOrder.class)
                 .set(WsOrder::getOrderStatus, TradeEnum.OrderStatus.REFUNDED.getValue())
                 .set(WsOrder::getCancelReason, CANCEL_REASON)
@@ -270,9 +272,8 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
             throw new JbkException("订单状态已变化，取消失败");
         }
 
-        // ③ 登记待执行卡内退款。STRATEGY_CODE/APPROVED_COUNT/APPROVE_BY 恒为 NULL：
-        //    取消没有补偿策略，也没有运营批准人（用户自助）。撞唯一键时内核按幂等返回既有行——
-        //    重放取消不会产生第二笔返还（铁律②：幂等靠 uk_after_sale_source，不靠查重）
+        // ③ 登记待执行卡内退款；STRATEGY_CODE/APPROVED_COUNT/APPROVE_BY 恒 NULL（用户自助无批准人）。
+        //    撞 uk_after_sale_source 按幂等返回既有行，重放取消不产生第二笔返还（铁律②）
         WsAfterSaleAction draft = new WsAfterSaleAction()
                 .setSourceType(AfterSaleEnum.SourceType.DELIVERY_CANCEL.getValue())
                 .setSourceId(order.getId())
@@ -354,10 +355,9 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
     }
 
     /**
-     * 落库前的最后一道自洽闸：订单/任务共键一致 + 总额恒等式（规则2，D-214 口径：
-     * ORDER_AMOUNT = WATER_AMOUNT + DELIVERY_FEE 对两种支付方式一体成立——payWay=3 的
-     * 水费以水量抵扣，WATER_AMOUNT 必须为 0，订单金额即配送费）。
-     * 编排层装配错位（金额拆分与总额不等、任务归属漂移）宁可拒单也不能带病入库。
+     * 落库前最后一道自洽闸：订单/任务共键一致 + 总额恒等式（规则2，D-214：ORDER_AMOUNT =
+     * WATER_AMOUNT + DELIVERY_FEE 一体成立，payWay=3 的 WATER_AMOUNT 必须为 0）。
+     * 装配错位宁可拒单也不带病入库。
      */
     private void requireConsistentDraft(WsOrder order, WsDeliveryTask task) {
         if (ObjectUtil.isNull(order) || ObjectUtil.isNull(task)) {
@@ -400,9 +400,8 @@ public class DeliveryOrderTxServiceImpl implements IDeliveryOrderTxService {
     }
 
     /**
-     * 扣减 0 行时的精确拒因（同事务读取当前值；锁内已排除归属/状态，剩余基本是余量不足）。
-     * 余量不足的文案由调用点按扣减对象传入：payWay=3 两步扣减分别给出
-     * 「水量不足以抵扣」与「余额不足以支付配送费」，不得混用成一句让用户猜。
+     * 扣减 0 行时的精确拒因（同事务读当前值）；payWay=3 两步扣减分别给「水量不足」
+     * 与「余额不足以支付配送费」文案，不得混成一句。
      */
     private JbkException diagnoseDeductFailure(Long cardId, Long expectedOwnerUserId, String insufficientMessage) {
         WsCard card = tradeCardMapper.selectById(cardId);

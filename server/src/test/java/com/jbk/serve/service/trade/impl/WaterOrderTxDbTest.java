@@ -95,6 +95,19 @@ class WaterOrderTxDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -130,6 +143,7 @@ class WaterOrderTxDbTest {
                     .getResources("classpath:mapper/trade/*.xml"));
             return new SqlSessionTemplate(factory.getObject());
         }
+
 
         @Bean
         MapperFactoryBean<TradeCardMapper> tradeCardMapper(SqlSessionTemplate t) {
@@ -247,6 +261,7 @@ class WaterOrderTxDbTest {
     @BeforeEach
     void reset() {
         jdbc.execute("""
+
                 CREATE TABLE IF NOT EXISTS ws_card (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
                   DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),
@@ -433,10 +448,7 @@ class WaterOrderTxDbTest {
     }
 
     // ================= 0：设备可用性事务内复验（B20，预检不是安全边界） =================
-    //
-    // 预检在扣款事务之前，两者之间隔着编排层装配与锁卡等待。这段窗口里设备离线、进入维护、
-    // 上报阻断故障码都不会回滚已经通过的预检结论——事务内不重判，就会对一台已知不可用的
-    // 设备照常扣款建单。以下用例把「预检通过后设备变化」压到最贴近的位置：直接改库后进事务。
+    // 预检到扣款之间设备可能变化，事务内不重判就会对已知不可用的设备扣款建单
 
     private void seedFault(String code, int blockOrderFlag) {
         jdbc.update("INSERT INTO ws_fault_dict(FAULT_CODE,FAULT_NAME,FAULT_LEVEL,BLOCK_ORDER_FLAG) "
@@ -530,12 +542,8 @@ class WaterOrderTxDbTest {
         assertEquals(1, count("ws_order"));
     }
 
-    // ===== 0b：快照 vs 当前读（R1-P1-1）——事务已建立一致性快照后，档案被别的事务改掉 =====
-    //
-    // 这四条是上一组用例证明不了的：那里的档案在事务开始前就已经是坏状态，普通快照读也能看见。
-    // 真正的漏洞形态是「本事务先读了一眼（快照定格），之后别的事务改了档案」——此时普通读永远
-    // 看不到新值，只有当前读（FOR UPDATE / LOCK IN SHARE MODE）能读到。用例用外层事务显式
-    // 建立快照，再用独立连接改库并提交，最后在同一事务内下单：读到旧值即放行，就是漏洞。
+    // ===== 0b：快照 vs 当前读（R1-P1-1）=====
+    // 快照定格后档案被并发改动：普通读永远看不到新值，必须当前读（FOR UPDATE）才能核到
 
     /** 在事务外用独立连接改库并提交——模拟并发的另一个事务。 */
     private void commitFromAnotherConnection(String sql, Object... args) throws Exception {
@@ -634,10 +642,7 @@ class WaterOrderTxDbTest {
         });
     }
 
-    // ===== 0c：冻结快照与当前档案一致（R2-P1-1）=====
-    //
-    // 快照冻结的是「用户当时认可的交易身份」。共键全对得上、设备也可用，但同一个出水口把水种
-    // 从 8 改成 9——用户买的已经不是他确认的那种水了。不核这一条，改水种就是无痕换货。
+    // ===== 0c：冻结快照与当前档案一致（R2-P1-1）：不核水种变更，改水种就是无痕换货 =====
 
     @Test
     void waterTypeChangedAfterPrecheckIsRejectedWithZeroSideEffects() {
@@ -717,11 +722,7 @@ class WaterOrderTxDbTest {
         assertEquals(1, count("ws_order"));
     }
 
-    // ===== 0e：扫码报价三方一致（S2）=====
-    //
-    // 事务终判要同时看三份：Redis 会话冻结报价、订单 PACKAGE_SNAP、锁内当前出水口。
-    // 少核任何一边都留着缝：只核快照与档案，装配层就能拿别的会话装单；
-    // 只核会话与快照，后台调价仍会按旧价扣款而用户看到的是另一个数。
+    // ===== 0e：扫码报价三方一致（S2）：会话冻结报价/订单快照/锁内出水口，少核任一边都留缝 =====
 
     @Test
     void priceChangedAfterScanIsRejectedWithZeroSideEffects() {
@@ -796,10 +797,8 @@ class WaterOrderTxDbTest {
         assertEquals(-5_000L, jdbc.queryForObject("SELECT ML_CHANGE FROM ws_wallet_flow", Long.class));
         assertEquals(BALANCE_ML - 5_000L, jdbc.queryForObject("SELECT ML_AFTER FROM ws_wallet_flow", Long.class));
 
-        // 包D-4 正向断言：卡扣了，权益批次必须同事务一起扣，且分摊键为 DISPENSE:<订单号>。
-        // 删掉 createWaterOrder 里的 allocateOnConsume 那一段，本段立刻红——
-        // 只看卡与流水的话，「卡扣了、批次没扣」是查不出来的，
-        // 而它的后果是这笔消费在退款折算里等于没发生过（批次剩余虚高 ⇒ 多退）。
+        // 包D-4 正向断言：卡扣了批次必须同事务扣，分摊键 DISPENSE:<订单号>——
+        // 批次没扣的后果是退款折算时批次剩余虚高 ⇒ 多退
         assertEquals(1, count("ws_entitlement_allocation"));
         assertEquals("DISPENSE:" + saved.getOrderNo(),
                 jdbc.queryForObject("SELECT BIZ_KEY FROM ws_entitlement_allocation", String.class));

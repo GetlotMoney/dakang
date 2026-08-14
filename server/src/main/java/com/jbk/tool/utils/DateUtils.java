@@ -13,15 +13,10 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 
-/**
- * @ClassName DateUtils
- * @Author xs
- * @Date 2023/8/16 14:40
- * @Version 1.0
- */
+/** 日期工具类。 */
 public class DateUtils {
     public final static String DATE_TIME_1 = "yyyyMMddHHmmss";
-    /** yyyyMMddHHmmss 的共享格式器（DateTimeFormatter 线程安全）。曾在充值域 7 个类各建一份，改格式漏一处即口径分裂。 */
+    /** yyyyMMddHHmmss 的共享格式器（线程安全），全仓单一出处，防口径分裂。 */
     public static final java.time.format.DateTimeFormatter COMPACT_FORMATTER =
             java.time.format.DateTimeFormatter.ofPattern(DATE_TIME_1);
     public final static String DATE_TIME_2 = "yyyy年MM月dd日 HH:mm";
@@ -244,63 +239,17 @@ public class DateUtils {
 
     /**
      * dayofweek
-     *
-     * @param bookingTime
-     * @return
      */
     public static int dayOfWeek(cn.hutool.core.date.DateTime bookingTime) {
         int dayOfWeek = bookingTime.dayOfWeek();
         return dayOfWeek - 1 == 0 ? 7 : dayOfWeek - 1;
     }
 
-    /**
-     * 获取当前学年
-     * @return
-     */
-    public static String currentSchoolYear(){
-        //获取年份，转成int
-        Integer year = DateUtil.date().year();
-        //获取月，转成int
-        int month = DateUtil.date().month() + 1;
-        if (month >= 8 && month <= 12) {
 
-        } else if (month == 1) {
-            year--;
-        } else if (month >= 2 && month < 8) {    //第二学期
-            year--;
-        }
-        return year.toString();
-    }
 
     /**
-     * 获取当前学期
-     * @return
-     */
-    public static Integer currentSchoolTerm(){
-        //获取月，转成int
-        int month = DateUtil.date().month() + 1;
-        Integer term = 0;
-        if (month >= 8 && month <= 12) {
-            term = 0;
-        } else if (month == 1) {
-            term = 0;
-        } else if (month >= 2 && month < 8) {    //第二学期
-            term = 1;
-        }
-        return term;
-    }
-
-    /**
-     * yyyyMMddHHmmss 时间串加秒——<b>全仓单一出处</b>。
-     *
-     * <p>本方法出现之前，同样一段「parse → plusSeconds → format」在
-     * RechargeIssueTxImpl、RechargeCreditFailureTxImpl、RechargePayFactServiceImpl、
-     * AdminAfterSaleServiceImpl 里各私有一份，共四份。它们算的都是重试排期时间——
-     * 一旦其中一份被改（比如有人加了时区处理或改了容错方式），排期口径就会分叉，
-     * 而分叉的表现是「某些重试永远不到期」这种极难定位的形状。</p>
-     *
-     * <p>非法时间串一律抛 {@link JbkException} 而不是让 {@code DateTimeParseException} 逸出：
-     * 调用点全部在资金重试路径上，那里需要的是一个能落进 LAST_ERROR 的可读原因。</p>
+     * yyyyMMddHHmmss 时间串加秒——全仓单一出处（重试排期口径统一）。
+     * 非法时间串抛 {@link JbkException} 而非逸出 DateTimeParseException：调用点在资金重试路径，需要可读原因落 LAST_ERROR。
      *
      * @param time    14 位业务时间串
      * @param seconds 增加的秒数，可为负
@@ -311,6 +260,27 @@ public class DateUtils {
                     .plusSeconds(seconds).format(COMPACT_FORMATTER);
         } catch (RuntimeException e) {
             throw new JbkException("业务时间格式非法，无法安排重试");
+        }
+    }
+
+    /** 14 位数字形态；只做形状判断，真实性由 {@link #isCanonicalBusinessTime} 负责。 */
+    private static final java.util.regex.Pattern COMPACT_SHAPE =
+            java.util.regex.Pattern.compile("^\\d{14}$");
+
+    /**
+     * 严格业务时间判据：14 位数字 + 能解析 + 格式化回来逐字相同，三条缺一不可。
+     * 陷阱：SMART 解析会把 20260230 悄悄夹成 2026-02-28 不报错，必须往返比对拒绝。用于资金链外部时间的准入。
+     */
+    public static boolean isCanonicalBusinessTime(String time) {
+        if (time == null || !COMPACT_SHAPE.matcher(time).matches()) {
+            return false;
+        }
+        try {
+            return time.equals(java.time.LocalDateTime.parse(time, COMPACT_FORMATTER)
+                    .format(COMPACT_FORMATTER));
+        }
+        catch (RuntimeException invalid) {
+            return false;
         }
     }
 }

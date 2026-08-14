@@ -8,12 +8,6 @@ import com.jbk.tool.exception.JbkException;
 
 import java.nio.charset.StandardCharsets;
 
-/**
- * @ClassName RSAUtils
- * @Author xs
- * @Date 2024/11/6 10:33
- * @Version 1.0
- */
 public class RSAUtils {
 
     private static final String PRIVATE_KEY = requireEnv("DAKANG_RSA_PRIVATE_KEY");

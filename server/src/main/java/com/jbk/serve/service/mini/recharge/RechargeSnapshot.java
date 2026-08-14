@@ -43,11 +43,9 @@ public final class RechargeSnapshot {
     private static final String F_CARD_SCOPE = "targetCardScopeSnapshot";
     private static final String F_ELIGIBILITY = "targetCardEligibilitySnapshot";
     /**
-     * 赠卡转正标志（D-416，2026-08-06 甲方确认）：创单时冻结「本单入账即把赠卡转为
-     * 永久付费卡」的意图。<b>可选字段</b>——存量快照没有它，parse 缺省按 false；
-     * 一旦出现则必须是严格 boolean。它同时是三处校验的豁免钥匙：
-     * ①套餐永久×卡有限的类型交叉校验；②付款窗按永久卡口径（不被旧到期日钳制）；
-     * ③入账时走「置 EXPIRE_TIME=NULL + 状态恢复」的转正 CAS。</p>
+     * 赠卡转正标志（D-416）：可选字段，存量快照缺省按 false，出现则必须严格 boolean。
+     * 三处校验的豁免钥匙：①套餐永久×卡有限的类型交叉校验；②付款窗按永久卡口径；
+     * ③入账走「置 EXPIRE_TIME=NULL + 状态恢复」的转正 CAS。
      */
     private static final String F_PROMOTE = "promoteToPermanent";
     private static final String F_CARD_STATUS_AT_CREATE = "cardStatusAtCreate";

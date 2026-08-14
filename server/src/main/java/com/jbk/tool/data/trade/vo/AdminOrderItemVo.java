@@ -10,8 +10,9 @@ import java.io.Serializable;
  * 管理端订单列表项 Vo（PC 订单中心）。
  * <p>
  * 字段严格对齐前端 {@code client/src/api/order.ts} 的 OrderItem 契约（保 H2-FE 类型零改）。
- * 派生字段来源：userName/userPhone 关联 ws_user，stationName 关联 ws_station，
+ * 派生字段来源：userName/userPhoneRaw 关联 ws_user，stationName 关联 ws_station，
  * deviceNo 关联 ws_device，outletNo 关联 ws_device_outlet，cardNo 关联 ws_card。
+ * 下单人号码只以 actorMaskedPhone（脱敏）出接口，原值走 userPhoneRaw 且不序列化。
  * Long 型经全局 Jackson 序列化为字符串防 JS 精度丢失，前端接真时归一化。
  * </p>
  *
@@ -39,8 +40,14 @@ public class AdminOrderItemVo implements Serializable {
     @Schema(description = "下单用户姓名（关联 ws_user 派生）")
     private String userName;
 
-    @Schema(description = "下单用户手机号（关联 ws_user 派生）")
-    private String userPhone;
+    /**
+     * SQL 取出的下单人原始手机号，仅作 Service 层脱敏输入，出接口的是 {@code actorMaskedPhone}。
+     * 与 {@code cardOwnerPhoneRaw} 同口径：{@code @JsonIgnore} 兜底保证即使某条装配路径漏调脱敏，
+     * 原始号码也不会被序列化——订单分页是全量 C 端手机号最大的一个批量出口，不接受「靠调用方自觉」。
+     */
+    @Schema(hidden = true)
+    @JsonIgnore
+    private String userPhoneRaw;
 
     @Schema(description = "水站ID")
     private Long stationId;
@@ -165,10 +172,7 @@ public class AdminOrderItemVo implements Serializable {
 
     /**
      * 取水异常核账确认标记（E2E-04 包A）：ws_after_sale_action 存在 SOURCE_TYPE=3 且 ACTION_STATUS=3 的行。
-     *
-     * <p>由订单查询 SQL 用 EXISTS 子查询一并带出，而不是在 Service 层逐行查库——追溯与分页两条路径
-     * 都要用它做订单-指令状态矩阵判定，逐行查即是 N+1。核账会把订单从 6异常待补偿 推进到 4/7，
-     * 而指令仍停在失败/超时终态；缺了本标记，PC 追溯会把每一张已核账订单都报成 mismatch。</p>
+     * 由订单查询 SQL 用 EXISTS 一并带出（Service 逐行查即 N+1）；缺了它，PC 追溯会把已核账订单全报成 mismatch。
      */
     @Schema(description = "是否已经过取水异常核账确认（服务端派生，用于订单-指令状态矩阵判定）")
     private Boolean afterSaleConfirmed;

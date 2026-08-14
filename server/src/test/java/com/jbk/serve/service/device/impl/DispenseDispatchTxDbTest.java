@@ -89,6 +89,19 @@ class DispenseDispatchTxDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -126,6 +139,7 @@ class DispenseDispatchTxDbTest {
             bean.setSqlSessionTemplate(t);
             return bean;
         }
+
 
         @Bean
         MapperFactoryBean<WsCommandMapper> wsCommandMapper(SqlSessionTemplate t) {
@@ -252,6 +266,7 @@ class DispenseDispatchTxDbTest {
     void reset() {
         Mockito.reset(tradeTxSpy, orderMapperSpy);
         jdbc.execute("""
+
                 CREATE TABLE IF NOT EXISTS ws_command (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
                   DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),

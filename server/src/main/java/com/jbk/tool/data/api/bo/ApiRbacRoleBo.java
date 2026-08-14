@@ -16,10 +16,6 @@ import jakarta.validation.constraints.NotNull;
 import java.io.Serializable;
 
 /**
- * <p>
- *
- * </p>
- *
  * @author xs
  * @since 2025-09-05
  */

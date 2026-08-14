@@ -37,6 +37,8 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
+import com.jbk.serve.service.device.DeviceCommandRisk;
+import com.jbk.tool.utils.satoken.StpKit;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -48,18 +50,9 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * 高风险设备控制实现（E2E-05 包B）。
- *
- * <h3>为什么 confirm 不重新解析目标</h3>
- * <p>目标集合在 preview 阶段由服务端解析并冻结进 ticket；confirm 只执行冻结快照。
- * 若 confirm 重新解析，「预览 37 台、确认时变 41 台」会让确认失去意义——运营确认的
- * 就是快照那一份。设备档案在窗口期内消失的个别目标，在展开时按失败计入聚合，
- * 不会让批次卡在处理中。</p>
- *
- * <h3>崩溃窗口的边界</h3>
- * <p>confirm 展开为逐设备 save + publish（publish 失败即刻转终态，指令链路自身兜底）。
- * 若服务在展开中途崩溃，批次聚合会以「已展开子指令 + 已直记失败」收敛，未展开的目标
- * 既无子指令也无下发——宁可少发绝不多发，与资金链「宁可拒绝不可错付」同一取向。</p>
+ * 高风险设备控制实现（E2E-05 包B）。confirm 不重新解析目标：运营确认的就是 preview 冻结的
+ * 快照，窗口期消失的个别目标在展开时按失败计入聚合。崩溃窗口：展开中途崩溃时批次以
+ * 「已展开子指令 + 已直记失败」收敛，未展开目标零下发——宁可少发绝不多发。
  *
  * @author dakang
  * @since 2026-07-30
@@ -103,6 +96,27 @@ public class DeviceControlServiceImpl implements IDeviceControlService {
     @Resource(name = "redisTemplate1")
     private RedisTemplate<String, Object> redis;
 
+    /**
+     * 冻结凭据里的指令若属加闸档，要求当前会话处于二级认证安全期。
+     *
+     * <p>判据取「冻结值 ∪ 现算值」的并集而不是只信冻结值：本次改造之前签发的 ticket
+     * 里没有 requireSafe 字段，只信冻结值会让部署瞬间在途的那批凭据全部免检。
+     * fail-closed 的代价只是多一次口令，反过来的代价是一个免检窗口。</p>
+     */
+    private void requireSafeIfGated(JSONObject frozen) {
+        Integer cmdType = frozen.getInt("cmdType");
+        if (cmdType == null) {
+            return;
+        }
+        boolean need = frozen.getBool("requireSafe", false)
+                || DeviceCommandRisk.requireSafe(cmdType, frozen.getInt("scopeType"));
+        if (need) {
+            // 抛 Sa-Token 原生异常，由 GlobalExceptionHandler 统一映射成 1440，
+            // 前端据此就地弹口令框并原样重放——不自造第二种「需要二次认证」的表达
+            StpKit.MANAGE.checkSafe();
+        }
+    }
+
     @Override
     public DeviceControlPreviewVo preview(WsCommandBatchBo bo, Long operatorId) {
         boolean emergencyStop = DeviceEnum.CmdType.STOP_DISPENSE.getValue() == bo.getCmdType();
@@ -144,6 +158,10 @@ public class DeviceControlServiceImpl implements IDeviceControlService {
         frozen.set("paramDigest", paramDigest);
         frozen.set("deviceIds", targetIds);
         frozen.set("orderId", orderId);
+        // 档位判定只在预览这一处发生，结果连同摘要一起冻进凭据；确认段只复验冻结值，
+        // 不重新分档——否则两处判据一旦漂移，确认放行的就不是预览时说好的那件事
+        boolean requireSafe = DeviceCommandRisk.requireSafe(bo.getCmdType(), bo.getScopeType());
+        frozen.set("requireSafe", requireSafe);
         RedisUtils.set(redis, TICKET_KEY_PREFIX + ticket, frozen.toString(), ticketTtlSeconds);
 
         return new DeviceControlPreviewVo()
@@ -157,7 +175,10 @@ public class DeviceControlServiceImpl implements IDeviceControlService {
                         .limit(20).collect(Collectors.toList()))
                 .setTargetDigest(targetDigest)
                 .setParamDigest(paramDigest)
-                .setActiveOrderNo(activeOrderNo);
+                .setActiveOrderNo(activeOrderNo)
+                // 预览本身不拦：预览的价值是让运营先看见「我以为 37 台、实际 41 台」，
+                // 把口令挡在这个信息前面是本末倒置
+                .setRequireSafe(requireSafe);
     }
 
     @Override
@@ -165,8 +186,16 @@ public class DeviceControlServiceImpl implements IDeviceControlService {
         if (StrUtil.hasBlank(bo.getOperationTicket(), bo.getTargetDigest(), bo.getParamDigest())) {
             throw new JbkException("确认信息不完整，请重新预览");
         }
+        String ticketKey = TICKET_KEY_PREFIX + bo.getOperationTicket();
+        // 二次验证必须在 GETDEL **之前**判（D-423）：闸放在领取之后的话，一次未认证的确认
+        // 就把凭据销毁了，运营被迫重走预览——那正好是二次验证最该避免的「假故障」。
+        // 这里先窥视不销毁，闸过了再原子领取。
+        Object peek = RedisUtils.get(redis, ticketKey);
+        if (ObjectUtil.isNotNull(peek)) {
+            requireSafeIfGated(JSONUtil.parseObj(peek.toString()));
+        }
         // GETDEL 原子领取：同一 ticket 并发/重复确认只有一个赢家，其余拿到 null（任务书 3.5）
-        Object raw = RedisUtils.getDel(redis, TICKET_KEY_PREFIX + bo.getOperationTicket());
+        Object raw = RedisUtils.getDel(redis, ticketKey);
         if (ObjectUtil.isNull(raw)) {
             throw new JbkException("操作凭据不存在、已过期或已使用，请重新预览");
         }

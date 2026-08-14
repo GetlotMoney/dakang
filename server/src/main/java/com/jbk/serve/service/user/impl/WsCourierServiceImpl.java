@@ -176,11 +176,15 @@ public class WsCourierServiceImpl extends ServiceImpl<WsCourierMapper, WsCourier
         }
     }
 
-    /** 填充派生字段：关联用户姓名、服务水站名称集 */
+    /**
+     * 填充派生字段：关联用户姓名、服务水站名称集，并统一脱敏联系电话。
+     * <p>page/detail/getByUser 三条读路径都汇聚到本方法，脱敏放在这里才不会有哪条路径漏网。</p>
+     */
     private void fillDerived(List<WsCourierVo> voList) {
         if (CollUtil.isEmpty(voList)) {
             return;
         }
+        voList.forEach(vo -> vo.setCourierPhone(com.jbk.tool.utils.PhoneMask.mask(vo.getCourierPhone())));
         List<Long> userIdList = voList.stream()
                 .map(WsCourierVo::getUserId)
                 .filter(ObjectUtil::isNotNull)

@@ -146,9 +146,8 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
         WsOrder persistedOrder = getByOrderNo(orderNo);
         if (ObjectUtil.isNotNull(persistedOrder)) {
             requireSameRequestOrder(persistedOrder, userId, requestId, bo);
-            // P0：幂等命中不许直接返回——首次创单可能在「扣款事务已提交、指令未落库」间隙失败或重启，
-            // 订单会停在「2 已支付、CMD_ID 空、无指令」。重试是补齐指令的唯一可靠时机，
-            // 统一交 post-commit 编排闸补发或转入可追溯异常终态，绝不让已扣款订单悬挂。
+            // P0：幂等命中不许直接返回——首次创单可能停在「2 已支付、CMD_ID 空、无指令」，
+            // 重试是补齐指令的唯一可靠时机，统一交 post-commit 闸补发或转异常终态
             ensureDispatchOrTerminal(persistedOrder);
             return buildDetail(latestOrElse(orderNo, persistedOrder));
         }
@@ -215,8 +214,7 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
                     }
                     throw conflict;
                 }
-                // P0：并发输方与普通幂等重试同一口径——赢方可能在指令下发前崩溃，
-                // 这里同样必须补齐指令或转入可追溯异常终态，不得原样返回悬挂单。
+                // P0：并发输方与普通幂等重试同一口径——同样必须补齐指令或转终态，不返回悬挂单
                 ensureDispatchOrTerminal(existed);
                 return buildDetail(latestOrElse(orderNo, existed));
             }
@@ -232,9 +230,8 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
             log.warn("写入取水订单幂等缓存失败，继续完成创单后流程 userId={} orderNo={} reason={}",
                     userId, orderNo, cacheFailure.getMessage());
         }
-        // P0：会话消费降级为 best-effort。扫码会话只是 Redis 里的一次性防重放提示层，
-        // 删除失败绝不能把「资金事务已提交」的订单表现成下单失败，更不能阻断出水指令创建——
-        // 会话残留最多导致一次多余的可用性预检，安全边界始终在下单事务内的二次校验。
+        // P0：会话消费 best-effort——删除失败绝不能把已扣款订单表现成下单失败或阻断指令创建，
+        // 安全边界始终在下单事务内的二次校验
         try {
             miniDeviceService.consumeScanSession(requestId);
         } catch (Exception sessionFailure) {
@@ -243,19 +240,14 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
         }
         // 事务提交后统一走终态闸（L1c/P0）：补发出水指令或转入可追溯异常终态。
         ensureDispatchOrTerminal(saved);
-        // 终态闸可能已把订单转为异常待补偿或绑定指令，故返回最新状态；但这一步在扣款事务提交之后，
-        // 绝不能因 DB 抖动让一次已成功扣款的创单返回异常——读失败即回退为刚落库的实例。
+        // 终态闸可能已改状态，返回最新；读失败回退刚落库实例——已扣款的创单绝不因回读抖动返回失败
         return buildDetail(latestOrElse(orderNo, saved));
     }
 
     /**
-     * P0 post-commit 终态闸（编排层唯一出口）：对「取水订单已扣款（2 已支付）且未关联指令（CMD_ID 空）」
-     * 的订单，调用幂等的 {@link IWsCommandService#sendDispenseForOrder}（内部以 CMD_ID 抢占 CAS 保证
-     * 并发重试最多产生一条有效指令）；下发异常时由 {@link #markAbnormalWhenDispatchLeftNoTrace}
-     * 把订单转入「6 异常待补偿」。终态只允许两种：已有关联指令，或订单进入可追溯异常终态——
-     * 禁止停留在「订单 2、CMD_ID 空、无指令」的悬挂态。
-     *
-     * <p>本方法自身绝不抛异常：资金事务已提交，任何编排层故障都不得把成功扣款表现成下单失败。</p>
+     * P0 post-commit 终态闸：对「已扣款且 CMD_ID 空」的取水单调用幂等的
+     * {@link IWsCommandService#sendDispenseForOrder}（CMD_ID 抢占 CAS），下发异常转「6 异常待补偿」；
+     * 禁止停留在悬挂态。本方法绝不抛异常——资金事务已提交，编排故障不得表现成下单失败。
      */
     // 包级可见：供同包单测直接覆盖「补发/终态/跳过」三类分支。
     void ensureDispatchOrTerminal(WsOrder order) {
@@ -275,16 +267,11 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     }
 
     /**
-     * P1-C 范围拒绝审计（编排层真实提交面）：用户真正提交下单、在事务前的复检因
-     * CARD_SCOPE_INVALID / CARD_SCOPE_DENIED 被拒时落一条可靠领域事件。
-     * 与事务内 {@code TradeOrderTxServiceImpl#scopeRejected} 共用同一幂等键
-     * {@code CARD_SCOPE_DENY:<orderNo>}——orderNo 由 userId+requestId 确定性派生，
-     * 无论拒绝发生在哪一层、重复强提交多少次，同一请求全库至多一条（uk_domain_event_biz_key）。
-     * 两层证据 decidedAt 各自取时，报文必不相同，因此必须走 recordReliableOnceIndependent
-     * 的「撞键即已留痕」语义；走读回核验的 recordReliableOnce 会把跨层/跨次撞键判成
-     * 语义不一致，把一次正常的范围拒绝炸成审计异常。
-     * 只有范围两码落痕；冻结/归属等其他卡阻断不属范围审计。独立预检接口（eligibility）
-     * 不经过本方法——预检不落审计。此处三元组取会话铸造值：这正是本层复检所依据的语境。
+     * P1-C 范围拒绝审计：仅 CARD_SCOPE_INVALID/DENIED 两码落痕，与事务内
+     * {@code TradeOrderTxServiceImpl#scopeRejected} 共用幂等键 {@code CARD_SCOPE_DENY:<orderNo>}，
+     * 同一请求全库至多一条。必须走 recordReliableOnceIndependent 的「撞键即已留痕」——
+     * 两层证据 decidedAt 各自取时报文必不相同，读回核验版会把正常撞键炸成审计异常。
+     * 独立预检接口不经过本方法（预检不落审计）。
      */
     private void recordScopeDenyAtSubmit(String orderNo, Long cardId, Long userId,
                                          ScanSessionInfo session, WaterEligibilityVo.CardBlockVo cardBlock) {
@@ -351,12 +338,9 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     }
 
     /**
-     * 出水指令下发异常后的兜底（S0-C）：仅当库中<b>确实没有留下任何可兜底事实</b>时，
-     * 把订单从「2 已支付」CAS 转为「6 异常待补偿」，使已扣款订单不会永久卡死且无人可见。
-     *
-     * <p>不覆盖既有兜底：订单已绑定 CMD_ID 或已存在指令行时一律不动——那属于既有指令超时/异常联动的范围。
-     * CAS 条件（状态仍为已支付 + CMD_ID 为空）保证不会踩踏并发推进的订单。本方法自身绝不抛异常，
-     * 不影响下单响应。人工补偿闭环属已登记的 S5，不在下单响应流程中处理。</p>
+     * 出水指令下发异常后的兜底（S0-C）：仅当库中无任何可兜底事实（无 CMD_ID、无指令行）时，
+     * 才把订单 CAS 从「2 已支付」转「6 异常待补偿」，不踩踏并发推进；已有指令的归既有状态机管。
+     * 本方法绝不抛异常，不影响下单响应。
      */
     // 包级可见：供同包单测直接覆盖「下发异常后是否留下可兜底事实」的三种分支。
     void markAbnormalWhenDispatchLeftNoTrace(Long orderId, String orderNo, Exception cause) {
@@ -370,8 +354,7 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
             if (ObjectUtil.isNotNull(commandRows) && commandRows > 0) {
                 return;
             }
-            // 与 WsCommandServiceImpl:240 同口径截断到 490：异常信息越详细越不能让 CANCEL_REASON 超长写失败，
-            // 否则整条兜底 UPDATE 报错 → 又退化回"无痕"。
+            // 截断到 490（与 WsCommandServiceImpl 同口径）：CANCEL_REASON 超长写失败会让兜底退化回"无痕"
             String reason = StrUtil.maxLength("出水指令下发失败且未生成指令，转异常待补偿："
                     + StrUtil.blankToDefault(cause.getMessage(), cause.getClass().getSimpleName()), 490);
             int updated = wsOrderMapper.update(null, Wrappers.lambdaUpdate(WsOrder.class)
@@ -407,8 +390,7 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
             throw new JbkException(ORDER_NO_COLLISION);
         }
 
-        // 快照解析与数值规则唯一实现在 WaterOrderSnapshot：此处再写一份必然与下单事务、
-        // 指令准备漂移出宽严不一的口径，最松的那一处就是绕过口。
+        // 快照解析与数值规则唯一实现在 WaterOrderSnapshot：再写一份必然漂移，最松的那处就是绕过口
         WaterOrderSnapshot.Frozen frozen;
         long expectedAmount;
         try {
@@ -459,19 +441,10 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     }
 
     /**
-     * ORDER_NO 确定性派生：{@code WO + sha256(userId + ":" + requestId) 前 20 位}，总长 22 位不变。
-     *
-     * <p>此前的算法是 {@code WO + yyyyMMdd + sha256(requestId)[0:12]}，有两个问题：</p>
-     * <ol>
-     *   <li><b>含日期 → 跨零点重放会生成不同订单号，幂等失效。</b>用户 23:59:59 发起、
-     *       网络重试落到 00:00:01，就会建出第二单、扣第二次钱。这是本次修复的主因。</li>
-     *   <li><b>不含 userId → 不同用户用同一 requestId 会撞号。</b>虽然
-     *       {@link #requireSameRequestOrder} 先比 userId 所以不会串单，但后到的用户会撞
-     *       {@code uk_order_no} 而永远下不了这一单。</li>
-     * </ol>
-     *
-     * <p>与充值订单号 {@code RechargeOrderNo.derive} 保持同一口径：只由「谁 + 哪次请求」决定，
-     * 不含时间、不含序列、不依赖缓存，因此跨重启、跨零点重放恒定。</p>
+     * ORDER_NO 确定性派生：{@code WO + sha256(userId + ":" + requestId) 前 20 位}，总长 22。
+     * 不含日期（含日期则跨零点重放生成不同单号、幂等失效、扣第二次钱）；含 userId
+     * （否则不同用户同 requestId 撞 uk_order_no）。与 {@code RechargeOrderNo.derive} 同口径：
+     * 只由「谁 + 哪次请求」决定，跨重启、跨零点重放恒定。
      */
     static String buildOrderNo(Long userId, String requestId) {
         String hash = SecureUtil.sha256(userId + ":" + requestId).substring(0, 20).toUpperCase();
@@ -483,8 +456,7 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     }
 
     private String buildSnap(String requestId, int unitPrice, long planMl, int payWay, Long waterTypeId) {
-        // 构造与解析共用 WaterOrderSnapshot 一套键名：这边少写一个字段、那边严格解析就会全线拒单，
-        // 两处各写各的迟早对不上，故不在本类拼 JSON
+        // 构造与解析共用 WaterOrderSnapshot 一套键名，不在本类拼 JSON（各写各的迟早对不上）
         return WaterOrderSnapshot.build(requestId, unitPrice, planMl, payWay, waterTypeId);
     }
 
@@ -516,17 +488,15 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
         Long flowCount = walletFlowMapper.selectCount(
                 Wrappers.lambdaQuery(WsWalletFlow.class)
                         .eq(WsWalletFlow::getOrderId, order.getId()));
-        // 嵌套结构对齐 order.ts OrderDetail：{order, commandNo, commandStatus, trace, flowCount}
-        // commandNo/commandStatus 当前恒为 null——本接口尚未查询 ws_command（接真属 L2-READ 切片）。
-        // 前端必须按「未知/未接入」呈现，不得把 null 解读为「无指令」或任何真实指令状态。
+        // 结构对齐 order.ts OrderDetail；commandNo/commandStatus 恒 null（接真属 L2-READ 切片），
+        // 前端按「未知/未接入」呈现，不得解读为「无指令」
         OrderItemVo item = buildItem(order, stationName, deviceNo);
         if (ObjectUtil.equals(order.getOrderType(), 2)) {
             // 契约 v2 §9.2：充值单不下发原始 PACKAGE_SNAP，改为服务端已校验的结构化区块
             item.setPackageSnapshot(null);
             item.setRecharge(buildRechargeDetail(order));
         }
-        // E2E-03 包B：配送单补挂任务号与最新申诉ID（U06 据此拉任务证据与申诉记录）；
-        // 详细履约证据仍由 /mini/order/delivery-task/detail 承载，这里只给定位键不复制内容。
+        // E2E-03 包B：配送单补挂任务号与最新申诉ID，只给定位键不复制履约证据内容
         String deliveryTaskNo = null;
         Long appealId = null;
         OrderDetailVo.CancelEligibilityVo cancelEligibility = null;
@@ -557,10 +527,8 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     }
 
     /**
-     * 订单轨迹：<b>按 ORDER_TYPE 分支</b>，绝不把取水语义套到非取水单上（链路一 S0-B）。
-     *
-     * <p>购卡充值(2)/水配送(3) 的轨迹属后续切片，本阶段返回空轨迹（前端对空轨迹隐藏该区块）；
-     * 宁可不展示，也不复用「扫码取水下单/扣款成功」等取水文案造成语义造假。</p>
+     * 订单轨迹按 ORDER_TYPE 分支（链路一 S0-B）：未接入的单型返回空轨迹，
+     * 宁可不展示也不复用取水文案造成语义造假。
      */
     private List<OrderTraceNodeVo> buildTrace(WsOrder order) {
         if (ObjectUtil.equal(order.getOrderType(), TradeEnum.OrderType.WATER.getValue())) {
@@ -714,10 +682,8 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     }
 
     /**
-     * 编排层的报价漂移闸（S2）：会话冻结的水种与单价必须与当前出水口一致。
-     *
-     * <p>这只是提前给出友好拒因，安全边界在下单事务内的三方终判（会话 / 快照 / 锁内档案）。
-     * 单价解析唯一实现在 {@link WaterBillingMath#requireOutletPrice}。</p>
+     * 编排层报价漂移闸（S2）：会话冻结的水种/单价须与当前出水口一致。只给友好拒因，
+     * 安全边界在下单事务内的三方终判；单价解析唯一实现在 {@link WaterBillingMath#requireOutletPrice}。
      */
     private void requireQuoteUnchanged(ScanSessionInfo session, WsDeviceOutlet outlet) {
         if (ObjectUtil.notEqual(session.getWaterTypeId(), outlet.getWaterTypeId())) {
@@ -738,15 +704,9 @@ public class MiniOrderServiceImpl implements IMiniOrderService {
     }
 
     /**
-     * 待接单取消资格（E2E-04 包E）。
-     *
-     * <p><b>判定复用 {@link com.jbk.serve.service.delivery.DeliveryTransitions#allowed}——
-     * 与真正执行取消的 {@code cancelPendingDeliveryOrder} 是同一份状态机</b>。
-     * 若这里另写一句「TASK_STATUS==1 就能取消」，读模型与写路径就有了两份真相：
-     * 状态机哪天多一条可取消边，用户端入口不会跟着出现；少一条边，用户点了才被拒。</p>
-     *
-     * <p>本方法只回答「现在能不能点」，不做任何写入。真正的并发裁决仍在取消事务的
-     * CAS 里——两次判定之间配送员完全可能接单，那时用户会拿到服务端的拒因文案。</p>
+     * 待接单取消资格（E2E-04 包E）：判定必须复用 {@link com.jbk.serve.service.delivery.DeliveryTransitions#allowed}，
+     * 与执行取消是同一份状态机（另写判据=读写两份真相）。只回答「能不能点」不写入，
+     * 并发裁决仍在取消事务的 CAS 里。
      */
     private OrderDetailVo.CancelEligibilityVo buildCancelEligibility(
             com.jbk.tool.data.delivery.po.WsDeliveryTask task) {

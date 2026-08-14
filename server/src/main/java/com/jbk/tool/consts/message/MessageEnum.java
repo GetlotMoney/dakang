@@ -15,7 +15,9 @@ public interface MessageEnum {
         CARD(2, "卡券"),
         DELIVERY(3, "配送"),
         OWNER(4, "机主"),
-        SYSTEM(5, "系统");
+        SYSTEM(5, "系统"),
+        /** 商城域：与水配送(3)分开记，避免售后按域检索时把两条链的消息混在一起。 */
+        MALL(6, "商城");
 
         private final int value;
         private final String desc;

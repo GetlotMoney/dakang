@@ -53,21 +53,43 @@ public interface ApiEnum {
         WS_CMD_BATCH_SCOPE("1366"),// 批量指令范围（E2E-05 包A）
         WS_CMD_BATCH_STATUS("1367"),// 批量指令聚合状态（E2E-05 包A）
         WS_SIM_STATUS("1368"),// SIM状态（E2E-05 包A）
-        // 1370-1375 由 E2E-04 各迁移写入库；此前漏登记本枚举，补齐以防后续选号撞车
+        // 1370-1375 由 E2E-04 各迁移写入库
         WS_AFTER_SALE_SOURCE("1370"),// 售后来源（E2E-04 包A）
         WS_AFTER_SALE_ACTION_TYPE("1371"),// 售后动作类型（E2E-04 包A）
         WS_AFTER_SALE_ACTION_STATUS("1372"),// 售后执行状态（E2E-04 包A）
         WS_REFUND_SOURCE("1373"),// 退款来源（E2E-04 包B）
         WS_ENTITLEMENT_BATCH_STATUS("1374"),// 权益批次状态（E2E-04 包D）
         WS_ENTITLEMENT_BATCH_SOURCE("1375"),// 权益批次来源（E2E-04 包D）
-        // 1376~1381 为 E2E-08 分账/对账域字典，已由 02-ws-business.sql 与 settlement 迁移写入数据库，
-        // 但历史上漏登记到本枚举；此处按实际占用补注，避免后续选号时误判为空号。
+        // 1376~1381 为 E2E-08 分账/对账域字典，已由 02-ws-business.sql 与 settlement 迁移写入数据库（已占用，勿选）
         WS_AUDIT_EXPORT_STATUS("1382"),// 审计导出任务状态（ws_audit_export.sql，B23）
         WS_FILTER_STATUS("1383"),// 滤芯状态（ws_device.sql 遥测滤芯JSON）
         WS_MINI_ENTRY_TYPE("1384"),// 小程序入口类型（ws_mini_entry.sql，S6）
         WS_MINI_ENTRY_JUMP("1385"),// 小程序入口跳转类型（ws_mini_entry.sql，S6）
         WS_MINI_ENTRY_STATUS("1386"),// 小程序入口配置状态（ws_mini_entry.sql，S6）
         WS_SPLIT_CLAWBACK_STATUS("1387"),// 分润冲减事实状态（ws_trade.sql，D-420 R1）
+        WS_MALL_PRODUCT_STATUS("1388"),// 商城商品状态（ws_mall.sql，E2E-09 S1）
+        WS_MALL_SKU_STATUS("1389"),// 商城SKU状态（ws_mall.sql，E2E-09 S1）
+        WS_MALL_WAREHOUSE_STATUS("1390"),// 前置仓状态（ws_mall.sql，E2E-09 S1）
+        WS_MALL_STOCK_FLOW_TYPE("1391"),// 商城库存流水类型（ws_mall.sql，E2E-09 S1；5~8 预留 S2）
+        WS_MALL_CATEGORY_STATUS("1392"),// 商城分类状态（ws_mall.sql，E2E-09 S1）
+        WS_MALL_ORDER_STATUS("1393"),// 商城订单状态（ws_mall.sql，E2E-09 S2）
+        WS_MALL_PAY_STATUS("1394"),// 商城支付单状态（ws_mall.sql，E2E-09 S2）
+        WS_MALL_PAY_FACT_STATUS("1395"),// 商城支付事实处理状态（ws_mall.sql，E2E-09 S2）
+        // 1396~1403 由 S3/S4 落库，L1 补登记（Skill 要求字典必须同步注册本枚举）
+        WS_MALL_FULFILL_STATUS("1396"),// 商城履约任务状态（E2E-09 S3）
+        WS_MALL_FULFILL_ACTOR("1397"),// 商城履约操作方（E2E-09 S3）
+        WS_MALL_SIGN_METHOD("1398"),// 商城签收方式（E2E-09 S3）
+        WS_MALL_AFTER_SALE_STATUS("1399"),// 商城售后状态（E2E-09 S4）
+        WS_MALL_AFTER_SALE_TYPE("1400"),// 商城售后类型（E2E-09 S4）
+        WS_MALL_INSPECT_RESULT("1401"),// 商城质检结论（E2E-09 S4）
+        WS_MALL_REFUND_STATUS("1402"),// 商城退款状态（E2E-09 S4）
+        WS_MALL_REFUND_FACT_STATUS("1403"),// 商城退款事实处理状态（E2E-09 S4）
+        WS_MALL_FULFILL_MODE("1404"),// 商城履约渠道（E2E-09 L1）
+        WS_MALL_SHIPMENT_DIRECTION("1405"),// 商城出库包裹方向（E2E-09 L1）
+        WS_MALL_SHIPMENT_STATUS("1406"),// 商城出库包裹状态（E2E-09 L1）
+        WS_MALL_LOGISTICS_EVENT_STATE("1407"),// 商城物流事件状态（E2E-09 L1）
+        WS_MALL_LOGISTICS_PROCESSING("1408"),// 商城物流处理状态：事件收件箱与 outbox 共用值域（E2E-09 L1）
+        WS_MALL_LOGISTICS_ACTION("1409"),// 商城物流动作类型（E2E-09 L1）
         ;
         private final String value;
 

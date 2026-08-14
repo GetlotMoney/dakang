@@ -12,12 +12,6 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 import jakarta.servlet.http.HttpServletRequest;
 
-/**
- *@ClassName LogLoginUtils
- *@Author xs
- *@Date 2025/9/8 10:24
- *@Version 1.0
- */
 public class LogLoginUtils {
     public static String unknown = "Unknown";
 

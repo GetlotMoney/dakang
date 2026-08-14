@@ -655,14 +655,8 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
     }
 
     /**
-     * 补送标识：由 {@code ws_after_sale_action.RESULT_TASK_ID} 反查得出。
-     *
-     * <p>刻意<b>不</b>按「金额为 0 / 无回收桶」推断——那会把任何零金额任务误标成补送
-     * （例如将来的赠送活动单），而补送标识直接影响用户对「这趟水要不要再付钱」的理解。</p>
-     *
-     * <p>依赖缺失或查询异常时返回 {@code false} 而不是抛出：这是一个纯展示标识，
-     * 让它拖垮整个任务详情是错误的失败方向。少一个标签用户还能看单，
-     * 详情整页 500 就什么都看不到了。</p>
+     * 补送标识：由 ws_after_sale_action.RESULT_TASK_ID 反查，刻意不按「金额为 0」推断
+     * （会把赠送活动单误标成补送）。查询异常返回 false 不抛出——纯展示标识不该拖垮任务详情。
      */
     private Boolean resolveIsResend(Long taskId) {
         if (afterSaleActionMapper == null || taskId == null) {

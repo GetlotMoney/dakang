@@ -43,6 +43,18 @@ public class MiniAddressSaveBo implements Serializable {
     @Schema(description = "详细地址", requiredMode = Schema.RequiredMode.REQUIRED)
     private String detail;
 
+    /**
+     * 收货区县行政区码(6位)：商城选仓的唯一判据（E2E-09 S2）。
+     *
+     * <p>刻意可空且不设 @NotBlank：一期配送链不需要它，存量地址也没有；强制必填会
+     * 让老用户改任何一个字段都被拦住。留空的地址在商城结算处 fail-closed 提示补选，
+     * 而不是由服务端按 region 文本猜——猜错会把订单派给根本不覆盖该地址的前置仓。</p>
+     */
+    @Size(max = 6, message = "行政区码为 6 位")
+    @Pattern(regexp = "^$|^\\d{6}$", message = "请选择所在区县")
+    @Schema(description = "收货区县行政区码(6位)：商城下单必需，一期配送可留空")
+    private String districtCode;
+
     @Schema(description = "设为默认地址")
     private Boolean isDefault;
 

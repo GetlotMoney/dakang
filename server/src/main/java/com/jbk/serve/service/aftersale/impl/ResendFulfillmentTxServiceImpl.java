@@ -21,20 +21,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 补送履约事务实现（E2E-04 包C）。
- *
- * <h3>依赖清单即安全边界：本类没有扣款能力</h3>
- * <p>刻意<b>不注入</b> {@code TradeCardMapper} 与 {@code WsWalletFlowMapper}。
- * 补送是履约补偿而非二次交易，用户已经为原单付过钱；写一条扣款流水会让账本多出
- * 一笔用户根本没付的消费，写一次扣卡则是直接从用户卡里再拿一次钱。
- * 把这两种能力从依赖清单里删掉，任何想「顺手扣一下」的改动都必须先加字段和构造参数——
- * 那是评审一眼能看见的动作。</p>
- *
- * <h3>数量与水种只能收窄，不能放大</h3>
- * <p>补送数量取自裁决的 {@code APPROVED_COUNT}，且必须 ≤ 原任务计划数量；
- * 水种、规格、地址、收货电话一律复用原任务快照。
- * 任务书明令「不允许扩大数量或更换水种」——放开任一条，
- * 一次裁决就能变成「按任意数量白送任意水种」。</p>
+ * 补送履约事务实现（E2E-04 包C）。依赖清单即安全边界：刻意不注入 {@code TradeCardMapper} 与
+ * {@code WsWalletFlowMapper}——补送是履约补偿而非二次交易，本类没有扣款能力。
+ * 数量与水种只能收窄不能放大（任务书明令）：数量取裁决 {@code APPROVED_COUNT} 且 ≤ 原计划，
+ * 水种/规格/地址/电话一律复用原任务快照。
  *
  * @author dakang
  * @since 2026-07-29
@@ -65,8 +55,7 @@ public class ResendFulfillmentTxServiceImpl implements IResendFulfillmentTxServi
         if (ObjectUtil.notEqual(action.getActionType(), AfterSaleEnum.ActionType.RESEND.getValue())) {
             throw new JbkException("该售后动作不是补送类型，拒绝生成补送单");
         }
-        // 幂等短路：已生成过直接返回既有子订单。这只是省一次唯一键异常，
-        // 真正的幂等由下面三道物理闸保证（铁律②）。
+        // 幂等短路只是省一次唯一键异常，真正的幂等由下面三道物理闸保证（铁律②）
         if (action.getResultOrderId() != null) {
             return action.getResultOrderId();
         }
@@ -82,8 +71,7 @@ public class ResendFulfillmentTxServiceImpl implements IResendFulfillmentTxServi
         if (ObjectUtil.isNull(origin)) {
             throw new JbkException("补送对应的原配送任务不存在");
         }
-        // 共键核验：申诉、原任务、售后动作必须指向同一张原订单。
-        // 任一处错位都意味着我们要按别人的单子补送，fail-closed。
+        // 共键核验：申诉、原任务、售后动作必须指向同一张原订单，错位即按别人的单子补送，fail-closed
         if (ObjectUtil.notEqual(origin.getOrderId(), action.getOrderId())
                 || ObjectUtil.notEqual(appeal.getOrderId(), action.getOrderId())) {
             throw new JbkException("申诉、原任务与售后动作的订单共键错位，拒绝生成补送");
@@ -96,8 +84,7 @@ public class ResendFulfillmentTxServiceImpl implements IResendFulfillmentTxServi
             throw new JbkException("补送对应的原订单不存在");
         }
 
-        // ── 闸① 子订单号由 RESEND:APPEAL:<appealId> 确定性派生（单一出处见
-        //    DeliveryOrderNo.deriveResend）：重复生成必然撞 uk_order_no
+        // ── 闸① 子订单号确定性派生（DeliveryOrderNo.deriveResend）：重复生成必然撞 uk_order_no
         String childOrderNo = DeliveryOrderNo.deriveResend(action.getUserId(), appeal.getId());
         WsOrder child = buildZeroAmountChildOrder(origOrder, action, childOrderNo, opUserId, now);
         if (orderMapper.insert(child) != 1 || child.getId() == null) {
@@ -114,8 +101,7 @@ public class ResendFulfillmentTxServiceImpl implements IResendFulfillmentTxServi
         int linked = actionMapper.linkResendResult(action.getId(), action.getVersion(),
                 child.getId(), childTask.getId(), opUserId, now);
         if (linked != 1) {
-            // 影响 0 行 = 已被并发生成过或动作状态已变。整事务回滚，
-            // 刚插入的子订单与任务一并撤销——绝不留下一张没人认领的补送单。
+            // 0 行 = 已被并发生成或状态已变：整事务回滚，绝不留下没人认领的补送单
             throw new JbkException("补送结果回填失败（已被并发生成或动作状态已变），本次生成已回滚");
         }
         return child.getId();
@@ -132,24 +118,19 @@ public class ResendFulfillmentTxServiceImpl implements IResendFulfillmentTxServi
                 .eq(WsAfterSaleAction::getActionType, AfterSaleEnum.ActionType.RESEND.getValue())
                 .last("LIMIT 1"));
         if (ObjectUtil.isNull(action)) {
-            // 普通配送任务签收会走到这里：不是错误，只是与补送无关。
+            // 普通配送任务签收会走到这里：不是错误，只是与补送无关
             return false;
         }
-        // CAS 带 RESULT_TASK_ID = 本次签收的任务：签收事务只能完成它自己那条补送动作。
-        // 影响 0 行说明动作已终态或共键错位，此时**不抛出**——签收本身是成功的，
-        // 把它回滚掉会让用户已经收到的水在系统里显示成没送到。留给对账。
+        // CAS 带 RESULT_TASK_ID = 本次签收的任务；影响 0 行不抛出——签收本身成功，
+        // 回滚会让已收到的水显示成没送到，留给对账
         return actionMapper.markResendSucceeded(action.getId(), taskId, opUserId, now) == 1;
     }
 
     // ==================== 构造 ====================
 
     /**
-     * 补送数量：取裁决批准数，且必须落在 [1, 原计划数量] 内。
-     *
-     * <p>上界取<b>原任务计划数量</b>而非实际签收数量：少送 2 桶就补 2 桶，
-     * 补到超过原计划就成了白送。裁决期已由 AfterSaleStrategy 校过一次上界，
-     * 这里是履约期的二次钉死——两处校验之间隔着一次人工操作与一次事务边界，
-     * 中间任何改写都必须在真正生成单子之前被拦下。</p>
+     * 补送数量：取裁决批准数，必须落在 [1, 原计划数量] 内。裁决期已校过上界，
+     * 这里是履约期的二次钉死——两处之间隔着人工操作与事务边界，改写必须在生成前拦下。
      */
     private int requireResendCount(WsAfterSaleAction action, WsDeliveryTask origin) {
         Integer approved = action.getApprovedCount();
@@ -167,14 +148,8 @@ public class ResendFulfillmentTxServiceImpl implements IResendFulfillmentTxServi
     }
 
     /**
-     * 零金额子订单。
-     *
-     * <p>{@code ORDER_AMOUNT=0} 且不写任何扣款流水：补送不是二次交易。
-     * {@code PAY_WAY} 复用原单只为让追溯页显示得出「这是哪种支付方式的单子的补送」，
-     * 它在本单上不驱动任何扣款逻辑——本类根本没有扣款能力。</p>
-     *
-     * <p>订单直接落 {@code 2已支付}：补送单没有支付环节，停在待支付会让它出现在
-     * 用户的待付款列表里，而它根本不需要付钱。</p>
+     * 零金额子订单：{@code ORDER_AMOUNT=0} 不写扣款流水；{@code PAY_WAY} 复用原单只为追溯展示；
+     * 直接落 {@code 2已支付}——停在待支付会出现在用户待付款列表里。
      */
     private WsOrder buildZeroAmountChildOrder(WsOrder origOrder, WsAfterSaleAction action,
                                               String childOrderNo, Long opUserId, String now) {
@@ -197,10 +172,8 @@ public class ResendFulfillmentTxServiceImpl implements IResendFulfillmentTxServi
     }
 
     /**
-     * 补送任务：水种、规格、地址、电话全部复用原任务快照，金额一律 0。
-     *
-     * <p>复用而非重新取值是刻意的：从别处重新查水种或地址，等于给「补送时换了个水种/
-     * 送到别的地址」留了入口，而这两件事在任务书里都是明令禁止的。</p>
+     * 补送任务：水种/规格/地址/电话全部复用原任务快照、金额一律 0——
+     * 重新取值等于给「换水种/换地址」留入口（任务书明令禁止）。
      */
     private WsDeliveryTask buildChildTask(WsDeliveryTask origin, WsOrder child, int count,
                                           Long opUserId, String now) {
@@ -213,8 +186,7 @@ public class ResendFulfillmentTxServiceImpl implements IResendFulfillmentTxServi
         task.setWaterType(origin.getWaterType());
         task.setContainerSpec(origin.getContainerSpec());
         task.setDeliveryCount(count);
-        // 补送不回收空桶：原单的回收在原任务里已经完成或已计划，
-        // 在补送单上再记一次会让回收数量凭空翻倍。
+        // 补送不回收空桶：原单的回收已在原任务计划，再记一次会让回收数量凭空翻倍
         task.setPlanReturnCount(0);
         task.setWaterAmount(0L);
         task.setDeliveryFee(0L);

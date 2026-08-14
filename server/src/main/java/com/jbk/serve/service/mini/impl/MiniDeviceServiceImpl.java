@@ -218,12 +218,8 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     }
 
     /**
-     * 会话 → 内部数据，冻结报价字段严格校验。
-     *
-     * <p>S2 之前铸造的会话没有 waterTypeId/unitPriceFenPerLiter/quotedAt。<b>绝不回退去读当前价</b>——
-     * 那正是本包要消灭的行为（页面看到的是扫码时的价，扣款用的是提交时的价）。
-     * 缺字段一律按会话失效处理，代价是升级瞬间的在途会话要重扫一次，换来的是没有一笔按旧会话
-     * 以新价扣款。</p>
+     * 会话 → 内部数据，冻结报价字段严格校验。缺 waterTypeId/unitPrice/quotedAt 一律按
+     * 会话失效处理，绝不回退读当前价——那正是「页面一个价、扣款另一个价」的根因。
      */
     private ScanSessionInfo toSessionInfo(String scanSessionId, JSONObject session) {
         Long waterTypeId = session.getLong("waterTypeId");
@@ -253,10 +249,8 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     // ==================== 设备可用性（DeviceAvailability 封闭枚举） ====================
 
     private void fillDeviceAvailability(WaterEligibilityVo vo, WsDevice device, WsDeviceOutlet outlet) {
-        // 判定唯一出处是 DeviceAvailability（E2E-05 包B 抽出）：本方法只负责查字典行并搬运结论。
-        // 在这里重写任何一条状态分支都是第二份真相，评审一票否决。
-        // 字典读取与 0/1/多行处理统一走 Guard：此前这里用单值 selectOne，同一故障码被误录两条时
-        // MyBatis-Plus 直接抛内部异常，重复配置既拿不到 FAULT_DICT_CONFLICT 诊断也不留痕。
+        // 判定唯一出处 DeviceAvailability，在这里重写状态分支=第二份真相；字典读取统一走 Guard
+        // （单值 selectOne 遇同一故障码两条配置会抛 MP 内部异常，拿不到 FAULT_DICT_CONFLICT 诊断）
         DeviceAvailability.Verdict verdict = availabilityGuard.judge(device, outlet).verdict();
         vo.setAvailability(verdict.code()).setReason(verdict.reason());
     }
@@ -264,14 +258,10 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     // ==================== 卡阻断（CardBlockCode） ====================
 
     /**
-     * CARD-SCOPE：只预检调用方指定的那张卡——后端不再自行挑卡，否则会出现「预检卡A、下单卡B」，
-     * 预检结论对下单毫无约束。预检不是安全边界，下单事务内会以同一套 {@link WaterCardScope}
-     * 口径二次校验；此处只负责把可预见的阻断提前、友好地暴露给用户。
-     *
-     * <p>CARD-MEMBER：卡可及性从「仅卡主」扩为「卡主或有效成员」。他人无关卡、
-     * 已撤销/未生效/已失效的成员授权与不存在卡仍统一 CARD_NOT_ACCESSIBLE 同码同文案——
-     * 拒因一旦可区分，就成了探测他人卡与授权历史的信道。有效判定与下单事务同口径
-     * （{@link CardMemberRule}），成员剩余限额只在此做只读展示估算。</p>
+     * CARD-SCOPE：只预检调用方指定的卡（后端自行挑卡会出现「预检卡A、下单卡B」）；
+     * 预检不是安全边界，下单事务内以同一套 {@link WaterCardScope} 口径二次校验。
+     * CARD-MEMBER：他人无关卡、无效授权与不存在卡统一 CARD_NOT_ACCESSIBLE 同码同文案——
+     * 拒因可区分即成探测信道；有效判定与下单事务同口径（{@link CardMemberRule}）。
      */
     private void fillCardBlock(WaterEligibilityVo vo, Long cardId, Long userId,
                                Long stationId, Long deviceId, Long outletId) {
@@ -399,9 +389,8 @@ public class MiniDeviceServiceImpl implements IMiniDeviceService {
     }
 
     /**
-     * 冻结报价与当前出水口的一致性闸（S2）。水种或单价任一变化即本次会话作废，
-     * 用独立拒绝码 SCAN_QUOTE_CHANGED——「会话过期」是时间到了，「报价变化」是内容变了，
-     * 合并成一个码用户看到的原因就是错的。
+     * 冻结报价一致性闸（S2）：水种或单价任一变化即会话作废，独立拒绝码 SCAN_QUOTE_CHANGED
+     * （与「会话过期」合并成一个码，用户看到的原因就是错的）。
      */
     private void requireQuoteUnchanged(ScanSessionInfo frozen, WsDeviceOutlet outlet) {
         if (ObjectUtil.notEqual(frozen.getWaterTypeId(), outlet.getWaterTypeId())) {

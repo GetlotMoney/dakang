@@ -28,12 +28,6 @@ import jakarta.servlet.http.HttpServletRequest;
 
 import java.lang.reflect.Method;
 
-/**
- * @ClassName RepeatSubmitAspect
- * @Author xs
- * @Date 2024/6/7 14:11
- * @Version 1.0
- */
 @Component
 @Aspect
 @Slf4j
@@ -90,13 +84,7 @@ public class RepeatSubmitAspect {
 
     /**
      * 解析防重放窗口，非正数一律拒绝（fail-closed）。
-     *
-     * <p><b>为什么必须拦住非正数而不是放行</b>：{@code RedisUtils.setIfAbsent} 在
-     * {@code time <= 0} 时会退化成无条件 {@code set} 并<b>恒返回 true</b>——
-     * 那不只是留下一个永不过期的键，而是让本切面对该接口<b>彻底失效</b>且没有任何迹象：
-     * 每次调用都"抢锁成功"，重复提交全部放行。防重放是道闸，闸坏了必须响，不能默默敞开。</p>
-     *
-     * <p>窗口值是注解上的编译期常量，故这里抛出的是配置错误，会在该接口首次被调用时暴露。</p>
+     * 陷阱：{@code RedisUtils.setIfAbsent} 在 time&lt;=0 时退化成无条件 set 恒返回 true，切面会静默彻底失效。
      */
     static long requireExpireSeconds(RepeatSubmit annotation, String url) {
         long seconds = annotation.expireTime();

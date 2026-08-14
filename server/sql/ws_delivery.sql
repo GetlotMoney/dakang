@@ -196,9 +196,20 @@ CREATE TABLE `ws_delivery_auto_rule` (
   `INTERVAL_DAYS`    int          NOT NULL COMMENT '固定周期天数(3~90，用户显式配置)',
   `ANCHOR_TIME`      varchar(14)  NOT NULL COMMENT '周期锚点=规则创建时间；第n期到期时间=锚点+n*INTERVAL_DAYS天，期序是幂等键组成部分',
   `RULE_STATUS`      tinyint      NOT NULL COMMENT '规则状态(1355)：1启用 2停用 3已取消（终态不可恢复）',
+    -- 同款规则去重键：仅在规则「存活」（启用/停用）时有值，已取消(3)恒为 NULL。
+  -- MySQL 没有条件唯一索引，用「不满足条件即 NULL」实现——NULL 之间不互斥，
+  -- 于是取消后同款可以重新建，而启用/停用期间建不出第二条。
+  -- 刻意不含 DATA_STATUS：与本仓其它唯一键同口径，逻辑删不放开占位；
+  -- 让位只能由用户显式取消（RULE_STATUS=3，终态不可恢复）来完成。
+  `ACTIVE_SHAPE_KEY` varchar(64) GENERATED ALWAYS AS (
+      CASE WHEN `RULE_STATUS` IN (1, 2)
+           THEN SHA2(CONCAT_WS(':', `USER_ID`, `WATER_TYPE_ID`, `CONTAINER_SPEC`, `RECEIVE_ADDRESS`), 256)
+           ELSE NULL END) STORED COMMENT '存活期同款去重键：同用户+水种+规格+收货地址只允许一条存活规则',
   PRIMARY KEY (`ID`),
   -- 规则创建幂等的数据库层保证：同 userId+requestId 重复提交不并存第二条规则
   UNIQUE INDEX `uk_dauto_rule_key` (`RULE_KEY`),
+  -- 同款去重的数据库层保证：应用层「先查再建」在并发下会双开，必须由库层裁决
+  UNIQUE INDEX `uk_dauto_active_shape` (`ACTIVE_SHAPE_KEY`),
   INDEX `idx_dauto_user` (`USER_ID`),
   INDEX `idx_dauto_status` (`RULE_STATUS`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='自动补货规则表';

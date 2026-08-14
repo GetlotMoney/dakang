@@ -5,7 +5,10 @@ import cn.hutool.core.util.StrUtil;
 import com.jbk.serve.mapper.user.WsUserIdentityMapper;
 import com.jbk.serve.service.mini.auth.BoundUser;
 import com.jbk.serve.service.mini.auth.IMiniAuthBindTx;
+import com.jbk.serve.service.mini.auth.MiniIdentityConflictRecorder;
 import com.jbk.serve.service.mini.auth.MiniUserIdentitySupport;
+import com.jbk.tool.consts.mini.MiniIdentityConflictEnum.Scene;
+import com.jbk.tool.consts.mini.MiniIdentityConflictEnum.Type;
 import com.jbk.tool.data.user.po.WsUser;
 import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.utils.DateUtils;
@@ -31,6 +34,11 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
     private static final int ID_SUFFIX_LENGTH = 4;
 
     private final WsUserIdentityMapper identityMapper;
+    /**
+     * 冲突留痕（REQUIRES_NEW 独立事务）。四类冲突都在本类抛异常让主事务回滚，
+     * 回滚正是拒绝的业务结果——证据必须落在主事务之外，否则连拒绝一起被滚掉。
+     */
+    private final MiniIdentityConflictRecorder conflictRecorder;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -42,6 +50,8 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
         if (byOpenid != null) {
             MiniUserIdentitySupport.assertUsable(byOpenid);
             if (!StrUtil.equals(phone, byOpenid.getUserPhone())) {
+                conflictRecorder.record(Type.OPENID_BOUND_OTHER_PHONE, Scene.LOGIN_BIND,
+                        byOpenid.getId(), null, phone);
                 throw new JbkException("该微信已绑定其他手机号，无法重复绑定");
             }
             return new BoundUser(byOpenid.getId(), byOpenid.getUserName(), byOpenid.getUserPhone());
@@ -58,6 +68,8 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
                 return new BoundUser(byPhone.getId(), byPhone.getUserName(), byPhone.getUserPhone());
             }
             if (StrUtil.isNotBlank(byPhone.getWechatXcxOpenid())) {
+                conflictRecorder.record(Type.PHONE_BOUND_OTHER_WECHAT, Scene.LOGIN_BIND,
+                        byPhone.getId(), null, phone);
                 throw new JbkException("该手机号已绑定其他微信账号");
             }
             int affected;
@@ -65,10 +77,14 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
                 affected = identityMapper.bindOpenidToUsablePhoneUser(
                         byPhone.getId(), phone, openid, SYSTEM_ACTOR, DateUtils.time());
             } catch (DuplicateKeyException e) {
+                conflictRecorder.record(Type.CONCURRENT_BIND_LOST, Scene.LOGIN_BIND,
+                        byPhone.getId(), null, phone);
                 throw new JbkException("绑定冲突，请重新登录后再试");
             }
             if (affected != 1) {
                 // 并发另一 openid 已抢绑、或状态在读后被改：影响 0 行，一律 fail-closed。
+                conflictRecorder.record(Type.CONCURRENT_BIND_LOST, Scene.LOGIN_BIND,
+                        byPhone.getId(), null, phone);
                 throw new JbkException("绑定冲突，请重新登录后再试");
             }
             return new BoundUser(byPhone.getId(), byPhone.getUserName(), phone);
@@ -121,12 +137,12 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
             MiniUserIdentitySupport.assertUsable(winner);
             return new BoundUser(winner.getId(), winner.getUserName(), winner.getUserPhone());
         }
-        // 改名放在 try 之外：上面那个 catch 只为兜 insert 撞 openid 唯一键这一种情况，
-        // 把无关写入圈进去会让「撞的是哪个键」变得不可判定。
+        // 改名放在 try 之外：catch 只兜 insert 撞 openid 唯一键，圈进无关写入会让撞键来源不可判定
         created.setUserName(applyIdSuffixedName(created.getId(), now));
-        // 跟着刚写入的对象取号码，不硬编码 null：将来若建号逻辑改成带号，这里不会漏改。
-        // 首次建号成功（D-418 注册送触发条件）；并发撞键的重读路径返回三参形态=false，不双发
-        return new BoundUser(created.getId(), created.getUserName(), created.getUserPhone(), true);
+        // 首次建号（D-418）；游客态手机号仍 NULL，phoneNewlyBound 必须 false——
+        // 否则赠卡会落到不可联系的空壳账号（正是挂点后移要避免的）
+        return new BoundUser(created.getId(), created.getUserName(), created.getUserPhone(),
+                true, false);
     }
 
     @Override
@@ -142,6 +158,9 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
                 MiniUserIdentitySupport.assertUsable(byPhone);
                 return new BoundUser(byPhone.getId(), byPhone.getUserName(), byPhone.getUserPhone());
             }
+            // 存量老账号认领自己的号码正命中这条；留痕让客服那通电话有据可查（哪两个账号、撞了几次）
+            conflictRecorder.record(Type.PHONE_OWNED_BY_OTHER, Scene.SELF_BIND,
+                    byPhone.getId(), userId, phone);
             throw new JbkException("该手机号已被其他账号使用，请联系客服处理");
         }
 
@@ -152,6 +171,7 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
             affected = identityMapper.bindPhoneToPhonelessUser(userId, phone, userId, DateUtils.time());
         } catch (DuplicateKeyException e) {
             // 上一步读到无主、写入前被并发抢注：唯一键兜底。
+            conflictRecorder.record(Type.CONCURRENT_BIND_LOST, Scene.SELF_BIND, null, userId, phone);
             throw new JbkException("该手机号已被其他账号使用，请联系客服处理");
         }
         if (affected != 1) {
@@ -170,7 +190,9 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
         if (bound == null) {
             throw new JbkException("补绑失败，请稍后重试");
         }
-        return new BoundUser(bound.getId(), bound.getUserName(), bound.getUserPhone());
+        // CAS 只允许 NULL → 非空，因此影响 1 行本身就是「本次让该账号首次拥有手机号」的
+        // 权威证据，不需要再查一次绑前状态（那还会引入读-判-写的窗口）。
+        return new BoundUser(bound.getId(), bound.getUserName(), bound.getUserPhone(), false, true);
     }
 
     /** 最小用户主体：gender=NULL、disabled=1、status=1、points=0，使用系统主体与调用方传入的同一时刻。 */
@@ -200,13 +222,8 @@ public class MiniAuthBindTxImpl implements IMiniAuthBindTx {
     }
 
     /**
-     * 建号后把占位昵称补成「微信用户+ID 尾号」。
-     *
-     * <p>不做的话，仅微信身份建的号全叫「微信用户」，且它们恰恰都没有手机号——PC 用户列表里
-     * 一排同名无号账号，运营要给其中某人开通配送员/机主时点不准是谁。开错的后果不是难看：
-     * 配送任务带着收货地址与联系电话，权限给错人就是把用户住址泄露给了无关的人。</p>
-     *
-     * <p>回填失败（昵称已被改过、行不存在）不阻断登录：辨识度是运营便利，不是建号的前置条件。</p>
+     * 建号后把占位昵称补成「微信用户+ID 尾号」：一排同名无号账号会让运营开通配送员/机主时
+     * 点错人，而权限给错人=把用户住址泄露给无关的人。回填失败不阻断登录。
      */
     private String applyIdSuffixedName(Long id, String now) {
         String named = PLACEHOLDER_USER_NAME + idSuffix(id);

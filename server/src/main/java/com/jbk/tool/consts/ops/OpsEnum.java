@@ -32,7 +32,13 @@ public interface OpsEnum {
          * ALARM_CREATED(3) 只表达产生；处置挤在它名下会让「告警产生」事件流里混进恢复记录，
          * 按类型检索的运维报表随之失真。字典 1363#10 由 02-ws-business.sql 与包A 迁移同步写入。
          */
-        ALARM_RECOVERED(10, "告警状态变化");
+        ALARM_RECOVERED(10, "告警状态变化"),
+
+        /**
+         * 商城动作（E2E-09 S1）：商品上下架、前置仓启停、库存人工动作的可靠审计。
+         * 字典 1363 的值 11 由 ws_mall.sql / 2026-08-08-mall-s1.sql 同步写入。
+         */
+        MALL(11, "商城动作");
 
         private final int value;
         private final String desc;

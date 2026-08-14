@@ -11,6 +11,11 @@ import java.io.Serializable;
 /**
  * 配送员响应对象
  *
+ * <p>不下发身份证号。表注释写的是「脱敏展示」，而完整号码一旦出现在任一响应里，
+ * 它就已经离开服务端了——展示层再怎么打星也追不回来。后台的准入判断只需要姓名、
+ * 联系方式与准入状态；真要核验证件，另建带独立权限、脱敏与审计的专用出口，不复用本 VO
+ * （与本域已对微信身份键的处理同型）。</p>
+ *
  * @author dakang
  * @since 2026-07-12
  */
@@ -34,11 +39,8 @@ public class WsCourierVo extends BaseEntityVo implements Serializable {
     @Schema(description = "姓名(max50)")
     private String courierName;
 
-    @Schema(description = "联系电话(max20)")
+    @Schema(description = "联系电话（已脱敏，前 3 后 4；长度异常整体屏蔽）")
     private String courierPhone;
-
-    @Schema(description = "身份证号(max30)")
-    private String idCardNo;
 
     @Schema(description = "服务水站ID集(逗号分隔)，空=未配置并默认拒绝接单")
     private String stationIds;

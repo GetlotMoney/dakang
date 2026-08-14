@@ -278,11 +278,8 @@ class TradeOrderTxServiceImplTest {
     }
 
     // ============ 锁序不变式（R2 复审 D2-01）：卡 → 订单，不得反向 ============
-    //
-    // 结算此前是「订单(X) → 卡(X)」，而下单是「卡(X) → 成员日限额订单范围(FOR UPDATE)」，
-    // 两者对同一张卡构成 ABBA。并发用例复现这类互等要靠时序运气（写过一版，修复前后都绿，
-    // 等于没测），所以这里直接钉住可确定观测的不变式：定位读 → 卡锁 → 订单锁 → 订单写。
-    // 只断言卡锁早于 UPDATE 不够，订单 FOR UPDATE 提前到卡锁之前仍会重新引入 ABBA。
+    // 反向即与下单链构成 ABBA 死锁；并发复现靠运气，故钉可确定观测的顺序：
+    // 定位读 → 卡锁 → 订单锁 → 订单写。只断言卡锁早于 UPDATE 不够。
 
     @Test
     void settlementLocksCardBeforeWritingOrderRow() {

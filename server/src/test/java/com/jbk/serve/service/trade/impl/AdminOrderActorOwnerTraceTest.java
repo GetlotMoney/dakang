@@ -32,7 +32,7 @@ class AdminOrderActorOwnerTraceTest {
         AdminOrderItemVo order = waterOrder(101L);
         order.setUserId(6L);
         order.setUserName("成员小李");
-        order.setUserPhone("13800001111");
+        order.setUserPhoneRaw("13800001111");
         order.setCardId(3L);
         order.setCardNo("VC-3");
         order.setCardOwnerUserId(5L);
@@ -52,7 +52,9 @@ class AdminOrderActorOwnerTraceTest {
         assertEquals(5L, decorated.getCardOwnerUserId());
         assertEquals("主卡钱女士", decorated.getCardOwnerName());
         assertEquals("139****2222", decorated.getCardOwnerMaskedPhone());
-        // 原始持卡人号码必须在服务端清空，不得随响应序列化出接口。
+        // 两个原始号码都必须在服务端清空，不得随响应序列化出接口。
+        // 使用人原值曾一直照常下发（订单分页=全量 C 端号码批量出口），这条断言就是那道闸。
+        assertNull(decorated.getUserPhoneRaw());
         assertNull(decorated.getCardOwnerPhoneRaw());
         assertEquals(8200L, decorated.getCardBalanceFen());
         assertEquals(360000L, decorated.getCardBalanceMl());
@@ -64,7 +66,7 @@ class AdminOrderActorOwnerTraceTest {
         AdminOrderItemVo order = waterOrder(102L);
         order.setUserId(5L);
         order.setUserName("钱女士");
-        order.setUserPhone("13900002222");
+        order.setUserPhoneRaw("13900002222");
         order.setCardId(3L);
         order.setCardOwnerUserId(5L);
         order.setCardOwnerName("钱女士");
@@ -85,7 +87,7 @@ class AdminOrderActorOwnerTraceTest {
         AdminOrderItemVo order = waterOrder(103L);
         order.setUserId(6L);
         order.setUserName("成员小李");
-        order.setUserPhone("13800001111");
+        order.setUserPhoneRaw("13800001111");
         // 卡被物理删除/查不到：LEFT JOIN 各持卡人列为 NULL，服务端必须置空而非抛错。
         order.setCardId(99L);
         order.setCardOwnerUserId(null);
@@ -113,7 +115,7 @@ class AdminOrderActorOwnerTraceTest {
         Fixture fixture = fixture();
         AdminOrderItemVo order = waterOrder(104L);
         order.setUserId(6L);
-        order.setUserPhone("123");
+        order.setUserPhoneRaw("123");
         order.setCardId(3L);
         order.setCardOwnerUserId(5L);
         order.setCardOwnerPhoneRaw("+86-139-0000");
@@ -133,12 +135,12 @@ class AdminOrderActorOwnerTraceTest {
         Fixture fixture = fixture();
         AdminOrderItemVo member = waterOrder(201L);
         member.setUserId(6L);
-        member.setUserPhone("13800001111");
+        member.setUserPhoneRaw("13800001111");
         member.setCardOwnerUserId(5L);
         member.setCardOwnerPhoneRaw("13900002222");
         AdminOrderItemVo owner = waterOrder(202L);
         owner.setUserId(5L);
-        owner.setUserPhone("13900002222");
+        owner.setUserPhoneRaw("13900002222");
         owner.setCardOwnerUserId(5L);
         owner.setCardOwnerPhoneRaw("13900002222");
         Page<AdminOrderItemVo> page = new Page<>(1, 10);
@@ -160,6 +162,9 @@ class AdminOrderActorOwnerTraceTest {
         assertEquals("139****2222", second.getCardOwnerMaskedPhone());
         assertNull(first.getCardOwnerPhoneRaw());
         assertNull(second.getCardOwnerPhoneRaw());
+        // 分页逐行清空使用人原值：翻页导出全量明文的路径必须在服务端就断掉
+        assertNull(first.getUserPhoneRaw());
+        assertNull(second.getUserPhoneRaw());
     }
 
     /** 取水单基底：orderStatus=2（已支付未下发），CMD_ID 为空即不触发指令共键校验分支。 */

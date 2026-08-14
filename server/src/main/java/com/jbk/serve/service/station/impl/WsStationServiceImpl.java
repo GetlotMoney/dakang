@@ -18,6 +18,7 @@ import com.jbk.tool.data.station.po.WsStation;
 import com.jbk.tool.data.station.vo.WsStationVo;
 import com.jbk.tool.exception.JbkException;
 import com.jbk.tool.utils.OptionalUtils;
+import com.jbk.tool.utils.PhoneMask;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -126,7 +127,13 @@ public class WsStationServiceImpl extends ServiceImpl<WsStationMapper, WsStation
         OptionalUtils.nullToElseThrow(user, "机主用户不存在");
     }
 
-    /** 填充派生字段：机主姓名/手机号、设备数 */
+    /**
+     * 填充派生字段：机主姓名/手机号、设备数。
+     * <p>机主是 C 端 ws_user，手机号一律经 {@link PhoneMask} 脱敏后下发：水站列表/详情是任何持后台
+     * 会话的账号都能翻的面，此处若下发原值，用户域刚建立的号码脱敏口径就被这条旁路整条绕过
+     * （同一个机主下拉里，远程搜索来的是脱敏值、编辑回显来的是明文，同屏两种形态）。
+     * 机主手机号只作展示，写入只认 ownerUserId（{@code WsStationBo} 无号码字段），脱敏不影响保存。</p>
+     */
     private void fillDerived(List<WsStationVo> voList) {
         if (CollUtil.isEmpty(voList)) {
             return;
@@ -144,7 +151,7 @@ public class WsStationServiceImpl extends ServiceImpl<WsStationMapper, WsStation
                 WsUser user = userMap.get(vo.getOwnerUserId());
                 if (ObjectUtil.isNotNull(user)) {
                     vo.setOwnerUserName(user.getUserName());
-                    vo.setOwnerUserPhone(user.getUserPhone());
+                    vo.setOwnerUserPhone(PhoneMask.mask(user.getUserPhone()));
                 }
             });
         }

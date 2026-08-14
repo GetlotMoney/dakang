@@ -29,13 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class AuditExportContractTest {
 
-    /**
-     * 仓库根：向上查找含 {@code client/} 与 {@code server/} 的祖先目录。
-     *
-     * <p>不直接用相对路径——Surefire 的 cwd 是 {@code server/}，而 IDE 的 JUnit runner
-     * 常把 cwd 设成仓库根或更上层，此时 {@code Path.of("..")} 会解析到仓库外，
-     * 断言红在"找不到文件"上，看起来像契约被破坏，实则是路径问题。</p>
-     */
+    /** 仓库根向上查找：Surefire 与 IDE runner 的 cwd 不同，写死相对路径会红在找不到文件上。 */
     private static final Path REPO = locateRepoRoot();
 
     private static Path locateRepoRoot() {
@@ -221,16 +215,9 @@ class AuditExportContractTest {
     }
 
     /**
-     * 封住源级断言够不着的三条写入通道：Mapper 注解 SQL、XML 映射、以及 PO 上的 ORM 禁写开关。
-     *
-     * <p>本类其余断言扫的是「有没有人写出 {@code setFileDigest(...)} 这种文本」，
-     * 而绕过它只需要换个通道——在 Mapper 上挂一句 {@code @Update}，或另起一个 XML
-     * 写 {@code UPDATE ... SET FILE_DIGEST = ...}，源级扫描一个都看不见。
-     * 这条用<b>反射</b>读注解、扫 XML 资源目录、并核对 PO 的
-     * {@code FieldStrategy.NEVER} 仍在位，覆盖的是通道而不是措辞。</p>
-     *
-     * <p>落盘行为本身由 {@code AuditExportDbTest.ormCannotWriteFileDigestOrExpireTime}
-     * 在真 MySQL 上证明；两者互补：这里管「不许开新通道」，那里管「现有通道确实写不出」。</p>
+     * 封住源级断言够不着的三条写入通道：Mapper 注解 SQL、XML 映射、PO 的
+     * {@code FieldStrategy.NEVER}——覆盖通道而非措辞。落盘行为由
+     * AuditExportDbTest.ormCannotWriteFileDigestOrExpireTime 在真库证明，两者互补。
      */
     @Test
     void noWriteChannelBypassesTheFileFieldBan() throws Exception {

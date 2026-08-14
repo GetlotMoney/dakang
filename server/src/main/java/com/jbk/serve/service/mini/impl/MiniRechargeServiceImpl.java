@@ -77,6 +77,8 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
 
     private static final Pattern DECIMAL_ID = Pattern.compile("^[1-9]\\d*$");
 
+    /** 绑号闸：发行可兑付预付卡前要求手机号（唯一的人工找回凭据）。 */
+    private final com.jbk.serve.service.mini.auth.MiniPhoneGate phoneGate;
     private final IInviteService inviteService;
     private final RechargeIdentityMapper identityMapper;
     private final WsPackageMapper wsPackageMapper;
@@ -90,6 +92,9 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         if (userId == null) {
             throw new JbkException("会话异常，请重新登录");
         }
+        // 绑号闸：手机号是记名预付卡唯一可人工找回的凭据，须在派生订单号与任何落库之前
+        phoneGate.requirePhoneBound(userId, "购卡充值");
+
         // ① 规范化输入 + 派生订单号（不含日期/序列/缓存，跨重启稳定）。
         // 决策 A2/A7：cardId 缺省 = 首次购卡（purchase 态）；传值 = 已有卡充值（recharge 态）
         boolean purchase = StrUtil.isBlank(bo.getCardId());
@@ -114,14 +119,9 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
                                                String requestId, String orderNo) {
         // ② 确无既有订单才读卡与套餐
         WsCard card = loadUsableCard(cardId, userId);
-        // 赠卡判据=带有效期且无 ISSUE_ORDER_ID 订单锚（赠卡是唯一无订单锚的发卡路径）。
-        // 不能只看 EXPIRE_TIME：有限期付费卡（有订单锚）历史上可售，其续期充值走
-        // requireSameExpiryKind 的同类校验（D-205），按赠卡整类拒绝会误伤且文案失真。
-        //
-        // D-416（2026-08-06 甲方确认）：赠卡不再一刀切拒绝——
-        //   有效期内且权益未耗尽：仍拒绝（付费余额会被到期日绑架，原口径不变）；
-        //   权益用完或自然到期 + 用户无其他付费卡：放行并标记「转正」，入账即转永久付费卡；
-        //   权益用完或自然到期 + 已有付费卡：拒绝（该走合并动线，不产生第二张付费卡，D-417）。
+        // 赠卡判据唯一出处 CardEligibility（不能只看 EXPIRE_TIME，有限期付费卡走 D-205 续期路径）。
+        // D-416：有效期内且权益未耗尽仍拒绝；权益用完或自然到期后，无其他付费卡放行并标记「转正」，
+        // 已有付费卡拒绝（走合并动线，D-417）
         boolean giftCard = CardEligibility.isGiftCard(card);
         boolean promote = false;
         if (giftCard) {
@@ -189,8 +189,7 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
      */
     private MiniRechargeOrderVo createPurchase(Long userId, long packageId,
                                                String requestId, String orderNo) {
-        // 决策 A4：存在任意 DATA_STATUS=0 的卡（无论正常/冻结/过期/注销）即不得进入首次购卡。
-        // 冻结、注销的卡代表用户与既有卡的关系待厘清，绕开它们发新卡会让一人多首卡失控。
+        // 决策 A4：存在任意 DATA_STATUS=0 的卡（含冻结/注销）即不得首次购卡，防一人多首卡
         if (identityMapper.selectCountLiveCardsByUser(userId) > 0) {
             throw new JbkException("已有水卡，请直接充值");
         }
@@ -202,8 +201,7 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         }
         WaterCardScope pkgScope = WaterCardScope.normalize(pkg.getScopeJson(), "套餐");
 
-        // ③ 同一服务端时刻冻结快照与付款截止时间。
-        // 决策 A1：首次购卡没有既有卡有效期可截短，PAY_EXPIRE_TIME 固定 createTime+30min
+        // ③ 同一服务端时刻冻结快照；决策 A1：首次购卡 PAY_EXPIRE_TIME 固定 createTime+30min
         String createTime = DateUtils.time();
         String payExpireTime = RechargePayExpire.compute(createTime, null);
         String snapshot = RechargeSnapshot.buildForPurchase(requestId, pkg, pkgScope, createTime);
@@ -341,9 +339,8 @@ public class MiniRechargeServiceImpl implements IMiniRechargeService {
         if (snap.packageScope() != null && !snap.packageScope().sameAuthorityAs(snap.cardScope())) {
             throw new JbkException("订单快照范围错位，拒绝");
         }
-        // PAY_EXPIRE_TIME 必须与资格快照按冻结算法重算的结果精确相等（证明创建后未被改写）。
-        // 审计 P1-3：转正单与创单路径同一公式（promote→按永久口径），否则过期赠卡转正单
-        // 的合法重放会被误判为「付款截止被改写」而拒绝。
+        // PAY_EXPIRE_TIME 须与快照重算结果精确相等（证明未被改写）；审计 P1-3：转正单与创单
+        // 同一公式（promote→永久口径），否则过期赠卡转正单的合法重放会被误拒
         String expected = RechargePayExpire.compute(snap.capturedTime(),
                 snap.promoteToPermanent() ? null : snap.expireTimeAtCreate());
         if (!StrUtil.equals(payment.getPayExpireTime(), expected)) {

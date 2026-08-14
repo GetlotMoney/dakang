@@ -27,14 +27,11 @@ public interface IMiniCardService {
     MiniCardSummaryVo getPrimaryCard(Long userId);
 
     /**
-     * 取本人指定水卡的详情（L2-READ；L2-B 已有卡充值的 cardId 前置数据源）。
-     *
-     * <p>fail-closed：卡不存在、已逻辑删除、或**不属于会话登录人**时一律抛业务异常，
-     * 不返回 null 也不降级为主卡——避免"传别人的 cardId 就能读到别人卡"的越权。</p>
+     * 取本人指定水卡详情（L2-READ）。fail-closed：不存在/已删/非本人一律抛业务异常，
+     * 不返回 null 也不降级为主卡（防传他人 cardId 越权读卡）。
      *
      * @param cardId 水卡ID（来自前端）
      * @param userId 会话登录人（KH_USER），调用方从 StpKit 取，禁止来自前端
-     * @return 本人水卡详情
      */
     MiniCardDetailVo getCardDetail(Long cardId, Long userId);
 

@@ -3,24 +3,13 @@ package com.jbk.serve.service.aftersale;
 import com.jbk.tool.data.aftersale.bo.DeliveryCancelBo;
 
 /**
- * 待接单取消编排（E2E-04 包A，售后来源 1配送取消）。
+ * 待接单取消编排（E2E-04 包A，售后来源 1配送取消）。实现类不带 {@code @Transactional}：
+ * 业务段（任务 1→6 + 订单 2→7 + 登记返还）、认领段（REQUIRES_NEW）、资金段
+ * （REQUIRES_NEW + READ_COMMITTED）三段必须分开提交，裹进一个事务即 P0#1 的病灶。
  *
- * <p><b>本接口是编排层，实现类不带 {@code @Transactional}。</b>取消跨越三段互不相同的事务边界，
- * 它们<b>必须分开提交</b>，把它们裹进一个事务就是 P0#1 的病灶：</p>
- * <ol>
- *   <li><b>业务段</b>（{@code IDeliveryOrderTxService.cancelPendingDeliveryOrder}）：
- *       任务 1→6 + 订单 2→7 + 登记待执行返还，三步同生共死。</li>
- *   <li><b>认领段</b>（{@code claimIndependent}，REQUIRES_NEW）：认领这一事实必须先于资金结果落库。
- *       与资金同事务时，资金失败回滚会把状态复原成「待执行」，而失败落痕的 CAS 要求前态是
- *       「执行中」→ 影响行恒 0 → 动作无终态、无错因，且因为仍是待执行而可被无限重放。</li>
- *   <li><b>资金段</b>（{@code executeInTx}，REQUIRES_NEW + READ_COMMITTED）：锁卡、封顶、返还、流水。</li>
- * </ol>
- *
- * <p><b>中间态是本链路刻意承担的代价，不是缺陷</b>：业务段提交而资金段失败时，
- * 订单已是 7已退款 而钱尚在卡外，售后动作落「需人工对账」并留下 {@code LAST_ERROR}。
- * 反过来（先退钱再改状态）会让两个并发取消各自退一次款，那是不可逆的资金事故；
- * 状态先行至少保证「最多退一次」，剩下的缺口由人工对账补齐。因此用户提示必须说
- * <b>「退款处理中，如未到账请联系客服」</b>，绝不能说成"已到账"。</p>
+ * <p>「订单已取消而资金未落」的中间态是刻意代价：先退钱再改状态会让并发取消各退一次款，
+ * 状态先行至少保证最多退一次，缺口由「需人工对账」承接。用户提示必须说
+ * 「退款处理中，如未到账请联系客服」，绝不能说成已到账。</p>
  *
  * @author dakang
  * @since 2026-07-29

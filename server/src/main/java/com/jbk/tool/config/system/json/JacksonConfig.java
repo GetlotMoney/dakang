@@ -17,12 +17,6 @@ import java.text.SimpleDateFormat;
 import java.util.List;
 import java.util.TimeZone;
 
-/**
- * @ClassName JacksonConfig
- * @Author xs
- * @Date 2024/6/14 9:08
- * @Version 1.0
- */
 @Configuration
 public class JacksonConfig implements WebMvcConfigurer {
 

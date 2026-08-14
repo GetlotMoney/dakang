@@ -11,12 +11,6 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 
-/**
- * @ClassName RequestWrapper
- * @Author xs
- * @Date 2024/7/24 13:13
- * @Version 1.0
- */
 public class RequestWrapper extends HttpServletRequestWrapper {
     private final byte[] requestBody;
 

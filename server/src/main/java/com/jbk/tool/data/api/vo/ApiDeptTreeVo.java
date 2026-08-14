@@ -8,12 +8,6 @@ import lombok.experimental.Accessors;
 
 import java.util.List;
 
-/**
- *@ClassName ApiDeptTreeVo
- *@Author xs
- *@Date 2025/9/5 15:52
- *@Version 1.0
- */
 @Getter
 @Setter
 @Accessors(chain = true)

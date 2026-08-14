@@ -5,12 +5,6 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-/**
- * @ClassName SwaggerApiExclude
- * @Author xs
- * @Date 2024/6/11 11:18
- * @Version 1.0
- */
 @Target({ElementType.PARAMETER})
 @Retention(RetentionPolicy.RUNTIME)
 public @interface SwaggerApiExclude {

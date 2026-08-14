@@ -46,15 +46,9 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * 小程序机主域实现（E2E-05 包E）。
- *
- * <h3>范围与身份</h3>
- * <p>列表 WHERE OWNER_USER_ID = 会话 userId；详情先查后验归属，非本人一律「设备不存在」
- * ——不区分「没有」与「有但不是你的」（存在性不泄露）。申报建单直接复用统一工单领域服务
- * {@link IWorkOrderService#ownerApply}，状态机/幂等/审计与 PC 完全同源（S14 三端同一工单号）。</p>
- *
- * <h3>遥测口径</h3>
- * <p>只回最近一次有效上报；无上报字段为 null，前端如实显示「暂无数据」（任务书 3.7 不伪造数值）。</p>
+ * 小程序机主域实现（E2E-05 包E）。范围：列表 WHERE OWNER_USER_ID=会话 userId，
+ * 详情非本人一律「设备不存在」（存在性不泄露）；申报建单复用 {@link IWorkOrderService#ownerApply}，
+ * 与 PC 同源（S14 三端同一工单号）。遥测只回最近一次有效上报，无上报为 null 不伪造数值。
  *
  * @author dakang
  * @since 2026-07-30
@@ -63,6 +57,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class MiniOwnerServiceImpl implements IMiniOwnerService {
 
+    /** 绑号闸：工单联系方式只来自账号手机号，未绑号即无法联系。 */
+    private final com.jbk.serve.service.mini.auth.MiniPhoneGate phoneGate;
     private final WsDeviceMapper deviceMapper;
     private final WsStationMapper stationMapper;
     private final WsDeviceOutletMapper outletMapper;
@@ -124,6 +120,9 @@ public class MiniOwnerServiceImpl implements IMiniOwnerService {
         if (StrUtil.isNotBlank(bo.getContactPhone()) && !bo.getContactPhone().matches("^1\\d{10}$")) {
             throw new JbkException("联系电话格式不合法");
         }
+        // 绑号闸：账号手机号是工单唯一联系方式，未绑号即空联系人；修法是要求绑号，
+        // 不是启用申报电话（那会造出第二身份源）
+        phoneGate.requirePhoneBound(userId, "机主报修申报");
         WsDevice device = requireOwnedDevice(bo.getDeviceNo(), userId);
         WorkOrderApplyBo apply = new WorkOrderApplyBo();
         apply.setRequestId(bo.getRequestId());

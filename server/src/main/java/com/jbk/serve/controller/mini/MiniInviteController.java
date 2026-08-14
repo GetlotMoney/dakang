@@ -1,6 +1,8 @@
 package com.jbk.serve.controller.mini;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import com.taptap.ratelimiter.annotation.RateLimit;
+import com.jbk.serve.service.mini.invite.MiniInviteQrService;
 import com.jbk.serve.service.settlement.IInviteService;
 import com.jbk.tool.annotation.MySaCheckOr;
 import com.jbk.tool.annotation.RepeatSubmit;
@@ -33,12 +35,42 @@ public class MiniInviteController {
 
     @Autowired
     private IInviteService inviteService;
+    @Autowired
+    private MiniInviteQrService inviteQrService;
 
     @PostMapping("/my-code")
     @Operation(summary = "本人邀请码（无则惰性生成，确定性派生）")
     @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_KH_USER) })
     public R<String> myCode() {
         return R.ok(inviteService.myInviteCode(StpKit.KH_USER.getLoginIdAsLong()));
+    }
+
+    /**
+     * 本人邀请小程序码的 scene。
+     *
+     * <p><b>不收任何入参</b>：归属人只从会话取。若允许前端指定 userId 或 inviteCode，
+     * 任何人都能生成一张归属于别人的码，而归属一次性不可逆（D-413），错了只能人工改库。</p>
+     *
+     * <p>限流按会话人：出码是可被脚本刷的读接口，且每次都会写一条审计。
+     * 不限流的话，一个循环就能把领域事件表刷满，真正的审计淹在噪声里。</p>
+     *
+     * <p>本轮只返回 scene，不返回图片二进制——取图要 access_token 外呼微信，
+     * 任务书第二节禁止真实外呼。scene 的签名/限长/防篡改/可过期才是会让归属被冒用的部分，
+     * 它们不需要外呼即可完整验证。</p>
+     */
+    @PostMapping("/qr-scene")
+    @Operation(summary = "本人邀请小程序码 scene（带签名与到期日；不收入参，归属只从会话取）")
+    @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_KH_USER) })
+    // keys 用 SpEL 直接取会话身份，按人分桶而不是按 IP——同一个 WiFi 下多人各自出码
+    // 不该互相挤掉，而一个人换 IP 也不该重置自己的额度。
+    // 【为什么不写成 #userId】那要求方法有一个名为 userId 的**入参**，
+    // 而本接口刻意不收任何入参（归属只能来自会话）。为了让限流表达式好写就加一个入参，
+    // 等于把"调用方能指定归属人"这个口子重新开出来。
+    // 10 次/分钟对正常使用（点一次分享）绰绰有余。
+    @RateLimit(keys = "T(com.jbk.tool.utils.satoken.StpKit).KH_USER.getLoginIdAsString()",
+            rate = 10, rateInterval = "60s")
+    public R<String> qrScene() {
+        return R.ok(inviteQrService.issueScene(StpKit.KH_USER.getLoginIdAsLong()));
     }
 
     @RepeatSubmit

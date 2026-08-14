@@ -11,12 +11,9 @@ import java.time.format.DateTimeParseException;
  *
  * <p>冻结公式：{@code newExpireTime = max(currentExpireTime, paySuccessTime) + expireDays}。</p>
  *
- * <p>取 max 而不是简单地在当前有效期上加天数，是为了同时覆盖两种情形：卡还没过期时按剩余有效期
- * 往后叠加（用户不吃亏），卡已经自然过期时从<b>支付成功时刻</b>起算（不把权益续到一段已经过去的时间里）。
- * 基准必须是权威 {@code paySuccessTime}，<b>不能用处理时间代替</b>——异步 Worker 的处理时刻可能远晚于
- * 支付时刻，用它起算会凭空多送用户一段有效期，且同一笔支付重放时结果不稳定。</p>
- *
- * <p>业务时区固定 Asia/Shanghai；时间一律 {@code yyyyMMddHHmmss} 字符串，与全仓口径一致。</p>
+ * <p>取 max：未过期按剩余有效期叠加，已过期从支付成功时刻起算。基准必须是权威
+ * paySuccessTime、不能用处理时间——Worker 延迟会凭空多送有效期且重放结果不稳定。
+ * 时间一律 Asia/Shanghai 的 yyyyMMddHHmmss。</p>
  */
 public final class RechargeExpiry {
 
@@ -42,11 +39,8 @@ public final class RechargeExpiry {
     }
 
     /**
-     * 算得的新有效期是否已经不晚于处理时刻。
-     *
-     * <p>契约 §6.4 步骤 5：这种情况是<b>不可恢复错误</b>——绝不能写一段已经过期的权益，
-     * 也不能顺手把卡恢复成正常态，必须让订单进入 6 转人工。用户已经付了钱，
-     * 静默发放一份当场作废的权益比不发放更糟。</p>
+     * 新有效期是否已不晚于处理时刻。契约 §6.4 步骤 5：不可恢复错误——
+     * 绝不写一段已过期的权益，订单进 6 转人工。
      */
     public static boolean isAlreadyExpired(String newExpireTime, String processingTime) {
         LocalDateTime expire = parse(newExpireTime, "续期后有效期");

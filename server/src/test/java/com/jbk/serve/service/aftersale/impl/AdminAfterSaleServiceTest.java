@@ -33,15 +33,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * PC 售后编排层（{@link AdminAfterSaleServiceImpl}）单测。
- *
- * <p>本层<b>不动钱</b>：资金写入、CAS、封顶全在事务层，已由 {@code AfterSaleRefundTxDbTest}
- * 用真库真事务覆盖。这里要钉住的是编排层独有的三件事——
- * ① 进事务前的四道准入闸；② 认领落空时不得继续执行；③ 执行失败后的终局分流。
- * 故用 Mockito 而非真库：把事务层换成桩，才能精确断言「编排层调了什么、没调什么」。</p>
- *
- * <p>刻意<b>不</b>在这里重测金额与状态机——那样只会得到一份与事务层重复且更弱的断言，
- * 且两份判定一旦漂移，弱的那份会先绿。</p>
+ * PC 售后编排层单测（本层不动钱，资金由 AfterSaleRefundTxDbTest 真库覆盖）。
+ * 钉住编排层独有三件事：准入闸、认领落空不得继续、执行失败终局分流。
+ * 刻意不重测金额与状态机，避免与事务层出现两份会漂移的判定。
  */
 class AdminAfterSaleServiceTest {
 

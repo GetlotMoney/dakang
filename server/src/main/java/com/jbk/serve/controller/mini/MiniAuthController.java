@@ -60,4 +60,18 @@ public class MiniAuthController {
         Long userId = StpKit.KH_USER.getLoginIdAsLong();
         return R.ok(miniAuthService.bindPhoneForCurrentUser(userId, bo));
     }
+
+    /**
+     * 冷启动会话恢复：拿已有 token 换回账号上下文，不换发会话、不写任何数据。
+     * fail-closed：无会话抛未登录落 1401（端上 session-guard 清会话回登录入口），
+     * 账号停用/注销（assertUsable）同样拒绝；不返回 openid/session_key
+     * （{@link MiniAccountContextVo} 结构里没有这两位）。
+     */
+    @PostMapping("/context")
+    @Operation(summary = "读取当前会话的账号上下文（只读，用于冷启动恢复）")
+    @MySaCheckOr(login = { @SaCheckLogin(type = StpKit.DRIVER_KH_USER) })
+    public R<MiniAccountContextVo> currentContext() {
+        Long userId = StpKit.KH_USER.getLoginIdAsLong();
+        return R.ok(miniAuthService.currentContext(userId));
+    }
 }

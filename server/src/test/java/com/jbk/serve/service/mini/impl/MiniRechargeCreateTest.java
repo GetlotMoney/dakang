@@ -94,7 +94,7 @@ class MiniRechargeCreateTest {
         cardService = Mockito.mock(com.jbk.serve.service.user.IWsCardService.class);
         createTx = Mockito.mock(IRechargeCreateTx.class);
         IRechargePaySourceAdapter paySource = () -> IRechargePaySourceAdapter.WECHAT;
-        service = new MiniRechargeServiceImpl(new com.jbk.serve.service.settlement.IInviteService() {
+        service = new MiniRechargeServiceImpl(phoneGateAllowing(), new com.jbk.serve.service.settlement.IInviteService() {
                     public String myInviteCode(Long userId) { return "IVTEST0000"; }
                     public void bindReferrer(Long userId, String inviteCode) { }
                     public Long referrerSnapshotOf(Long userId) { return null; }
@@ -719,4 +719,17 @@ class MiniRechargeCreateTest {
         event.setDataStatus(0);
         return event;
     }
+
+    /**
+     * 放行版绑号闸：本类用例测的是充值链本身，账号一律视为已绑号。
+     * 闸的判据由 MiniPhoneGateTest 覆盖，锚点是否挂齐由 PhoneGateAnchorContractTest 覆盖。
+     */
+    private static com.jbk.serve.service.mini.auth.MiniPhoneGate phoneGateAllowing() {
+        com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+        Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                .thenReturn("13900000000");
+        return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+    }
+
 }

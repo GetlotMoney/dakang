@@ -12,19 +12,10 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * 水卡可用范围（SCOPE_JSON）的**唯一**规范化表示、授权语义相等判定与命中判定
- * （L2 契约 §2.2 范围规范化算法 + CARD-SCOPE 命中语义）。
- *
- * <p>充值、首次购卡、卡详情、扫码取水四条链统一复用本类；仓内不得再出现第二套
- * SCOPE_JSON 解析器——两套解析器一旦口径漂移，就会出现「充值校验通过、取水放行口径不同」
- * 的范围绕过缺陷。</p>
- *
- * <p>只有 {@code scopeType + 三个 ID 集合} 参与授权相等比较；展示名称（stationNames 等）
- * 仅作展示、不参与判断。本类不推导「站点—设备—出水口」层级关系——层级模型确认前，
- * 任何未登记字段一律 fail-closed 拒绝。</p>
- *
- * <p>空范围**不是**「全场通用」：数据库既有语义为「未配置并默认拒绝」，
- * 因此 {@code null}/空串在本类直接拒绝，由调用方决定如何处理，绝不静默放行。</p>
+ * 水卡可用范围（SCOPE_JSON）的唯一规范化表示与命中判定（L2 契约 §2.2 + CARD-SCOPE）。
+ * 仓内不得出现第二套解析器——口径漂移即范围绕过缺陷。只有 scopeType + 三个 ID 集合
+ * 参与授权比较，展示名不参与；不推导层级关系，未登记字段一律 fail-closed 拒绝。
+ * 空范围不是「全场通用」而是「未配置默认拒绝」，null/空串直接抛出、绝不静默放行。
  */
 public final class WaterCardScope {
 
@@ -198,16 +189,9 @@ public final class WaterCardScope {
     }
 
     /**
-     * 「站-设备-出水口」三元组是否落在本范围内（CARD-SCOPE 语义冻结，取水链下单/预检唯一命中判定）：
-     * {@code all}→允许；{@code specified}→**所有非空维度必须同时命中（AND，禁止 OR）**——
-     * 只配 stationIds 时命中该站即放行其下全部设备/出水口（该两维未配置=不设限）；
-     * stationIds+deviceIds 时两者都要命中；三维全给则三者都要命中；只配 outletIds 则仅指定出水口。
-     *
-     * <p>为什么必须 AND：若任一维命中即放行（OR），「站命中但设备不命中」会被放行，
-     * 等于水站命中绕过设备限制，限定到设备/出水口的卡将在同站任意设备可用。</p>
-     *
-     * <p>受限维度传入 {@code null} 一律拒绝（fail-closed）；空范围/非法 JSON 到不了本方法——
-     * {@link #normalize} 已拒绝。本方法不推导层级：站授权不因层级关系扩散成设备授权、反之亦然。</p>
+     * 「站-设备-出水口」三元组命中判定（取水链唯一出处）：all→允许；specified→已配置的维度
+     * 必须同时命中（AND，禁止 OR——OR 会让站命中绕过设备限制），未配置的维度不设限。
+     * 受限维度传入 null 一律拒绝（fail-closed）；不推导层级，站授权不扩散成设备授权。
      */
     public boolean allows(Long stationId, Long deviceId, Long outletId) {
         if (TYPE_ALL.equals(scopeType)) {

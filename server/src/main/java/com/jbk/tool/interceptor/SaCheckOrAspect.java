@@ -23,21 +23,12 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/**
- * @ClassName SaCheckOrAspect
- * @Author xs
- * @Date 2024/7/25 10:36
- * @Version 1.0
- */
 @Component
 @Aspect
 @Slf4j
 @Order(1)
 public class SaCheckOrAspect {
 
-    /**
-     * execution （【权限修饰符】【返回类型】【类全路径】【方法名称】(【参数列表】)）
-     */
     @Pointcut("execution(public * com.jbk.serve.controller..*Controller.*(..)) && @annotation(com.jbk.tool.annotation.MySaCheckOr)")
     public void pointcut() {
 

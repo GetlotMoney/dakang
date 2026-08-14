@@ -36,12 +36,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * @ClassName RequestAspect
- * @Author xs
- * @Date 2024/6/7 15:15
- * @Version 1.0
- */
+/** 控制器请求日志与流量统计切面（入参/出参脱敏后打印）。 */
 @Component
 @Aspect
 @Slf4j
@@ -73,9 +68,6 @@ public class RequestAspect {
         }
     }
 
-    /**
-     * execution （【权限修饰符】【返回类型】【类全路径】【方法名称】(【参数列表】)）
-     */
     @Pointcut("execution(public * com.jbk.serve.controller..*Controller.*(..))")
     public void pointcut() {
     }
@@ -84,7 +76,6 @@ public class RequestAspect {
     public Object handle(ProceedingJoinPoint joinPoint) throws Throwable {
         ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
         HttpServletRequest request = attributes.getRequest();
-        //IP地址
         String ipAddr = IpUtils.getIpAddr(request);
         String url = request.getRequestURI();
         String contextPath = request.getContextPath();
@@ -139,13 +130,7 @@ public class RequestAspect {
         return result;
     }
 
-    /**
-     * 入参数据
-     *
-     * @param joinPoint
-     * @param request
-     * @return
-     */
+    /** 非 JSON 请求的入参日志串。 */
     private String preHandle(ProceedingJoinPoint joinPoint, HttpServletRequest request) {
         String reqParam = "";
         Signature signature = joinPoint.getSignature();
@@ -166,12 +151,7 @@ public class RequestAspect {
         return reqParam;
     }
 
-    /**
-     * 返回数据
-     *
-     * @param retVal
-     * @return
-     */
+    /** 返回值日志摘要（data 一律省略）。 */
     static String responseSummaryForLog(Object retVal) {
         if (null == retVal) {
             return "";
@@ -214,9 +194,7 @@ public class RequestAspect {
                     object.put(key, REDACTED);
                 } else {
                     Object child = object.get(key);
-                    // 值级兜底：键名白名单对新增业务字段天然滞后（审计导出的 operatorKeyword
-                    // 就曾把手机号原文写进操作日志），故凡长得像手机号的值一律脱敏，
-                    // 不论它挂在哪个键名下
+                    // 值级兜底：键名白名单对新增字段天然滞后，凡长得像手机号的值一律脱敏
                     if (child instanceof String text) {
                         String masked = MaskUtils.maskPhoneLike(text);
                         if (!masked.equals(text)) {

@@ -100,6 +100,19 @@ class DeliveryOrderTxDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -132,6 +145,7 @@ class DeliveryOrderTxDbTest {
                     .getResources("classpath:mapper/*/*.xml"));
             return new SqlSessionTemplate(factory.getObject());
         }
+
 
         @Bean
         MapperFactoryBean<TradeCardMapper> tradeCardMapper(SqlSessionTemplate t) {
@@ -227,6 +241,23 @@ class DeliveryOrderTxDbTest {
         com.jbk.serve.service.settlement.IInviteService inviteService() {
             // E2E-08 归因快照协作方：mock 恒返回 null 推荐人，归因行为由 AttributionDbTest 锁定
             return org.mockito.Mockito.mock(com.jbk.serve.service.settlement.IInviteService.class);
+        }
+
+        /** 订阅通知登记：真实实现而不是 mock——挂点行为由 DeliveryAutoRefillDbTest 锁定，
+         * 这里只需要 DeliveryOrderServiceImpl 能装配起来且登记写的是真表。 */
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper>
+                wechatNotifyOutboxMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue(
+                com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper m) {
+            return new com.jbk.serve.service.mini.notify.WechatNotifyEnqueue(m);
         }
 
         @Bean

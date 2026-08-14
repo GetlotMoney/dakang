@@ -6,7 +6,7 @@
 -- ============================================================
 -- ============================================================
 -- 六维达康 · 用户卡券域（ws_user_card）
--- 表：ws_package / ws_card / ws_card_member
+-- 表：ws_package / ws_card / ws_card_member / ws_identity_conflict
 -- 字典段：1330 套餐状态、1331 卡类型、1332 卡状态、1333 成员授权状态
 -- 需求映射：水卡余额与权益校验 / 购卡充值 / 一卡多人授权 /
 --          套餐兑换汇率、价格快照与退款折算 / 实体水卡刷卡在线授权（一期预留字段）/
@@ -131,3 +131,46 @@ INSERT IGNORE INTO `ws_card_member` (`ID`, `DATA_STATUS`, `CREATE_BY`, `CREATE_T
 -- ----------------------------
 
 -- 菜单与按钮权限统一维护在 deploy/mysql/init/03-demo-baseline.sql；本领域 SQL 只定义表、字典和样例数据。
+
+-- ----------------------------
+-- 账号身份冲突台账（WX-ECO S1）
+--
+-- 四类身份冲突（openid 已绑他号 / 手机号已绑他微信 / 手机号归属他人 / 并发抢绑落败）
+-- 一律 fail-closed 抛异常且零副作用——这部分早就做到了。本表补的是任务书要求的后半句：
+-- 「进入可审计的人工处理状态」。此前冲突只给用户一句「请联系客服处理」，系统零留痕，
+-- 客服接到电话时手上没有任何信息。
+--
+-- 不是 outbox：无 Worker、无租约、无重试、无退避。冲突不需要被投递，需要被人逐条裁决。
+-- 不存 openid：冲突用「哪两个账号」就能完整表达，复制身份密钥只扩大泄漏面。
+-- ACTOR_USER_ID 用 0 哨兵而非 NULL：票据路径冲突时发起方还没有账号，而 MySQL 唯一键
+-- 忽略 NULL——用 NULL 会让同一冲突每次重试都插新行，幂等键形同虚设。
+-- ----------------------------
+DROP TABLE IF EXISTS `ws_identity_conflict`;
+CREATE TABLE `ws_identity_conflict` (
+  `ID`               bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`      tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY`        bigint       NOT NULL COMMENT '创建人ID（系统留痕恒为0）',
+  `CREATE_TIME`      varchar(14)  NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY`        bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`      varchar(14)  NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `CONFLICT_KEY`     varchar(120) NOT NULL COMMENT '幂等键 IDC:<类型>:<持有方>:<发起方|0>:<脱敏号>；同一冲突恒一行',
+  `CONFLICT_TYPE`    varchar(40)  NOT NULL COMMENT '冲突类型，见 MiniIdentityConflictEnum.Type',
+  `OCCUR_SCENE`      varchar(24)  NOT NULL COMMENT '发生场景：LOGIN_BIND登录绑定链 / SELF_BIND已登录自助补绑',
+  `HOLDER_USER_ID`   bigint       NOT NULL COMMENT '当前持有该身份的账号(ws_user.ID)——冲突的另一方',
+  `ACTOR_USER_ID`    bigint       NOT NULL COMMENT '发起动作的账号(ws_user.ID)；票据路径建号前用0哨兵（NULL不参与唯一约束）',
+  `MASKED_PHONE`     varchar(20)  DEFAULT NULL COMMENT '脱敏手机号，仅供人工核对；绝不存明文，更不存 openid',
+  `OCCUR_COUNT`      int          NOT NULL DEFAULT 1 COMMENT '同一冲突累计发生次数；用户反复重试只累加不新增行',
+  `FIRST_OCCUR_TIME` varchar(14)  NOT NULL COMMENT '首次发生时间',
+  `LAST_OCCUR_TIME`  varchar(14)  NOT NULL COMMENT '最近发生时间',
+  `HANDLE_STATUS`    tinyint      NOT NULL DEFAULT 1 COMMENT '处理状态：1待处理 2已处理 3已忽略',
+  `HANDLE_BY`        bigint       DEFAULT NULL COMMENT '处理人(api_employee.ID)',
+  `HANDLE_TIME`      varchar(14)  DEFAULT NULL COMMENT '处理时间',
+  `HANDLE_REMARK`    varchar(500) DEFAULT NULL COMMENT '处理说明：怎么裁决的、通知了谁',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_identity_conflict_key` (`CONFLICT_KEY`),
+  KEY `idx_identity_conflict_pending` (`HANDLE_STATUS`, `LAST_OCCUR_TIME`),
+  KEY `idx_identity_conflict_holder` (`HOLDER_USER_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='账号身份冲突台账：fail-closed 后的人工处理面，不是队列也不是 outbox';
+
+-- 不插任何种子：冲突是运行时事实，种子只会让台账一上来就带着假待办。

@@ -10,17 +10,9 @@ import org.springframework.web.servlet.HandlerInterceptor;
 import java.util.Set;
 
 /**
- * 首改密码强制门（R-201）：携带「需强制修改初始密码」标记的后台会话，
- * 除重新登录、退出、改密三个端点外一律拒绝——强制不能只靠前端跳转，
- * 否则拿初始密码直接调接口即可绕过。
- *
- * <p>标记随登录写入 MANAGE 会话的 JWT extra（{@link StpKit#EXTRA_PWD_CHANGE}）。
- * 改密与管理员重置都会强制目标下线，重新登录后标记自然刷新，
- * 因此这里只读会话内标记、不回查数据库，不给每个请求增加额外查询。</p>
- *
- * <p>只约束 MANAGE（PC 后台）会话：小程序等其他会话类型不带 MANAGE token，
- * {@code isLogin()} 恒为 false，直接放行；未登录请求由各端点自身的
- * {@code @SaCheckLogin} 负责，不属于本门职责。</p>
+ * 首改密码强制门（R-201）：待强改标记的后台会话除登录/退出/改密三端点外一律拒绝——强制不能只靠前端跳转，否则直接调接口即可绕过。
+ * 标记随登录写入 MANAGE 会话 JWT extra（{@link StpKit#EXTRA_PWD_CHANGE}），只读会话内标记不回查库（改密/重置都强制下线，重登自然刷新）。
+ * 只约束 MANAGE 会话；未登录请求由各端点 {@code @SaCheckLogin} 负责。
  */
 public class PwdChangeGuardInterceptor implements HandlerInterceptor {
 

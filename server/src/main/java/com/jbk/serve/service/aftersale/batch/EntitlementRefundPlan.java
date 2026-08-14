@@ -5,27 +5,14 @@ import com.jbk.tool.data.aftersale.po.WsCardEntitlementBatch;
 import com.jbk.tool.exception.JbkException;
 
 /**
- * 充值/购卡退款的可退金额与冲减量计划——<b>单一出处</b>（E2E-04 包D-5，REQ-061）。
+ * 充值/购卡退款的可退金额与冲减量计划——<b>单一出处</b>（E2E-04 包D-5，REQ-061）：
+ * 一次算清并冻结「退多少钱（{@link EntitlementRefundMath} 冻结公式）/ 从卡上减多少（批次剩余，
+ * 两维各自减）/ 能不能退（来源、状态、账本自洽三类闸）」。
  *
- * <h3>本类回答三个问题，一次算清并冻结</h3>
- * <ol>
- *   <li><b>退多少钱</b>：走 {@link EntitlementRefundMath} 的两条冻结公式，输入只取批次自身；</li>
- *   <li><b>从卡上减多少权益</b>：批次的剩余额度，两维各自减，绝不折算；</li>
- *   <li><b>这批次能不能退</b>：来源、状态、账本自洽性三类闸。</li>
- * </ol>
- *
- * <h3>为什么冲减量是「剩余」而不是「可退金额」</h3>
- * <p>两者是不同维度的东西，混用是本包最容易犯的错。可退金额按<b>实付</b>折算
- * （用掉的本金与赠送不退），而卡上要减掉的是这批次<b>还没被用掉</b>的权益——
- * 它包含赠送部分，也可能远大于或远小于可退金额。
- * 拿可退金额去减卡余额，赠送权益就会留在卡上白送；拿剩余去退款，公司会为赠送额出真金白银。</p>
- *
- * <h3>纯金额套餐与水量套餐怎么分</h3>
- * <p>看批次的 {@code GRANT_WATER_ML}：发过水量的按水量套餐折算（已用水量占比 × 实付），
- * 没发水量的按纯金额套餐折算（已消费金额直接抵扣）。两者都发的混合套餐按水量口径处理，
- * 因为水量是主权益、金额部分在这类套餐里恒为赠送——这一点由 {@code requireSaneBatch} 的
- * 「混合套餐必须整份未消费才可退」兜住：一旦被用过，两条公式都无法给出唯一正确答案，
- * 此时 fail-closed 转人工，而不是挑一条看起来合理的公式。</p>
+ * <p>冲减量是「剩余」而非「可退金额」：可退金额按实付折算，剩余含赠送——
+ * 拿可退金额减卡会把赠送权益留在卡上白送，拿剩余去退款则为赠送额出真金白银。
+ * 套餐口径看 {@code GRANT_WATER_ML}：发过水量按水量套餐折算，否则按纯金额套餐；
+ * 混合套餐一旦被消费即 fail-closed 转人工（两条公式都无法给出唯一正确答案）。</p>
  *
  * @author dakang
  * @since 2026-07-29
@@ -45,24 +32,16 @@ public final class EntitlementRefundPlan {
      * @param waterPackage  是否按水量套餐折算（用于快照与审计可复核）
      * @param usedWaterMl   已消费水量（毫升）
      *
-     * <p>刻意<b>不</b>带「本批次是否分文未动」（订单落 7 还是 8 的判据）：那要在结算事务里
-     * 按<b>锁内重读</b>的批次行现算。受理与结算之间隔着一个外部系统，受理时算出的"未动"
-     * 到结算时可能已经不成立；把它冻进计划里，就等于给终态判定留了一份会过期的副本。</p>
+     * <p>刻意不带「本批次是否分文未动」（订单落 7/8 的判据）：那必须在结算事务里按锁内重读现算，
+     * 冻进计划就是一份会过期的副本。</p>
      */
     public record Plan(Long batchId, long refundableFen, long reverseFen, long reverseMl,
                        boolean waterPackage, long usedWaterMl) {
     }
 
     /**
-     * 按批次算定退款计划。
-     *
-     * <h3>为什么不需要调用方传「已消费赠送金额」</h3>
-     * <p>冻结公式里 {@code consumedPrincipal} 与 {@code consumedBonus} 都以权重 1 从实付里减掉，
-     * 故只要传入的是「已消费金额<b>合计</b>」，两项怎么拆分对结果没有影响
-     * （拆分只影响可读性，不影响金额）。合计由批次自身给出：发放 − 剩余。
-     * 让调用方另算一份拆分再传进来，只会多出一个可以把同一笔消费重复减两次的入口。
-     * 纯水量套餐的金额维度发放恒为 0，故赠送消费必然为 0；
-     * 混合套餐一旦被消费即在下面 fail-closed，不进入公式。</p>
+     * 按批次算定退款计划。不需要调用方传「已消费赠送金额」：公式里本金与赠送同权重，
+     * 合计（发放 − 剩余）即可，另传拆分只会多一个重复扣减入口。
      *
      * @param batch 锁定后读到的批次行
      */
@@ -76,12 +55,11 @@ public final class EntitlementRefundPlan {
         long remainMl = requireNonNegative(batch.getRemainWaterMl(), "批次剩余水量");
         requireNonNegative(consumedBonusFen, "已消费赠送金额");
         if (remainFen > grantFen || remainMl > grantMl) {
-            // 剩余大于发放：账本已自相矛盾，继续算只会得出一个「看起来合理」的错数
+            // 剩余大于发放：账本自相矛盾
             throw new JbkException("批次剩余超过发放量，账本异常，拒绝退款折算");
         }
         if (payAmountFen <= 0) {
-            // 实付为 0 的批次没有可退基准（历史聚合批次即如此，已在来源闸拦下；
-            // 走到这里说明是一个实付缺失的充值批次，同样只能转人工）
+            // 实付为 0 没有可退基准（历史聚合批次已在来源闸拦下，此处是实付缺失的充值批次）
             throw new JbkException("批次实付金额为 0，没有可退基准，转人工处理");
         }
 
@@ -97,7 +75,7 @@ public final class EntitlementRefundPlan {
                 ? EntitlementRefundMath.refundableOfWaterPackage(payAmountFen, usedMl, grantMl, consumedBonusFen)
                 : EntitlementRefundMath.refundableOfCashPackage(payAmountFen, usedFen, consumedBonusFen);
         if (refundableFen <= 0) {
-            // 权益已用尽或用量折算后无可退金额：这不是错误，但也不该建出一张 0 元退款单
+            // 不是错误，但不该建出一张 0 元退款单
             throw new JbkException("该充值权益已消费完毕，可退金额为 0，不予退款");
         }
         return new Plan(batch.getId(), refundableFen, remainFen, remainMl, waterPackage, usedMl);
@@ -105,10 +83,8 @@ public final class EntitlementRefundPlan {
 
     /**
      * 来源与状态闸：只有「首次购卡」「已有卡充值」两种来源、且处于 1可用 的批次可退。
-     *
-     * <p>历史聚合批次（来源 3 / 状态 6）永远退不了款：这部分权益对应哪一笔付款、付了多少，
-     * 账本里没有答案。已退款(3)不得二次退款；退款锁定(2)说明已有一笔退款在处理中，
-     * 由 {@code uk_after_sale_source} 与本闸双重收敛。</p>
+     * 历史聚合批次（来源 3 / 状态 6）无付款归属永远不可退；已退款(3)不得二退；
+     * 退款锁定(2)由 {@code uk_after_sale_source} 与本闸双重收敛。
      */
     private static void requireRefundableSource(WsCardEntitlementBatch batch) {
         if (ObjectUtil.isNull(batch) || ObjectUtil.isNull(batch.getId())) {

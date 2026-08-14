@@ -10,12 +10,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 
-/**
- * @ClassName JndiFilter
- * @Author xs
- * @Date 2025/7/19 15:34
- * @Version 1.0
- */
 @Component
 public class JndiFilter extends OncePerRequestFilter {
 

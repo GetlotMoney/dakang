@@ -8,14 +8,8 @@ import lombok.experimental.Accessors;
 import java.io.Serializable;
 
 /**
- * 小程序扫码/取水请求对象。
- * <p>
- * resolve 用 rawCode；water/context 与 water/eligibility 用 scanSessionId。
- * 两字段按接口语义二选一，具体必填校验在 Service 层按方法做（避免共用 Bo 的分组耦合）。
- * </p>
- * <p>
- * 不含 userId：登录人一律由 KH_USER 会话取（资金/设备安全铁律6，禁止前端传参圈定数据范围）。
- * </p>
+ * 小程序扫码/取水请求对象。resolve 用 rawCode；water/context 与 water/eligibility 用 scanSessionId，
+ * 必填校验在 Service 层按方法做。不含 userId：登录人一律由 KH_USER 会话取（铁律6，禁止前端传参圈定数据范围）。
  *
  * @author dakang
  * @since 2026-07-19

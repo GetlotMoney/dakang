@@ -40,43 +40,21 @@ import java.util.Map;
 /**
  * 分润退款冲减实现（D-420 R2 两段式：动作级 outbox）。
  *
- * <h3>段1·登记＝不可失败路径（R2-P0-1）</h3>
- * <p>运行在客户退款成功事务内，只做一件事：单行 INSERT 动作级 outbox
- * （ws_split_clawback_action，ACTION_ID 唯一，冻结 orderId/actionType/refundProductFen）。
- * 零分账行读、零任务行读、零快照解析、零额度校验；撞键走不可变参数等价核验——
- * 同参数=幂等返回，参数漂移=既有登记置需人工（fail-closed）。两种情况都不抛异常、
- * 不产生第二份事实、不回滚退款。登记仅剩的失败面是这一条 INSERT 本身的基础设施
- * 故障——彼时退款事务自身也无法提交，不构成「冲减拖垮已完成退款」。</p>
+ * <p>段1·登记（R2-P0-1）＝不可失败路径：运行在客户退款成功事务内，只做单行 outbox INSERT
+ * （ACTION_ID 唯一，冻结 orderId/actionType/refundProductFen），零读零校验；撞键做不可变参数
+ * 等价核验——同参数幂等返回，参数漂移置需人工（fail-closed），两种情况都不抛异常、不回滚退款。</p>
  *
- * <h3>段2·执行＝对账后动账（R2-P0-2 / R3-P1-1 / R4）</h3>
- * <p>REQUIRES_NEW 独立事务：锁 outbox 行 → 权威动作复核（selectById 过滤逻辑删；
- * SUCCESS；类型仍为冲减型；三项冻结参数与权威动作逐字相等）→ 权威订单与来源共键
- * （{@link ClawbackSourceGate}：来源↔订单类型、售后号确定性派生、直锚来源
- * sourceId==orderId、申诉实体三共键；<b>无分账收敛仅限白名单来源</b>——待接单取消
- * （另过取消终态确认：订单已退款+任务已取消）与充值退款；申诉/取水异常等履约后
- * 来源分账行缺失=证据丢失转人工，未知来源恒 fail-closed）→ 锁分账行（平台行完整
- * 身份三元组恰一行：RECEIVER_TYPE 平台+收款方 0+REMAINDER 快照，伪装/错置/缺失/
- * 重复均转人工，防份额转嫁与错扣普通收款人）→ 锁明细事实 → 以锁内权威份额重算
- * 期望明细集（订单累计排除本动作，R2-P1-1；份额合计为 0 而退款额为正=证据矛盾
- * 转人工）→ 对账（集合完备、双键匹配、逐行金额相等、合计恒等退款额、行累计不破
- * 份额上限、收益账户在位且流水键未被占用）→ <b>全部合格才动第一笔账</b>。任何一处
- * 不合格=整动作置需人工、零资金/份额更新，不存在部分 DONE 部分 MANUAL 的混合
- * 中间态；结构性失败（CAS 争用等）抛出由 Worker 下轮重试。</p>
+ * <p>段2·执行（R2-P0-2 / R3-P1-1 / R4）＝REQUIRES_NEW 对账后动账：锁 outbox → 权威动作复核 →
+ * 来源共键（{@link ClawbackSourceGate}；无分账收敛仅限白名单来源，未知来源恒 fail-closed）→
+ * 锁分账行（平台行三元组恰一行）→ 锁明细 → 重算期望明细集 → 对账，全部合格才动第一笔账。
+ * 任一不合格=整动作转人工、零资金/份额更新，不存在部分 DONE 部分 MANUAL 的混合中间态；
+ * 结构性失败（CAS 争用等）抛出由 Worker 下轮重试。</p>
  *
- * <h3>分摊公式（R1-2，保持不变）</h3>
- * <p>行水费线<b>原始份额</b> originalShare：取水行=SPLIT_AMOUNT 全额；配送分线行
- * "W&lt;a&gt;+D&lt;b&gt;"=水费基数×a/10000（与派发同式）；"D&lt;b&gt;" 行=0；
- * 平台 REMAINDER=基数−其余行份额。<b>本次冲减</b>：非平台行=
- * floor(originalShare×REFUND_PRODUCT_FEN÷水费基数)，平台行=REFUND_PRODUCT_FEN−
- * Σ非平台行（吃舍入余数）——全行合计精确等于本次实际退款额。
- * 行累计恒 ≤ originalShare、订单累计恒 ≤ 水费基数。</p>
+ * <p>分摊公式（R1-2）：非平台行=floor(originalShare×REFUND_PRODUCT_FEN÷水费基数)，
+ * 平台行吃舍入余数——全行合计精确等于退款额；行累计恒≤originalShare、订单累计恒≤水费基数。</p>
  *
- * <h3>锁序</h3>
- * <p>执行段：outbox（按动作）→ split（按订单 ORDER BY ID FOR UPDATE）→
- * clawback 明细（ORDER BY ID）→ income_account。登记段不再持任何分账/任务锁
- * （退款事务与结算零竞争）；执行段与结算 settleOne（split→account）同向，
- * 无对向死锁；同动作并发执行被 outbox 行锁完全串行化，同订单多动作被
- * 分账行锁串行化。</p>
+ * <p>锁序：outbox → split（ORDER BY ID FOR UPDATE）→ clawback 明细 → income_account；
+ * 与结算 settleOne（split→account）同向，无对向死锁。</p>
  */
 @Slf4j
 @Service
@@ -151,8 +129,7 @@ public class SplitClawbackTxServiceImpl implements ISplitClawbackTxService {
         // FOR UPDATE 恒读最新已提交——outbox 行是叶子锁，无对向持锁方
         WsSplitClawbackAction existing = actionOutboxMapper.lockByActionIdForUpdate(actionId);
         if (existing == null) {
-            // 撞键却锁不到行：理论不可达（uk 冲突证明行已提交且未逻辑删），只留日志，
-            // 执行段的权威复核是兜底闸
+            // 撞键却锁不到行：理论不可达，留日志；执行段的权威复核是兜底闸
             log.error("冲减登记撞键但读不到既有行，留观：action={}", actionId);
             return;
         }
@@ -248,10 +225,8 @@ public class SplitClawbackTxServiceImpl implements ISplitClawbackTxService {
                 parkAction(outbox, facts, "订单无分账行但存在冲减明细，证据不一致");
                 return;
             }
-            // 零分账收敛必须过来源分类（R3-P1-1）：待接单取消=履约未发生、充值退款=充值单
-            // 无分账线，这两类「无分账」是业务事实；申诉/取水异常只在履约完成后出现，
-            // 分账行理应存在——缺失即证据丢失，未知来源同样 fail-closed，
-            // 绝不以「没有分账行」统一收敛掩盖证据缺失
+            // 零分账收敛必须过来源分类（R3-P1-1）：白名单来源的「无分账」是业务事实；
+            // 履约后来源分账行理应存在，缺失=证据丢失，未知来源同样 fail-closed
             if (isZeroSplitLegalSource(sourceType)) {
                 if (ObjectUtil.equal(sourceType, AfterSaleEnum.SourceType.DELIVERY_CANCEL.getValue())) {
                     // R4-P1-1：「待接单取消」不能只凭 sourceType 推断——收敛前按取消事务
@@ -270,9 +245,8 @@ public class SplitClawbackTxServiceImpl implements ISplitClawbackTxService {
             }
             return;
         }
-        // 平台行完整身份（R3-P1-1 / R4-P1-2）：三元组（RECEIVER_TYPE=平台、收款方=0、
-        // 快照=REMAINDER）恰一行。只认快照字符串会被普通收款行伪装——删真平台行+把机主行
-        // 快照改成 REMAINDER 即可骗过行数检查，随后机主既吃平台份额又被账户扣回
+        // 平台行完整身份（R3-P1-1 / R4-P1-2）：三元组恰一行。只认快照字符串会被普通收款行伪装，
+        // 随后机主既吃平台份额又被账户扣回
         String platformMismatch = platformEvidenceMismatch(rows);
         if (platformMismatch != null) {
             parkAction(outbox, facts, platformMismatch);
@@ -287,8 +261,7 @@ public class SplitClawbackTxServiceImpl implements ISplitClawbackTxService {
             shares = shareRowsOf(rows, waterBase);
             shareTotal = shares.stream().mapToLong(ShareRow::originalShare).sum();
             if (shareTotal <= 0) {
-                // 登记闸保证 refundFen>0：水费线份额为 0 却登记了正额水品退款=证据与
-                // 订单事实矛盾（R3-P1-1），转人工而非收敛完成
+                // 份额为 0 却登记正额水品退款=证据与订单事实矛盾（R3-P1-1），转人工而非收敛完成
                 parkAction(outbox, facts, "水费线份额为0但登记了正额水品退款（" + refundFen
                         + "），证据与订单事实不一致");
                 return;
@@ -444,10 +417,8 @@ public class SplitClawbackTxServiceImpl implements ISplitClawbackTxService {
     }
 
     /**
-     * 明细对账（R2-P0-2.4）：既有明细必须与期望集完全一致才允许动账——集合完备
-     * （无缺行无多行；uk 保证明细 splitId 互异，行数相等+逐行命中即双射）、每行
-     * (actionId,splitId,orderId) 双键匹配、逐行金额与重算相等、全体待处理、
-     * 合计精确等于 REFUND_PRODUCT_FEN。返回 null=合格，否则返回不合格原因。
+     * 明细对账（R2-P0-2.4）：既有明细与期望集完全一致才允许动账——集合完备、逐行双键匹配、
+     * 金额与重算相等、全体待处理、合计精确等于 REFUND_PRODUCT_FEN。返回 null=合格。
      */
     private String reconcileMismatch(List<WsSplitClawback> facts, List<WsSplitClawback> expected,
                                      WsSplitClawbackAction outbox) {
@@ -580,10 +551,8 @@ public class SplitClawbackTxServiceImpl implements ISplitClawbackTxService {
     }
 
     /**
-     * 允许「无分账行→合法零冲减完成」的来源白名单（R3-P1-1）：
-     * 待接单取消（履约未发生，分账从未派发；收敛前还须过取消终态确认，R4-P1-1）
-     * 与充值退款（充值单没有分账线）。申诉/取水异常等履约后来源不在此列——
-     * 它们的订单理应带分账证据。来源共键核验统一在 {@link ClawbackSourceGate}。
+     * 允许「无分账行→合法零冲减完成」的来源白名单（R3-P1-1）：待接单取消（还须过取消终态
+     * 确认，R4-P1-1）与充值退款；履约后来源不在此列，其订单理应带分账证据。
      */
     private static boolean isZeroSplitLegalSource(Integer sourceType) {
         return ObjectUtil.equal(sourceType, AfterSaleEnum.SourceType.DELIVERY_CANCEL.getValue())

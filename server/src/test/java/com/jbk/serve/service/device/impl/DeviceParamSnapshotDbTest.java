@@ -293,15 +293,8 @@ class DeviceParamSnapshotDbTest {
     // ==================== 9. 并发：恰一行，且后到的指令不得被静默丢弃 ====================
 
     /**
-     * 并发只钉两件 Mockito 证不了的事：<b>唯一键下恒一行</b>，以及<b>不死锁</b>。
-     *
-     * <p>刻意不再断言「版本恰为 2」——那条断言是首版写的，它把「到达顺序即生效顺序」
-     * 当成了预期，而那正是对抗审查抓出的缺陷。加上按 SOURCE_CMD_ID 的单调守卫后，
-     * 若较新的 CMD-B 先落地，随后的 CMD-A 本就<b>不该</b>生效，版本停在 1 才是对的。</p>
-     *
-     * <p>真正变强的是结果的确定性：无论两条 result 谁先到，最终值必须是<b>更新的那条指令</b>
-     * 的值。这一条在「后写者胜」的实现下会随机失败，在单调实现下恒成立。
-     * 「更早指令不得覆盖」的确定性守卫另见 {@link #olderCommandArrivingLateNeverOverwritesNewerSnapshot()}。</p>
+     * 并发钉两件事：唯一键下恒一行、不死锁。刻意不断言版本值——SOURCE_CMD_ID 单调守卫下
+     * 最终值必须是更新的那条指令的值，与到达顺序无关（「后写者胜」实现会随机失败）。
      */
     @Test
     void concurrentResultsKeepExactlyOneRowAndNewerCommandAlwaysWins() throws Exception {
@@ -341,12 +334,8 @@ class DeviceParamSnapshotDbTest {
     // ==================== R2-P1-1：未登记键不得进入「当前生效参数」 ====================
 
     /**
-     * 未登记键允许下发，但绝不能冒充「设备当前生效值」。
-     *
-     * <p>厂家协议要求固件忽略不认识的键，而平台目前不解析逐键 result——
-     * 拿不到「设备到底应用了哪些键」的事实。把下发过的未登记键写进快照，
-     * 等于用「我们发过」冒充「设备生效中」：一个被固件默默丢弃的键会在平台上
-     * 显示成生效值，运维据此排障必然走错方向。</p>
+     * 未登记键允许下发但不得写进快照：固件会默默丢弃不认识的键，
+     * 写快照等于用「我们发过」冒充「设备生效中」。
      */
     @Test
     void unregisteredKeysNeverEnterSnapshot() {
@@ -398,11 +387,8 @@ class DeviceParamSnapshotDbTest {
     // ==================== 单调守卫：更早的指令不得覆盖更新的快照 ====================
 
     /**
-     * 断网补传 / 消息重投会让<b>更早指令</b>的 result 后到，这是既有能力下的正常时序。
-     *
-     * <p>首版把「同一 cmdNo 相等」当唯一幂等闸，对这条路径完全不设防：旧值反向覆盖新值、
-     * SYNC_TIME 倒退，而 PARAM_VERSION 还 +1，让陈旧数据看起来更新——正是本需求要消灭的
-     * 那种错误答案。现改为按 SOURCE_CMD_ID（平台自增即下发顺序）单调判定。</p>
+     * 断网补传/重投会让更早指令的 result 后到：按 SOURCE_CMD_ID（平台自增即下发顺序）
+     * 单调判定，防旧值反向覆盖新值。
      */
     @Test
     void olderCommandArrivingLateNeverOverwritesNewerSnapshot() {

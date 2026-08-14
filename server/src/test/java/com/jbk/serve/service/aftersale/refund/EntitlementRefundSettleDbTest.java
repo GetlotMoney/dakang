@@ -459,12 +459,8 @@ class EntitlementRefundSettleDbTest {
     }
 
     /**
-     * 审计幂等键长度守卫：{@code ws_domain_event.BIZ_IDEMPOTENCY_KEY} 是 varchar(64)。
-     *
-     * <p>这条是为一次真实事故写的：受理事件的键前缀写成 33 位（"AFTERSALE_RECHARGE_REFUND_ACCEPT:"），
-     * 加上 32 位售后号刚好 65 位，写审计时撞 data truncation，把一次本该成功的受理整体回滚。
-     * 单测全绿、隔离验收第一轮才红——因为单测里事件服务是 Mock，长度没人检查。
-     * 现在检查它：Mock 也要挨这一刀。</p>
+     * 审计幂等键长度守卫：BIZ_IDEMPOTENCY_KEY 是 varchar(64)，前缀+32 位售后号超长会
+     * data truncation 整体回滚受理；事件服务被 Mock 时长度无人检查，故在此显式断言。
      */
     @Test
     void auditIdempotencyKeysFitTheColumn() {
@@ -534,13 +530,9 @@ class EntitlementRefundSettleDbTest {
     // ==================== 场景18：同一结算 20 线程并发只执行一次 ====================
 
     /**
-     * 20 个线程同时结算同一笔退款：卡只被冲减一次、流水只有一条、动作只被盖章一次。
-     *
-     * <p>这条是任务书场景18 在包D-5 的落点。串行幂等（上面那条）证明不了它：
-     * 串行时第二次调用能看到第一次的终态，而并发时 20 个线程<b>同时</b>读到的都是「未完成」。
-     * 真正拦住它们的是三道库层闸——{@code claimForExecute} 的状态+版本 CAS、
-     * {@code settleRefunded} 的 {@code REFUND_LOCKED_BY} 前态、以及
-     * {@code uk_wallet_flow_biz_key}。任一条失效，这条用例立刻红。</p>
+     * 20 线程并发结算同一笔退款只冲减一次（任务书场景18）：串行幂等证明不了并发，
+     * 真正的闸是 claimForExecute 状态+版本 CAS、settleRefunded 的 REFUND_LOCKED_BY 前态、
+     * uk_wallet_flow_biz_key 三道库层防线。
      */
     @Test
     void scenario18_twentyThreadSettlementRunsExactlyOnce() throws Exception {
@@ -698,13 +690,7 @@ class EntitlementRefundSettleDbTest {
 
     // ==================== 夹具 ====================
 
-    /**
-     * 走真实台账扣减：分摊行与批次剩余都要真的动，折算才有真实基准。
-     *
-     * <p>卡也必须同步扣——生产里这两步在同一个事务里（卡侧 CAS 先、批次分摊后）。
-     * 只扣批次不扣卡，构造出来的就是一个「账本断裂」的库，受理会被不变式闸挡住，
-     * 那时红的是夹具而不是被测代码。</p>
-     */
+    /** 走真实台账扣减且卡同步扣：只扣批次不扣卡会造出账本断裂的库，红的是夹具而非被测代码。 */
     private void consume(long ml) {
         tx.execute(status -> {
             jdbc.update("UPDATE ws_card SET BALANCE_ML = BALANCE_ML - ? WHERE ID = ?", ml, CARD_ID);

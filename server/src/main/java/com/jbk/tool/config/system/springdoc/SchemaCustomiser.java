@@ -23,12 +23,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
 
 import java.util.*;
 
-/**
- * @ClassName SchemaCustomiser1
- * @Author xs
- * @Date 2025/8/22 10:24
- * @Version 1.0
- */
+/** OpenAPI Schema 定制：按 SwaggerApiInclude/Exclude 注解裁剪请求体字段。 */
 @Component
 public class SchemaCustomiser implements OpenApiCustomizer {
 

@@ -25,27 +25,13 @@ import java.util.List;
 /**
  * 权益批次消费分摊与返还回补——<b>单一出处</b>（E2E-04 包D-4，REQ-061）。
  *
- * <h3>本类维护的唯一不变式</h3>
- * <pre>
- *   逐卡：SUM(ws_card_entitlement_batch.REMAIN_*) == ws_card.BALANCE_*
- * </pre>
- * <p>这条等式是退款折算能成立的全部前提，也是 D-2 回填脚本的后置不变式。它一旦破：</p>
- * <ul>
- *   <li>批次合计<b>低于</b>卡：用户账面有余额却凑不出批次额度，下一次取水/配送在
- *       「卡扣成功、批次不足」处整笔回滚，表现为「有钱下不了单」；</li>
- *   <li>批次合计<b>高于</b>卡：某批次的「已消费量 = 发放量 − 剩余量」被低估，
- *       退款折算据此多退，直接是资金事故。</li>
- * </ul>
- * <p>因此凡改动 {@code ws_card.BALANCE_*} 的事务都必须在<b>同一事务内</b>经过本类：
- * 扣减走 {@link #allocateOnConsume}，加回走 {@link #restoreOnRefundBack}，
- * 充值发放走 {@link EntitlementBatchWriter}（新建批次），到期作废走
- * {@link #settleExpired}（审计 P0-1，2026-08-07）。四个入口之外没有第五条路。</p>
+ * <p>唯一不变式：逐卡 SUM(ws_card_entitlement_batch.REMAIN_*) == ws_card.BALANCE_*，
+ * 它是退款折算与 D-2 回填脚本的前提。凡改动 {@code ws_card.BALANCE_*} 的事务必须在
+ * <b>同一事务内</b>经过本类：扣减 {@link #allocateOnConsume}、加回 {@link #restoreOnRefundBack}、
+ * 充值发放 {@link EntitlementBatchWriter}、到期作废 {@link #settleExpired}（审计 P0-1），别无第五条路。</p>
  *
- * <h3>为什么是无 @Transactional 的 Bean</h3>
- * <p>本类需要注入两个 Mapper，故不能像 {@link EntitlementBatchWriter} 那样做纯静态工具；
- * 但它<b>一个方法都不带 {@code @Transactional}</b>——事务边界必须由调用方（资金事务）持有。
- * 自带传播级别的那一刻，「卡与批次同生共死」就多了一个可以被写成 REQUIRES_NEW 的缺口，
- * 而那个缺口的表现是「卡扣了、批次没扣」，且两边各自提交成功、日志上毫无异常。</p>
+ * <p>本类不带 {@code @Transactional}：事务边界必须由调用方（资金事务）持有；
+ * 自带传播级别（尤其 REQUIRES_NEW）会造成「卡扣了、批次没扣」且两边各自提交成功。</p>
  *
  * @author dakang
  * @since 2026-07-29
@@ -69,12 +55,9 @@ public class EntitlementLedger {
     /**
      * 消费分摊的幂等键：取水 {@code DISPENSE:<订单号>}，配送沿用 {@code DELIVERY:<订单号>}。
      *
-     * <p>配送侧刻意<b>转调</b> {@link DeliveryConsumeFlow#bizKey}，不在这里重写一份前缀：
-     * 那个前缀同时是配送扣款流水的幂等键，两处各写一份则任一处改动都会让
-     * 「返还要回补哪次消费」按一个查不到的键去找，静默退化成「没有分摊可回补」。</p>
-     *
-     * <p>取水侧另起 {@code DISPENSE:} 前缀而非复用订单号裸值：{@code uk_alloc_biz_batch}
-     * 是全表唯一键，同一个订单号若在两种业务里出现，裸值会让它们互相撞键。</p>
+     * <p>配送侧必须转调 {@link DeliveryConsumeFlow#bizKey}（两处各写一份前缀，漂移后返还会按查不到的键
+     * 静默退化成「没有分摊可回补」）；取水侧另起 {@code DISPENSE:} 前缀防止与其他业务在全表唯一键
+     * {@code uk_alloc_biz_batch} 上撞键。</p>
      */
     public static String consumeKey(WsOrder order) {
         if (ObjectUtil.isNull(order) || StrUtil.isBlank(order.getOrderNo())) {
@@ -92,29 +75,16 @@ public class EntitlementLedger {
     }
 
     /**
-     * 批次到期清算——全仓<b>唯一</b>的权益到期作废实现（审计 P0-1/P0-2 整改，2026-08-07）。
+     * 批次到期清算——全仓<b>唯一</b>的权益到期作废实现（审计 P0-1/P0-2）。
      *
-     * <h3>为什么必须是主动清算而不是查询过滤</h3>
-     * <p>批次选取（{@code lockConsumableByCard}）与 {@link EntitlementBatchOrder#requireConsumable}
-     * 都只看状态不看时间；带期批次挂在永久卡上时（D-415 合并、存量有限期批次），卡级过期
-     * 守卫不再兜底，过期权益会被继续扣减。只在查询侧过滤则卡聚合值与批次合计立即脱节
-     * （卡上仍挂着过期余额），逐卡不变式当场断裂。唯一正确形态是：过期批次清零的同时
-     * 卡聚合值同步扣减、流水留痕，三者同一事务。</p>
+     * <p>必须主动清算而非查询侧过滤：批次选取只看状态不看时间（D-415 后卡级过期守卫不再兜底），
+     * 只过滤查询会让卡聚合值与批次合计立即脱节；过期批次清零、卡聚合扣减、流水留痕必须同一事务。
+     * 有作废动作时写入前验证「SUM(全部正剩余) == 卡聚合值」、写入后核对「卡终值 == 剩余批次合计」，
+     * 任一不成立整体回滚转人工（审计 R2 P0-2）。</p>
      *
-     * <h3>完整账本等式（审计 R2 P0-2）</h3>
-     * <p>批次视野是 {@code lockAllPositiveRemainByCard} 的<b>全状态</b>正剩余集合：有作废动作时，
-     * 写入前验证「SUM(全部正剩余) == 卡聚合值」、写入后核对「卡终值 == 剩余批次合计」，
-     * 任一不成立整体回滚转人工。可作废子集仍限状态 1/6 的到期批次；过期的退款锁定(2)批次
-     * 保持原样（余额留在卡上等退款裁决，消费侧因分摊凑不满而天然拒绝动用）。</p>
-     *
-     * <h3>调用契约</h3>
-     * <p><b>必须在持有该卡行锁的事务内调用</b>（{@code selectByIdForUpdate}/{@code lockCard} 之后），
-     * 且必须发生在本事务对该卡的任何扣减/入账之前——返回的清算后终值就是后续 CAS 的前态。
-     * 消费链（取水、配送）与赠卡转正入账共用本入口，任何一处都不得自行复制到期算法。</p>
-     *
-     * <p>每个被作废批次写一条 {@code EXPIRE_CLEAR} 流水，幂等键
-     * {@code EXPIRE-BATCH:<批次ID>}（唯一键兜底：并发重复清算撞键整体回滚）；
-     * AFTER 值逐批次递减，账本链条连续。无过期剩余批次时零动作返回原值。</p>
+     * <p><b>必须在持有该卡行锁的事务内、对该卡任何扣减/入账之前调用</b>——返回的终值就是后续 CAS 的前态；
+     * 消费链与赠卡转正入账共用本入口，不得复制到期算法。每个被作废批次写一条 {@code EXPIRE_CLEAR} 流水，
+     * 幂等键 {@code EXPIRE-BATCH:<批次ID>}，并发重复清算撞键整体回滚；无过期剩余批次时零动作返回原值。</p>
      *
      * @param lockedCard 锁内读取的卡行（前态与归属都取自它）
      * @param opUserId   操作人（流水与批次的 UPDATE_BY）
@@ -132,9 +102,8 @@ public class EntitlementLedger {
         long fenNow = requireNonNegative(lockedCard.getBalanceAmount(), "卡余额前态");
         long mlNow = requireNonNegative(lockedCard.getBalanceMl(), "卡水量前态");
 
-        // 单次全量锁定（审计 R2 P0-2）：该卡全部未删除、正剩余批次——不限状态。
-        // 只锁 1/6 可消费子集就做清算，状态 2（退款锁定）等非消费态的正余额完全不可见，
-        // 「卡余额 > 批次合计」的断裂账本也会被部分扣成功掩盖。
+        // 单次全量锁定（审计 R2 P0-2）：全状态正剩余批次。只锁 1/6 子集会让退款锁定态的
+        // 正余额不可见，断裂账本被部分扣成功掩盖。
         List<WsCardEntitlementBatch> allPositive =
                 new ArrayList<>(batchMapper.lockAllPositiveRemainByCard(cardId));
         long allFen = 0L;
@@ -152,8 +121,7 @@ public class EntitlementLedger {
             boolean settleable = ObjectUtil.equals(status, EntitlementBatchOrder.BatchStatus.AVAILABLE)
                     || ObjectUtil.equals(status, EntitlementBatchOrder.BatchStatus.NON_REFUNDABLE);
             if (settleable && StrUtil.isNotBlank(expire) && RechargeExpiry.naturallyExpired(expire, now)) {
-                // 只有可消费态(1/6)的到期批次允许作废；过期的退款锁定(2)批次保持原样——
-                // 它的余额留在卡上等退款裁决，消费侧因分摊凑不满而天然拒绝动用
+                // 只有可消费态(1/6)的到期批次允许作废；退款锁定(2)批次保持原样等退款裁决
                 expired.add(batch);
                 totalFen = Math.addExact(totalFen, remainFen);
                 totalMl = Math.addExact(totalMl, remainMl);
@@ -162,16 +130,15 @@ public class EntitlementLedger {
         if (expired.isEmpty()) {
             return new CardAfter(cardId, ownerUserId, lockedCard.getExpireTime(), fenNow, mlNow);
         }
-        // 写入前的完整账本等式（审计 R2 P0-2）：SUM(全部正剩余) 必须与卡聚合值精确相等。
-        // 卡余额高于批次合计（无批次支撑的余额）与低于合计（批次虚高）都在任何写入前 fail-closed。
+        // 写入前账本等式（审计 R2 P0-2）：SUM(全部正剩余) 必须与卡聚合值精确相等，不等即 fail-closed
         if (allFen != fenNow || allMl != mlNow) {
             throw new JbkException("到期清算前账本等式不成立：卡 " + cardId + " 余额 " + fenNow + "/" + mlNow
                     + " 批次合计 " + allFen + "/" + allMl + "，账本断裂转人工");
         }
         expired.sort(EntitlementBatchOrder.consumeOrder());
 
-        // 先减卡（reverseCardAssets：双列前态 + 余量>= + 状态白名单 1,2,3），再逐批次作废。
-        // 卡侧 0 行=前态漂移或余额不够扣（批次合计高于卡，账本本就断裂），整体回滚转人工。
+        // 先减卡（reverseCardAssets：双列前态 + 余量>= + 状态白名单 1,2,3），再逐批次作废；
+        // 卡侧 0 行=前态漂移或账本断裂，整体回滚转人工
         if (tradeCardMapper.reverseCardAssets(cardId, totalFen, totalMl, fenNow, mlNow,
                 ownerUserId, opUserId, now) != 1) {
             throw new JbkException("到期清算卡扣减影响行数异常：卡 " + cardId + " 前态漂移或账本断裂");
@@ -207,8 +174,7 @@ public class EntitlementLedger {
                 throw new JbkException("到期作废流水写入失败");
             }
         }
-        // 写入后的终值核对（审计 R2 P0-2 要求 4）：卡终值必须等于剩余批次合计
-        // （= 全量合计 − 本次作废合计；含仍保留的退款锁定批次）。防御性再核一遍而不是信任推导。
+        // 写入后终值核对（审计 R2 P0-2）：卡终值必须等于剩余批次合计（含仍保留的退款锁定批次）
         long remainFenTotal = Math.subtractExact(allFen, totalFen);
         long remainMlTotal = Math.subtractExact(allMl, totalMl);
         if (fenAfter != remainFenTotal || mlAfter != remainMlTotal) {
@@ -223,17 +189,9 @@ public class EntitlementLedger {
     /**
      * 消费分摊：把本次扣减按批次选取次序摊到该卡的可消费批次上。
      *
-     * <p><b>必须在扣减卡余额、写入消费流水的同一事务内调用</b>，且必须在卡侧 CAS 成功之后——
-     * 卡侧成功是「这笔消费确实发生了」的判据，批次侧只负责把它落到具体批次上。</p>
-     *
-     * <p>算法：{@code lockConsumableByCard} 取回按次序排好且已加行锁的批次，
-     * 逐个贪心填满金额与水量两个维度（同一批次同时供两维时只产生一条分摊行，
-     * {@code uk_alloc_biz_batch} 按 (BIZ_KEY, BATCH_ID) 唯一，本来也只允许一条）。
-     * 两维<b>各自独立</b>推进：金额可能全部来自 A 批次而水量全部来自 B 批次。</p>
-     *
-     * <p>凑不满即抛：这说明批次剩余合计低于卡聚合值，账本已断裂。此时唯一正确的结果是
-     * 整笔消费回滚——继续放行等于承认「卡上有一部分权益不属于任何批次」，
-     * 而那部分权益在退款折算里会被算成某个批次的剩余而多退。</p>
+     * <p><b>必须在扣减卡余额、写入消费流水的同一事务内、卡侧 CAS 成功之后调用</b>。
+     * 贪心填满金额与水量两维，两维各自独立推进（同一批次同时供两维时只产生一条分摊行）。
+     * 凑不满即抛、整笔消费回滚：放行等于承认卡上有权益不属于任何批次，退款折算会据此多退。</p>
      *
      * @return 实际被分摊到的批次数（0 表示本次消费两维额度均为 0，未产生分摊）
      */
@@ -244,14 +202,13 @@ public class EntitlementLedger {
         requireNonNegative(amountFen, "分摊金额");
         requireNonNegative(waterMl, "分摊水量");
         if (amountFen == 0L && waterMl == 0L) {
-            // 零额度消费（例如包C 的零金额补送子订单）不产生分摊，也不该产生空分摊行
+            // 零额度消费（如包C 的零金额补送子订单）不产生空分摊行
             return 0;
         }
 
         List<WsCardEntitlementBatch> batches = new ArrayList<>(batchMapper.lockConsumableByCard(ref.cardId()));
-        // SQL 的 ORDER BY 决定<b>加锁顺序</b>（防死锁），比较器决定<b>扣减顺序</b>（决定退多少钱）。
-        // 两者本该一致，但「本该一致」不是保证：这里显式按比较器重排，让 EntitlementBatchOrder
-        // 成为扣减次序的唯一出处——SQL 侧哪天被改宽或改错，扣减结果也不会跟着漂。
+        // SQL 的 ORDER BY 只决定加锁顺序（防死锁）；扣减次序以 EntitlementBatchOrder 为唯一出处，
+        // 显式重排后 SQL 被改宽也不会让扣减结果漂移
         batches.sort(EntitlementBatchOrder.consumeOrder());
         long needFen = amountFen;
         long needMl = waterMl;
@@ -260,8 +217,7 @@ public class EntitlementLedger {
             if (needFen == 0L && needMl == 0L) {
                 break;
             }
-            // SQL 的 BATCH_STATUS IN (1, 6) 已经筛过一遍；这里再断言一次是为了让
-            // 「SQL 被改宽」立刻在内存侧暴露，而不是等到某笔退款锁定的批次被扣空之后
+            // SQL 已按 BATCH_STATUS IN (1, 6) 筛过；再断言一次让「SQL 被改宽」立刻在内存侧暴露
             EntitlementBatchOrder.requireConsumable(batch);
             requireSameCard(batch, ref.cardId());
             long takeFen = Math.min(needFen, requireNonNegative(batch.getRemainAmountFen(), "批次剩余金额"));
@@ -287,18 +243,12 @@ public class EntitlementLedger {
     /**
      * 返还回补：把一笔返还的额度还回它当初扣走的那些批次。
      *
-     * <p><b>必须在给卡加回权益的同一事务内调用</b>。回补量恒等于本次给卡加回的量：
-     * 卡加多少、批次就补多少，不变式才不会漂。</p>
+     * <p><b>必须在给卡加回权益的同一事务内调用</b>，回补量恒等于本次给卡加回的量。
+     * 回补按分摊行逆序（后扣先还，见 {@link WsEntitlementAllocationMapper#selectByBizKeyForRestore}），
+     * 每行上限取分摊行而非批次发放量——批次不可能因返还涨出它没丢过的权益。</p>
      *
-     * <p>回补按分摊行的<b>逆序</b>（后扣先还，理由见
-     * {@link WsEntitlementAllocationMapper#selectByBizKeyForRestore}），每行最多还回它当初扣走的额度
-     * ——上限取分摊行而不是批次发放量，这样一个批次永远不可能因为返还而涨出它没丢过的权益。</p>
-     *
-     * <p><b>残量与历史消费</b>：D-4 上线前的消费没有分摊行，对它的返还找不到可回补的批次。
-     * 若就此不管，这张卡的聚合值会永久高于批次合计，那部分余额从此扣不动。故用
-     * 「卡新聚合值 − 批次剩余合计」算出真实缺口，把残量并入该卡的历史聚合批次（不可退桶）。
-     * 缺口 ≤ 0 时一分不补——上线前那笔消费没扣过批次，批次侧本来就没少，
-     * 再补一次就是凭空造权益。这个口径让本类对存量数据自愈，且方向永远偏向「不可退」。</p>
+     * <p>残量（D-4 上线前的消费无分摊行）按「卡新聚合值 − 批次剩余合计」算真实缺口并入
+     * 历史聚合批次（不可退桶）；缺口 ≤ 0 时一分不补，否则是凭空造权益。方向永远偏向「不可退」。</p>
      */
     public void restoreOnRefundBack(CardAfter card, String consumeBizKey, long amountFen, long waterMl,
                                     Long opUserId, String now) {
@@ -321,10 +271,8 @@ public class EntitlementLedger {
                 break;
             }
             if (ObjectUtil.equals(alloc.getReversedFlag(), 1)) {
-                // 该分摊已被退款冲正（reverseByBatch）：那批权益连本带利退回用户支付账户了。
-                // 再把它补回卡上，就成了同一笔权益既退了钱又留着权益。
-                // 本次返还的额度不会因此丢失——它会落到下面的残量逻辑里，
-                // 并入该卡的不可退桶（方向偏保守，绝不制造可套现额度）。
+                // 已被退款冲正的分摊不回补（否则同一笔权益既退了钱又留着权益）；
+                // 额度不丢失，落到下面的残量逻辑并入不可退桶
                 continue;
             }
             long allocFen = requireNonNegative(alloc.getAllocAmountFen(), "分摊金额前态");
@@ -369,14 +317,9 @@ public class EntitlementLedger {
     }
 
     /**
-     * 把无归属残量并入该卡的历史聚合批次；该卡没有这样的批次时新建一条。
-     *
-     * <p>新建走 {@code SOURCE_TYPE=3 / BATCH_STATUS=6 / PAY_AMOUNT_FEN=0 / ORDER_ID=NULL} 的固定形态，
-     * 与 D-2 回填脚本逐列一致——它必须永远退不了款：这部分权益对应哪一笔付款、付了多少，
-     * 账本里没有答案，猜一个填进去就是凭空造出可退款基准。</p>
-     *
-     * <p>有效期取<b>卡的聚合有效期</b>而不是 NULL：NULL 表示永久，会让这桶权益在消费次序里
-     * 排到所有有限期批次之后，并且在将来批次级过期生效时活得比卡本身还长。</p>
+     * 把无归属残量并入该卡的历史聚合批次；没有则按 D-2 回填脚本的固定形态新建
+     * （SOURCE_TYPE=3 / BATCH_STATUS=6 / PAY_AMOUNT_FEN=0 / ORDER_ID=NULL，必须永远退不了款）。
+     * 有效期取卡的聚合有效期而非 NULL——NULL=永久，会让这桶权益活得比卡本身还长。
      */
     private void growLegacyBucket(CardAfter card, long growFen, long growMl, Long opUserId, String now) {
         WsCardEntitlementBatch legacy = batchMapper.lockLegacyByCard(card.cardId());
@@ -431,7 +374,7 @@ public class EntitlementLedger {
         alloc.setCreateTime(now);
         alloc.setUpdateBy(opUserId);
         alloc.setUpdateTime(now);
-        // 撞 uk_alloc_biz_batch 即同一次消费重放：不捕获，整事务回滚才是正确结果（铁律②）。
+        // 撞 uk_alloc_biz_batch 即同一次消费重放：不捕获、整事务回滚（铁律②）；
         // 捕获后「按已分摊继续」会让卡被扣两次而批次只扣一次
         if (allocationMapper.insert(alloc) != 1) {
             throw new JbkException("权益分摊记录插入影响行数异常");

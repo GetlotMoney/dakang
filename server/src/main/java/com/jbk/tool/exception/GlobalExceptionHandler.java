@@ -44,17 +44,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(value = JbkException.class)
     public R serviceExceptionHandler(JbkException e) {
         if (e.getCode() == ErrorMsg.REPEAT_SUBMIT.getCode()
-                || e.getCode() == ErrorMsg.PWD_CHANGE_REQUIRED.getCode()) {
-            // 重复提交不计入信息；
-            // 首改密码门的拒绝同样不计入——它由 SPA 每次挂载批量触发（一屏可达数十次），
-            // 计入则待改密用户刷新几次页面即可把整个出口 IP 打进临时封禁乃至永久封禁
+                || e.getCode() == ErrorMsg.PWD_CHANGE_REQUIRED.getCode()
+                || e.getCode() == ErrorMsg.PHONE_BIND_REQUIRED.getCode()) {
+            // 重复提交/首改密码门/绑号闸的拒绝不计入 IP 限流：SPA 挂载批量触发 + 共用出口 IP（同楼 WiFi/CGNAT）
+            // 会把正常动线打进临时乃至永久封禁
         } else {
             redisIpRateLimit(e);
         }
-        // 精确原因恒进日志——无论是否展示给用户，排障信息一个字都不丢。
+        // 精确原因恒进日志；诊断类异常（JbkException.internal）原文只给排障看，不弹给用户。
         log.error("=========》JbkException：{},{}", e.getMsg(), ExceptionUtil.stacktraceToString(e));
-        // 诊断类异常（JbkException.internal）的原文是给排障看的，不弹给用户：
-        // 「支付单与订单共键错位，拒绝」对用户既看不懂也无法处置，只会造成恐慌。
         String clientMsg = e.isUserFacing() ? e.getMsg() : JbkException.INTERNAL_FALLBACK_MSG;
         return R.error(clientMsg, e.getCode());
 
@@ -104,13 +102,20 @@ public class GlobalExceptionHandler {
         return R.error(StrUtil.format("权限不足，缺少权限：{}", e.getPermission()));
     }
 
+    /**
+     * 二级认证未通过。必须落 {@link ErrorMsg#SAFE_FAIL}(1440) 这个可判别的码：前端据此就地弹口令框、
+     * 认证成功后重放原请求，不得吞成通用错误码。C 端无二级认证入口，如实回「功能未开放」。
+     */
     @ExceptionHandler(value = NotSafeException.class)
     public R bindNotSafeExceptionHandler(HttpServletRequest req, Exception e) {
-        redisIpRateLimit(e);
         if (StpKit.KH_USER.isLogin()) {
+            // C 端属探测行为，仍计入 IP 限流
+            redisIpRateLimit(e);
             return R.error("这个隐藏功能已经关闭了哦~");
         }
-        return R.error("二级认证校验失败");
+        // 管理端不计入 IP 限流：二级认证是懒开窗设计，先撞 1440 再弹口令重放属正常流程；
+        // 口令暴力破解仍在 /api/auth/openSafe 抛 JbkException 处被正常计数
+        return R.error(ErrorMsg.SAFE_FAIL);
     }
 
     @ExceptionHandler(value = ServletRequestBindingException.class)
@@ -159,7 +164,6 @@ public class GlobalExceptionHandler {
 
     public void redisIpRateLimit(Exception e) {
         String ipAddr = IpUtils.getIpAddr(request);
-        // 记录错误日志
         long userId = -1L;
         if (StpKit.KH_USER.isLogin()) {
             userId = StpKit.KH_USER.getLoginIdAsLong();
@@ -170,26 +174,18 @@ public class GlobalExceptionHandler {
                 request.getRequestURI(),
                 ExceptionUtil.stacktraceToString(e)
         );
-        // 记录错误次数
         String errorCountKey = RedisKeys.Comm.EXCEPTION_IP_CNT + ipAddr;
-        // 原子性地增加错误计数
         long errorCount = RedisUtils.incr(redis1, errorCountKey, 1);
-        // 设置过期时间（如果是第一次记录）
         if (errorCount == 1) {
             RedisUtils.expire(redis1, errorCountKey, timeWindowSeconds);
         }
-        // 检查是否达到封禁阈值
         if (errorCount >= errorThreshold) {
-            // 若ip被封禁过
+            // 曾被临时封禁过的 IP 再次达阈值 → 永久封禁；否则临时封禁并记录
             if (RedisUtils.sHasKey(redis1, RedisKeys.Comm.EXCEPTION_IP_TEMP_ALL, ipAddr)) {
-                // 永久封禁该ip
                 RedisUtils.sSet(redis1, RedisKeys.Comm.EXCEPTION_IP_ALL, ipAddr);
             } else {
-                // 临时封禁该ip
                 RedisUtils.set(redis1, RedisKeys.Comm.EXCEPTION_IP_TEMP + ipAddr, ApiConst.SYS_PLACEHOLDER, tempDisableTime);
-                // 记录被封禁的ip
                 RedisUtils.sSet(redis1, RedisKeys.Comm.EXCEPTION_IP_TEMP_ALL, ipAddr);
-                // 设置临时封禁ip的时间
                 RedisUtils.expire(redis1, RedisKeys.Comm.EXCEPTION_IP_TEMP_ALL, tempRecordTime);
             }
         }

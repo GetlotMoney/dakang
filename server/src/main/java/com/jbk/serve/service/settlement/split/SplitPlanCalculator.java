@@ -24,11 +24,11 @@ import java.util.List;
  *   <li>M9 公域裁剪：{@link AttributionSource#PUBLIC_UNASSIGNED} 时推荐/区域组件不生成</li>
  * </ul>
  *
- * <h2>刻意的阻断位（甲方参数未冻结，见任务书第三节）</h2>
- * <p>区域链缺层（如省直招区县、市层无人）时「缺失层份额归平台还是归现存上级」
- * 是第三节第 2 条待确认项。两种语义都不能擅自写死，故 S1 只接受<b>自省向下的
- * 连续前缀链</b>（空链 / 省 / 省市 / 省市区县），缺层链一律 fail-closed，
- * 待甲方答复后 S2 放开为选定语义。</p>
+ * <h2>断层语义（D-428，2026-08-14 冻结，取代原 S1 阻断位）</h2>
+ * <p>区域链接受任意子集：直接归属层（最低在场层）拿本层累计全额，其余在场层实得
+ * = 自身累计 − 最近在场下级累计；缺席层的级差切片被最近在场上级吸收，在场层之上
+ * 无人时差额落平台余数。前缀链（空/省/省市/省市区县）的结果与 S1 语义逐分不变，
+ * 放开的只是断层与缺上级形态——不再存在因链形态拒算而打挂完成动作的路径。</p>
  *
  * @author dakang
  * @since 2026-08-06
@@ -101,10 +101,14 @@ public final class SplitPlanCalculator {
     }
 
     /**
-     * 区域级差（M7）：比例表是各层<b>累计上限</b>，实得是级差。
+     * 区域级差（M7/D-405，断层语义 D-428 冻结）：比例表是各层<b>累计上限</b>，实得是级差。
      *
-     * <p>链 {省}：省拿省级累计全额（矩阵 5）。链 {省,市}：市拿市级累计，省拿省−市。
-     * 链 {省,市,区县}：区县拿区县级累计，市拿市−区县，省拿省−市（矩阵 4）。
+     * <p>统一公式：<b>直接归属层（最低在场层）拿本层累计全额；其余在场层实得 =
+     * 自身累计 − 最近在场下级累计</b>。链 {省,市,区县}：区县拿区县累计，市拿市−区县，
+     * 省拿省−市（矩阵 4）。链 {省}：省拿省级累计全额（矩阵 5）。
+     * 缺席层不产生行，其级差切片被最近在场上级自然吸收（{省,区县} 时省拿省−区县）；
+     * 在场层之上无人时，其上的差额落平台余数（{区县} 时省市差额归公司）——
+     * 与 8.6 会议「省直招省拿全额」「级差=上级吃下级没拿的」同构，全链缺席才全归公司。
      * 绝不把三层累计相加——那会把 10%+8%+5% 分成 23%，正是会议点名要防的错。</p>
      */
     private static void regionComponents(SplitPlanSnapshot plan, SplitCalcInput in,
@@ -142,29 +146,24 @@ public final class SplitPlanCalculator {
                 default -> throw new JbkException("区域链不允许 NONE 层级");
             }
         }
-        // 阻断位：连续前缀之外的链形态，语义未冻结（第三节 2 条），拒绝而非猜
-        if (city != null && province == null) {
-            throw new JbkException("区域链断层：有市级无省级，缺失层份额归属未确认，拒绝计算");
-        }
-        if (county != null && city == null) {
-            throw new JbkException("区域链断层：有区县级无市级，缺失层份额归属未确认，拒绝计算");
-        }
-
         int provinceCum = plan.itemOf(BasisLine.WATER_SALE, RoleCode.REGION_PROVINCE).rateBp();
         int cityCum = plan.itemOf(BasisLine.WATER_SALE, RoleCode.REGION_CITY).rateBp();
         int countyCum = plan.itemOf(BasisLine.WATER_SALE, RoleCode.REGION_COUNTY).rateBp();
 
+        // 自低向高遍历在场层：最低在场层拿本层累计全额，其余在场层拿「自身累计 −
+        // 最近在场下级累计」。缺席层无行，级差切片被上方最近在场层吸收（D-428）。
+        int lowerCum = -1;
         if (county != null) {
             add(out, plan, in, RoleCode.REGION_COUNTY, county, countyCum);
-            add(out, plan, in, RoleCode.REGION_CITY, city, cityCum - countyCum);
-            add(out, plan, in, RoleCode.REGION_PROVINCE, province, provinceCum - cityCum);
+            lowerCum = countyCum;
         }
-        else if (city != null) {
-            add(out, plan, in, RoleCode.REGION_CITY, city, cityCum);
-            add(out, plan, in, RoleCode.REGION_PROVINCE, province, provinceCum - cityCum);
+        if (city != null) {
+            add(out, plan, in, RoleCode.REGION_CITY, city, lowerCum < 0 ? cityCum : cityCum - lowerCum);
+            lowerCum = cityCum;
         }
-        else {
-            add(out, plan, in, RoleCode.REGION_PROVINCE, province, provinceCum);
+        if (province != null) {
+            add(out, plan, in, RoleCode.REGION_PROVINCE, province,
+                    lowerCum < 0 ? provinceCum : provinceCum - lowerCum);
         }
     }
 

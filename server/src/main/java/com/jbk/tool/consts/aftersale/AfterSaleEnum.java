@@ -3,15 +3,8 @@ package com.jbk.tool.consts.aftersale;
 import com.jbk.tool.exception.JbkException;
 
 /**
- * 售后域枚举（E2E-04 包A；数值对齐迁移脚本 2026-07-29-aftersale-e2e04-a.sql 写入的字典 1370/1371/1372）。
- *
- * <p>三条来源（待接单取消 / 配送申诉补偿 / 取水异常核账）共用一份返还内核，
- * 差异只落在 {@link SourceType} 与 {@link SourceType#sourceIdMeaning()}；
- * 因此本文件是「售后语义」的唯一出处，Service / Mapper / 前端契约都从这里取值，
- * 任何地方再出现裸数字 1/2/3 都视为第二份真相。</p>
- *
- * <p>所有解析入口一律 fail-closed：字典外的脏值直接抛 {@link JbkException}，
- * 绝不静默降级成默认值——售后动作一旦落错类型，返还口径与财务分类同时失真。</p>
+ * 售后域枚举（E2E-04 包A；字典 1370/1371/1372，对齐 2026-07-29-aftersale-e2e04-a.sql）。
+ * 售后语义唯一出处，别处不得再写裸数字。所有解析入口 fail-closed：字典外脏值抛 {@link JbkException}，绝不静默降级。
  *
  * @author dakang
  * @since 2026-07-29
@@ -19,10 +12,8 @@ import com.jbk.tool.exception.JbkException;
 public interface AfterSaleEnum {
 
     /**
-     * 售后来源 (dictType=1370)。
-     * <p>SOURCE_ID 的语义随来源变化，见 {@link SourceType#sourceIdMeaning()}：
-     * 申诉必须取 appealId 而非 taskId——uk_appeal_active_task 只约束「待处理」申诉，
-     * 同一任务可合法产生多条已裁决申诉，用 taskId 当来源键会把第二次合法申诉误判为重放。</p>
+     * 售后来源 (dictType=1370)。SOURCE_ID 语义随来源变化，见 {@link SourceType#sourceIdMeaning()}；
+     * 陷阱：申诉必须取 appealId 而非 taskId，否则同任务的第二次合法申诉会被误判为重放。
      */
     enum SourceType {
 
@@ -36,12 +27,8 @@ public interface AfterSaleEnum {
         WATER_ABNORMAL(3, "取水异常核账", "ws_order.ID"),
 
         /**
-         * 充值/购卡退款（包D-5，REQ-061）：已入账的充值按权益批次折算后原路退款。
-         * SOURCE_ID = ws_order.ID。
-         *
-         * <p>必须与 {@link #WATER_ABNORMAL} 分开编号，尽管两者的 SOURCE_ID 都是 ws_order.ID：
-         * {@code uk_after_sale_source(SOURCE_TYPE, SOURCE_ID)} 是按二元组唯一的，
-         * 复用同一个来源码会让一张取水订单与一张充值订单在 ID 相同时互相占键。</p>
+         * 充值/购卡退款（包D-5，REQ-061）：已入账的充值按权益批次折算后原路退款。SOURCE_ID = ws_order.ID。
+         * 必须与 WATER_ABNORMAL 分开编号：uk_after_sale_source(SOURCE_TYPE, SOURCE_ID) 按二元组唯一，复用来源码会互相占键。
          */
         RECHARGE_REFUND(4, "充值退款", "ws_order.ID");
 
@@ -82,9 +69,7 @@ public interface AfterSaleEnum {
     }
 
     /**
-     * 售后动作类型 (dictType=1371)。
-     * <p>1/2 是包A 的内部权益返还（钱/水回卡）；3 机构退款属包B、4 补送属包C，
-     * 包A 只登记值不实现执行路径——状态与类型必须一次登记齐，否则后续包要再改一次枚举（单一出处）。</p>
+     * 售后动作类型 (dictType=1371)。1/2 是包A 内部权益返还；3 属包B、4 属包C，包A 只登记值不实现执行路径。
      */
     enum ActionType {
 
@@ -130,10 +115,7 @@ public interface AfterSaleEnum {
     }
 
     /**
-     * 售后执行状态 (dictType=1372)。
-     * <p>合法迁移边只认
-     * {@code com.jbk.serve.service.aftersale.AfterSaleTransitions}，本枚举只负责值与文案；
-     * 任何「哪些前态可以变成 X」的判断都必须回到那个类，不得在此处或 XML 里再写一份。</p>
+     * 售后执行状态 (dictType=1372)。合法迁移边唯一出处是 {@code com.jbk.serve.service.aftersale.AfterSaleTransitions}，本枚举只负责值与文案。
      */
     enum ActionStatus {
 
@@ -185,15 +167,9 @@ public interface AfterSaleEnum {
     }
 
     /**
-     * 补偿策略码（ws_after_sale_action.STRATEGY_CODE，varchar(20)）。
-     *
-     * <p><b>为什么是字符串码而不是字典数值</b>：api_dict_data.DICT_VALUE 是 tinyint、
-     * DICT_LABEL 仅 varchar(10)，物理上放不下 PRODUCT_AND_SERVICE 这类语义码；
-     * 既有先例是 ws_delivery_appeal.APPEAL_REASON（同为 varchar 字符串码 + 白名单）。
-     * 故本枚举即字典本身，落库前必须过 {@link #getByCode(String)}。</p>
-     *
-     * <p>策略码只声明「退哪几个维度」，具体金额/水量由快照与数量边界算出；
-     * 维度与额度的对应关系见 ws_after_sale_action 的四元额度列注释。</p>
+     * 补偿策略码（ws_after_sale_action.STRATEGY_CODE，varchar(20)）。用字符串码因字典物理放不下语义码
+     * （DICT_VALUE tinyint / DICT_LABEL varchar(10)），本枚举即字典，落库前必须过 {@link #getByCode(String)}。
+     * 策略码只声明退哪几个维度，金额/水量由快照与数量边界算出。
      */
     enum StrategyCode {
 

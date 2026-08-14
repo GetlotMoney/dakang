@@ -190,9 +190,7 @@ class RechargeCreateTxImplTest {
         assertThrows(JbkException.class, () -> tx.create(order(), PAY_EXPIRE, PAY_SOURCE_SIM));
     }
 
-    // 11) 唯一键冲突必须原样向上抛。
-    //     编排层要靠 DuplicateKeyException 触发"按 ORDER_NO 重读 + 重新核验"的幂等路径；
-    //     这里若被吞掉或转成成功返回，并发下同一 requestId 就会重复建单/重复收款。
+    // 11) 唯一键冲突必须原样向上抛：编排层靠 DuplicateKeyException 走幂等重读，吞掉会重复建单/收款。
     @Test
     void duplicateKeyPropagatesUnchanged() {
         DuplicateKeyException boom = new DuplicateKeyException("uk_payment_order_no");
@@ -212,10 +210,7 @@ class RechargeCreateTxImplTest {
         verify(identityMapper, never()).insertPayment(any(WsPayment.class));
     }
 
-    // 13) 注解级断言：钉死 @Transactional(rollbackFor = Exception.class) 不被误删或收窄。
-    //     注意：这是"注解存在性"断言，纯单测无法验证真实回滚行为；
-    //     它的价值是——rollbackFor 一旦丢失，JbkException（RuntimeException 之外的受检异常场景）
-    //     不再触发回滚，就会留下"有订单没支付单"的脏数据。真实回滚需集成测试覆盖。
+    // 13) 注解存在性断言：rollbackFor=Exception.class 丢失会让受检异常不回滚；真实回滚由集成测试覆盖。
     @Test
     void createIsTransactionalWithRollbackForException() throws NoSuchMethodException {
         Method create = RechargeCreateTxImpl.class.getMethod("create", WsOrder.class, String.class, int.class);

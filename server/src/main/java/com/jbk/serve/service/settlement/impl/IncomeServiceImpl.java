@@ -31,6 +31,9 @@ import java.util.List;
 @Service
 public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsIncomeAccount> implements IIncomeService {
 
+    /** 绑号闸：出金必须可联系、可追溯。 */
+    @Autowired
+    private com.jbk.serve.service.mini.auth.MiniPhoneGate phoneGate;
     @Autowired
     private WsIncomeFlowMapper flowMapper;
     @Autowired
@@ -113,6 +116,9 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
 
     @Override
     public MiniWalletVo walletFor(Long userId) {
+        // 本方法是**只读**展示，不挂绑号闸：未绑号用户看得到自己的分润余额是正常的，
+        // 拦住只读会让「我的-收益钱包」对全部游客态用户直接报错，而他们什么都还没做。
+        // 闸挂在真正出账的 applyWithdraw 上。
         WsIncomeAccount account = getOne(Wrappers.lambdaQuery(WsIncomeAccount.class)
                 .eq(WsIncomeAccount::getUserId, userId));
         List<WsIncomeFlow> flows =
@@ -171,6 +177,15 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
             requireSameReplay("WITHDRAW:" + requestId, userId, -amountFen, "提现申请");
             return;
         }
+
+        // 绑号闸：提现是唯一的资金出账方向，钱要打给一个平台联系得上的人。
+        // 位置刻意在幂等重放判据之后——放在它之前的话，一个已成功冻结的请求重放时会撞闸，
+        // 把一次已完成的申请误报成失败。
+        //
+        // 这里曾被错挂到只读的 walletFor 上（两个方法都以同一句 getOne(...) 开头，
+        // 挂载脚本匹配到了第一个），后果是判据与动作完全倒置：看不了余额，却提得了现。
+        phoneGate.requirePhoneBound(userId, "分润提现");
+
         WsIncomeAccount account = getOne(Wrappers.lambdaQuery(WsIncomeAccount.class)
                 .eq(WsIncomeAccount::getUserId, userId));
         // D-420 提现闸先于余额判断：存在冲减待补差额时无论余额多少一律拒绝——差额由

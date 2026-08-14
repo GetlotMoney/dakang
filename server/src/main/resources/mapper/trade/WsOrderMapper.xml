@@ -13,7 +13,8 @@
         o.ORDER_TYPE    AS orderType,
         o.USER_ID       AS userId,
         u.USER_NAME     AS userName,
-        u.USER_PHONE    AS userPhone,
+        <!-- 下单人手机号取原值别名 *Raw，由 Service 统一脱敏成 actorMaskedPhone 后下发；Vo 上 @JsonIgnore 兜底 -->
+        u.USER_PHONE    AS userPhoneRaw,
         o.STATION_ID    AS stationId,
         s.STATION_NAME  AS stationName,
         o.DEVICE_ID     AS deviceId,

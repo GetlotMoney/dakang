@@ -1,13 +1,8 @@
 package com.jbk.tool.consts.mini;
 
 /**
- * 小程序扫码取水链路的拒绝码常量。
- *
- * <p>
- * 后端统一响应结构 {@code R{code:int, msg, data}} 只有一个整型码，而小程序侧
- * （miniapp/src/api/device.ts）用字符串枚举区分拒绝原因。为不改动前端既有类型，此处约定
- * 一组专属整型码，real 适配器按下表把 int code 映射为小程序 ContractError 的字符串码：
- * </p>
+ * 小程序扫码取水链路的拒绝码常量。miniapp（src/api/device.ts）的 real 适配器按下表把 int code
+ * 映射为 ContractError 字符串码：
  *
  * <pre>
  *   5401  → INVALID_QR_CODE        码不存在/非法
@@ -17,10 +12,7 @@ package com.jbk.tool.consts.mini;
  *   5411  → SCAN_QUOTE_CHANGED     扫码冻结报价与当前档案不一致（水种或单价已变）
  * </pre>
  *
- * <p>
- * 说明：设备可用性（DeviceAvailability）与卡阻断（CardBlockCode）是 eligibility 接口的
- * 正常返回数据字段，不走本拒绝码；本类仅用于 resolve/context 阶段的异常式拒绝。
- * </p>
+ * DeviceAvailability 与 CardBlockCode 是 eligibility 接口的正常返回字段，不走本拒绝码；本类仅用于 resolve/context 阶段的异常式拒绝。
  *
  * @author dakang
  * @since 2026-07-19
@@ -42,10 +34,6 @@ public final class MiniRejectCode {
     /** 扫码会话缺失或过期 → miniapp SCAN_SESSION_EXPIRED（文案“请重新扫码”） */
     public static final int SCAN_SESSION_EXPIRED = 5410;
 
-    /**
-     * 扫码报价已变化（水种或单价与扫码时冻结值不一致）→ miniapp SCAN_QUOTE_CHANGED。
-     * 与 5410 分开的原因：会话过期是时间到了，报价变化是内容变了，
-     * 前者重扫即可、后者要提示用户价格已调整，合并成一个码用户看到的原因就是错的。
-     */
+    /** 扫码报价已变化 → miniapp SCAN_QUOTE_CHANGED。与 5410 分开：过期重扫即可，报价变化要提示价格已调整。 */
     public static final int SCAN_QUOTE_CHANGED = 5411;
 }

@@ -7,12 +7,6 @@ import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 
 import java.util.concurrent.ThreadPoolExecutor;
 
-/**
- *@ClassName SchedulerConfig
- *@Author xs
- *@Date 2025/9/17 10:17
- *@Version 1.0
- */
 @Configuration
 public class SchedulerConfig implements SchedulingConfigurer {
 

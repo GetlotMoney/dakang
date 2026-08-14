@@ -14,16 +14,9 @@ import org.apache.ibatis.annotations.Select;
 import java.util.List;
 
 /**
- * 充值链身份查询 Mapper：手写 SQL，<b>跨全部 DATA_STATUS（含逻辑删除）</b>读取。
- *
- * <p>不继承 {@code BaseMapper}，因此不受 {@code BaseEntity} 上 {@code @TableLogic} 的
- * 自动 {@code DATA_STATUS=0} 过滤影响。两处强制要求：</p>
- * <ul>
- *   <li>§4.2 幂等：按 ORDER_NO 查既有订单必须跨全部 DATA_STATUS，否则被逻辑删除的订单
- *       会让同一 requestId 重新建单，破坏"同 requestId 只生成一单"。</li>
- *   <li>§9.1 pay-status：payment/event/资金流水必须用可读全部状态的专用查询，
- *       任何被逻辑删除的对象都视为污染并整体 mismatch，不能被 BaseMapper 隐藏。</li>
- * </ul>
+ * 充值链身份查询 Mapper：手写 SQL，跨全部 DATA_STATUS 读取，不继承 BaseMapper 避开 {@code @TableLogic} 过滤。
+ * §4.2 幂等：按 ORDER_NO 查订单必须跨全部状态，否则被删订单让同 requestId 重新建单；
+ * §9.1：被逻辑删除的 payment/event/资金流水视为污染并整体 mismatch，不得被隐藏。
  */
 @Mapper
 public interface RechargeIdentityMapper {
@@ -89,22 +82,14 @@ public interface RechargeIdentityMapper {
     @Select("SELECT COUNT(*) FROM ws_wallet_flow WHERE ORDER_ID = #{orderId} AND FLOW_TYPE = 1 AND DATA_STATUS = 0")
     long countLiveRechargeFlows(@Param("orderId") Long orderId);
 
-    /**
-     * 被逻辑删除的充值流水条数。§8/§9.1：DATA_STATUS&lt;&gt;0 的资金流水本身即污染，
-     * 必须整体 mismatch——否则一条被删的流水仍满足"恰好一条"，会把账本已抹除的订单报成"已到账"。
-     */
+    /** 被逻辑删除的充值流水条数（§8/§9.1：被删资金流水即污染，必须整体 mismatch，不得报成"已到账"）。 */
     @Select("SELECT COUNT(*) FROM ws_wallet_flow WHERE ORDER_ID = #{orderId} AND FLOW_TYPE = 1 AND DATA_STATUS <> 0")
     long countDeletedRechargeFlows(@Param("orderId") Long orderId);
 
     /**
-     * 首次购卡资格计数（决策 A4）：只看 {@code DATA_STATUS=0}、<b>跨全部卡状态</b>。
-     * 冻结/过期/注销但未删除的卡同样阻断首次购卡——用户与这些卡的关系需要人工厘清，
-     * 而不是绕开它们再发一张新卡。口径必须与发卡事务内
-     * {@code RechargeCreditMapper#countLiveCardsByUser} 保持一致。
-     * <p>E2E-08 修正：仅排除活动赠卡（判据=带 EXPIRE_TIME 且无 ISSUE_ORDER_ID 订单锚，
-     * 赠卡是唯一无订单锚的发卡路径；审计 P1-2 补 CARD_TYPE=1 限定，与 CardEligibility#isGiftCard 同构），否则先领赠卡的用户被永远挡在首次购卡之外。
-     * 不能只按 EXPIRE_TIME 排除：购卡链历史上可发有限期付费卡（NewCardExpiry），
-     * 整类排除会让持有限期付费卡的用户绕过一人一卡再买一张。</p>
+     * 首次购卡资格计数（决策 A4）：只看 DATA_STATUS=0、跨全部卡状态（冻结/过期/注销未删同样阻断），口径必须与发卡侧
+     * {@code RechargeCreditMapper#countLiveCardsByUser} 一致。仅排除活动赠卡（判据与 CardEligibility#isGiftCard 同构，E2E-08/审计 P1-2）；
+     * 不能整类按 EXPIRE_TIME 排除，否则有限期付费卡（NewCardExpiry）绕过一人一卡。
      */
     @Select("SELECT COUNT(*) FROM ws_card WHERE USER_ID = #{userId} AND DATA_STATUS = 0"
             + " AND " + com.jbk.serve.service.mini.card.CardEligibility.SQL_NOT_GIFT)

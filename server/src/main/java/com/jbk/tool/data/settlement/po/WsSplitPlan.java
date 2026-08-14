@@ -13,15 +13,9 @@ import lombok.experimental.Accessors;
 import java.io.Serializable;
 
 /**
- * 分润 V2 完整计划头（E2E-08 S1，任务书 5.1）。
- *
- * <p>与 V1 {@code ws_split_config} 的本质区别：V1 各收款方独立选生效版本，可能把
- * 不同时间发布的比例拼成一张没人审过的计划（偏差 4）；V2 计划整版发布、整版生效，
- * 项挂在头下（{@link WsSplitPlanItem}），发布前由
- * {@code SplitPlanSnapshot#validate()} 整版校验。</p>
- *
- * <p>正式比例未获甲方书面确认前，本表不得存在 ACTIVE 行（任务书 5.1）——
- * 会议中的 50%/5%/10-8-5 全部是讨论示例。</p>
+ * 分润 V2 完整计划头（E2E-08 S1，任务书 5.1）。区别于 V1 各收款方独立选版（偏差 4）：
+ * V2 整版发布整版生效，项挂头下（{@link WsSplitPlanItem}），发布前 {@code SplitPlanSnapshot#validate()} 整版校验。
+ * 正式比例未获甲方书面确认前，本表不得存在 ACTIVE 行（任务书 5.1）。
  *
  * @author dakang
  * @since 2026-08-06

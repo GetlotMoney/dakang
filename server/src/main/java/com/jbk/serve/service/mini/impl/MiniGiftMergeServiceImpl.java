@@ -30,23 +30,12 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 /**
- * 赠卡合并入正式水卡（D-415）。
- *
- * <h3>事务形状</h3>
- * <p>锁序固定：两张卡按 <b>ID 升序</b> {@code FOR UPDATE}（与并发的另一次合并/入账互斥且无死锁），
- * 再锁赠卡批次（{@code lockConsumableByCard} 自带 ORDER BY 防死锁）。全部校验基于锁内读取，
- * 预检不作数。四条资金 SQL 全 CAS，任一影响行数不符即整体回滚。</p>
- *
- * <h3>为什么目标必须是「永久」付费卡</h3>
- * <p>卡的 {@code EXPIRE_TIME} 是其全部批次有效期的聚合上界（E2E-04 包D-5 口径）。
- * 往一张有限期存量付费卡里合并一个到期更晚的批次，上界就被戳穿——要么跟着抬升卡有效期
- * （引入一条新的续期路径），要么带着假上界运行。两者都比「拒绝」贵：D-213 之后新付费卡
- * 恒永久，有限期付费卡只是存量残留，拒绝并提示即可。永久卡上界为无穷，任何批次都装得下。</p>
- *
- * <h3>幂等</h3>
- * <p>合并的幂等锚是 {@code ws_wallet_flow.BIZ_IDEMPOTENCY_KEY} 上的
- * {@code MERGE-OUT:<赠卡ID>}（一张赠卡一生至多合并一次）：重放时赠卡已是注销态，
- * 按该键读回当时的转移额组装既有结果返回；并发双击则第二个事务在唯一键上回滚。</p>
+ * 赠卡合并入正式水卡（D-415）。锁序固定：两张卡按 ID 升序 FOR UPDATE，再锁批次
+ * （lockConsumableByCard 自带 ORDER BY 防死锁）；校验全部基于锁内读取，四条资金 SQL 全 CAS。
+ * 目标必须是永久付费卡：卡 EXPIRE_TIME 是全部批次有效期的聚合上界（E2E-04 包D-5），
+ * 往有限期存量卡合并到期更晚的批次会戳穿上界（D-213 后新付费卡恒永久，拒绝即可）。
+ * 幂等锚 {@code MERGE-OUT:<赠卡ID>}（一张赠卡至多合并一次）：重放按该键组装既有结果，
+ * 并发双击在唯一键上回滚。
  *
  * @author dakang
  * @since 2026-08-07
@@ -78,9 +67,8 @@ public class MiniGiftMergeServiceImpl implements IMiniGiftMergeService {
         if (giftCardId == null || userId == null) {
             throw new JbkException("参数不完整，无法合并");
         }
-        // 目标定位在锁外只取 ID（结论以锁内重验为准）：本人名下、未注销、付费形态（有订单锚或永久）
-        // 名额口径（审计 P1-2）：注销(4)付费卡也在列——它不能收权益，但它的存在意味着
-        // 「一人一卡」名额已被占，赠卡既不能转正也没有可用主卡，只能走人工。
+        // 锁外只取 ID，结论以锁内重验为准；名额口径（审计 P1-2）：注销(4)付费卡也在列——
+        // 收不了权益但占「一人一卡」名额，赠卡既不能转正也没有可用主卡，只能走人工
         List<WsCard> paidCards = wsCardService.list(Wrappers.lambdaQuery(WsCard.class)
                 .eq(WsCard::getUserId, userId)
                 .ne(WsCard::getId, giftCardId)
@@ -152,15 +140,12 @@ public class MiniGiftMergeServiceImpl implements IMiniGiftMergeService {
         long giftFen = nvl(gift.getBalanceAmount());
         long giftMl = nvl(gift.getBalanceMl());
         int movableBatches = requireLedgerIntact(giftBatches, giftFen, giftMl, "赠卡");
-        // 主卡侧同一等式必须在任何写入前成立：主卡账本已断裂时再往里合并，只会把断口越撕越大，
-        // 且合并后的「主卡余额 = 批次合计」永远无法回查。0 行批次 × 0 余额的空账本同样通过。
+        // 主卡侧同一等式必须在任何写入前成立：账本已断裂再合并只会把断口撕大且无法回查
         requireLedgerIntact(mainBatches, nvl(main.getBalanceAmount()), nvl(main.getBalanceMl()), "正式水卡");
 
-        // ---- 范围闸（审计 P1-5 + R2 P1-1，未拍板前 fail-closed）----
-        // 批次 SCOPE_JSON 目前只随行保存、不参与消费授权（取水/配送只查卡级范围）：
-        // 受限权益并入更宽范围=越权使用。放行条件：两张卡卡级范围语义精确相等，且<b>每个</b>
-        // 正余额批次的范围与其所在卡的卡级范围精确相等（传递得全集同一授权范围）。
-        // 批次范围为空/非法（normalize 抛「未配置默认拒绝」）同样拒绝；不删字段、不由前端推导。
+        // ---- 范围闸（审计 P1-5 + R2 P1-1，fail-closed）：受限权益并入更宽范围=越权使用。
+        // 放行条件：两卡卡级范围语义精确相等，且每个正余额批次范围与所在卡精确相等；
+        // 批次范围空/非法同样拒绝
         try {
             WaterCardScope giftScope = WaterCardScope.normalize(gift.getScopeJson(), "赠卡");
             WaterCardScope mainScope = WaterCardScope.normalize(main.getScopeJson(), "正式水卡");
@@ -180,9 +165,8 @@ public class MiniGiftMergeServiceImpl implements IMiniGiftMergeService {
         vo.setExpiredCleared(expired);
 
         if (expired) {
-            // 过期作废（审计 P0-1 整改后经唯一清算入口）：settleExpired 同事务完成
-            // 批次置5清零 + 卡同步扣减 + 逐批次 EXPIRE_CLEAR 流水（键 EXPIRE-BATCH:<批次ID>）。
-            // 赠卡批次到期日恒等于卡到期日，清算后终值必须归零，非零即账本断裂。
+            // 过期作废走唯一清算入口 settleExpired（审计 P0-1）：批次置5清零+卡扣减+EXPIRE_CLEAR 流水；
+            // 赠卡批次到期日恒等于卡到期日，清算后终值必须归零，非零即账本断裂
             EntitlementLedger.CardAfter settled = entitlementLedger.settleExpired(gift, userId, now);
             if (settled.amountAfter() != 0L || settled.mlAfter() != 0L) {
                 throw new JbkException("过期赠卡清算后仍有余额，账本异常，请联系客服");

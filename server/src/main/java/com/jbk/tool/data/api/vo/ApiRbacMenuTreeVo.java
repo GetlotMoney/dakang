@@ -13,10 +13,6 @@ import java.io.Serializable;
 import java.util.List;
 
 /**
- * <p>
- * 
- * </p>
- *
  * @author xs
  * @since 2025-09-05
  */

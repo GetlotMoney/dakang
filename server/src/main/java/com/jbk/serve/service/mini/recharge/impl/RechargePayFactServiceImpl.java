@@ -70,8 +70,7 @@ public class RechargePayFactServiceImpl implements IRechargePayFactService {
         }
         // CAS 认领：并发下只有一个处理者能把 1待处理 改成 2处理中
         if (creditMapper.claimEvent(eventId, now, DateUtils.plusSeconds(now, 300)) != 1) {
-            // 认领不到分三种：已处理完（重复通知的常态）、待对账、正被别人处理。
-            // 必须分开答——把"已经入过账了"和"暂时没抢到"混成一句，会让重复通知看起来像失败。
+            // 认领不到分三种（已处理完/待对账/正被处理），必须分开答——混成一句会让重复通知看起来像失败
             WsPaymentEvent current = creditMapper.selectEventById(eventId);
             Integer status = current == null ? null : current.getProcessingStatus();
             if (ObjectUtil.equals(status, RechargePayStatus.P_PROCESSED)) {
@@ -178,10 +177,8 @@ public class RechargePayFactServiceImpl implements IRechargePayFactService {
             return reconcile(event, now, "支付单/订单状态错位，无法认定支付事实");
         }
 
-        // L2-A 事实路由（决策 A2）：CARD_ID 为空 = 首次购卡订单 → 发卡事务；否则走既有充值入账事务。
-        // 卡相关校验都在各自事务的锁内进行；上面的共键、金额、快照 capturedTime 锚点检查两条路共用。
-        // 已完成的购卡单 CARD_ID 已被回填，其重放事实自然走 creditTx 的只读幂等核验分支——
-        // 该分支的完成态账本核验对 purchase 快照按 NewCardExpiry 下限判定（见 RechargeLedgerVerifier）。
+        // L2-A 事实路由（A2）：CARD_ID 空=首次购卡→发卡事务，否则走充值入账；共键/金额/快照检查两路共用。
+        // 已完成购卡单 CARD_ID 已回填，重放自然走 creditTx 的只读幂等核验分支
         if (order.getCardId() == null) {
             return handleClaimedPurchase(event, now);
         }

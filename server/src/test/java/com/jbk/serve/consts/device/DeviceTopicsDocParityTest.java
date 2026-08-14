@@ -19,16 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 上行主题 type 全集：代码常量 ≡ 厂家待确认清单 ≡ 内部协议文档。
- *
- * <p>这道闸补的是一次真实事故：{@code DeviceTopics} 已定义 6 个上行 type，
- * 而发给设备厂家的 {@code pending-vendor-specs.md} V-02 只列了 4 个，漏掉 {@code ack}
- * 与 {@code replay}。厂家按那份清单实现固件的后果是——缺 ack 则**每一条出水指令
- * 都会被平台判失败**（V-04 已收紧为 ackCode 必填的二元判定），缺 replay 则断网期间
- * 的数据永久丢失。这类缺口不会让任何现有测试转红，只会在真机联调时炸开。</p>
- *
- * <p>三方对齐而非两方，是因为它们各自会被独立修改：改常量的人不会想到去改对外清单，
- * 改文档的人不会去读常量。任一处新增/删除 type 都必须同步另外两处，否则本测试转红。</p>
+ * 上行主题 type 全集三方对齐：代码常量 ≡ 厂家清单（pending-vendor-specs.md）≡ 内部协议文档。
+ * 清单漏 type 不会让测试红、只在真机联调炸开（缺 ack 每条出水指令判失败，缺 replay 断网数据丢）。
  */
 class DeviceTopicsDocParityTest {
 

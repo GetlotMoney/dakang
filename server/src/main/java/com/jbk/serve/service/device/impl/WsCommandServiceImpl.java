@@ -21,6 +21,7 @@ import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.serve.service.trade.ITradeOrderTxService;
 import com.jbk.serve.service.trade.WaterBillingMath;
 import com.jbk.tool.config.mqtt.MqttConnectionManager;
+import com.jbk.serve.service.device.DeviceCommandRisk;
 import com.jbk.tool.consts.device.DeviceEnum;
 import com.jbk.tool.consts.ops.OpsEnum;
 import com.jbk.tool.data.PageDataVo;
@@ -68,13 +69,11 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
     private static final int PENDING_TIMEOUT_SECONDS = 60;
     /** 批次展开中断兜底：覆盖 PENDING/SENT/ACKED 最长正常终态窗口后再对账，避免误判慢设备。 */
     private static final int BATCH_RECONCILE_SECONDS = 180;
-    /** 后台中控允许人工下发的指令类型（出水类 1/2 必须由订单链路触发） */
-    private static final Set<Integer> CONSOLE_ALLOWED_TYPES = Set.of(
-            DeviceEnum.CmdType.QUERY_STATUS.getValue(),
-            DeviceEnum.CmdType.LOCK.getValue(),
-            DeviceEnum.CmdType.UNLOCK.getValue(),
-            DeviceEnum.CmdType.PARAM_SYNC.getValue(),
-            DeviceEnum.CmdType.REBOOT.getValue());
+    /**
+     * 后台单发入口受理的指令类型：由 {@link DeviceCommandRisk} 按档位派生（D-423）——
+     * 恒加闸档（紧急停机、价格同步）在结构上进不来，不再靠手写集合互相对齐。
+     */
+    private static final Set<Integer> CONSOLE_ALLOWED_TYPES = DeviceCommandRisk.consoleAllowedTypes();
 
     @Autowired
     private WsDeviceMapper deviceMapper;
@@ -133,9 +132,8 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
         }
         WsDevice device = deviceMapper.selectById(commandBo.getDeviceId());
         OptionalUtils.nullToElseThrow(device, "目标设备不存在");
-        // 参数类指令的报文校验唯一实现在 DeviceParamPayload，与批量路径共用（REQ-213）。
-        // 此前这里只判 isTypeJSON，批量路径也各判一次——宽严一致纯属巧合，
-        // 任何一处放松，运营就能从那一处把畸形报文发到设备上。
+        // 参数类指令的报文校验唯一实现在 DeviceParamPayload，与批量路径共用（REQ-213）——
+        // 任何一处放松，运营就能从那一处把畸形报文发到设备上
         if (DeviceParamServiceImpl.isParamBearing(commandBo.getCmdType())) {
             com.jbk.serve.service.device.DeviceParamPayload.require(commandBo.getCmdPayload(),
                     deviceParamService.enabledDefinitions(commandBo.getCmdType()));
@@ -157,9 +155,8 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
 
     @Override
     public Long sendDispenseForOrder(Long orderId) {
-        // 档案锁定、共键与水种核验、可用性判定、建指令与 CMD_ID 抢占全部收进一个事务（B20）；
-        // 本方法只负责在事务提交成功后把报文发出去——MQTT 是网络 IO，进事务会把设备与订单的
-        // 行锁一起拖住。异常交由编排层终态闸把已扣款订单收敛到「6 异常待补偿」。
+        // 档案锁定、核验、建指令与 CMD_ID 抢占全收进一个事务（B20）；MQTT 是网络 IO 留在事务外，
+        // 异常由编排层终态闸把已扣款订单收敛到「6 异常待补偿」
         IDispenseDispatchTxService.Prepared prepared = dispatchTxService.prepare(orderId);
         if (!prepared.created()) {
             return prepared.commandId();
@@ -217,9 +214,8 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
 
     @Override
     public boolean onAck(Long deviceId, String cmdNo, String ackTs, String ackCode) {
-        // 指令锁定与重读、成功/失败判定、订单联动、可靠状态事件全在 ACK 事务内完成。
-        // 本方法不预读指令：预读出来的对象是可变的旧快照，拿它当 orderId/deviceId/cmdType 的
-        // 权威来源正是上一轮被驳回的问题。
+        // 指令锁定与重读、判定、订单联动、可靠事件全在 ACK 事务内完成；本方法不预读指令——
+        // 预读对象是可变旧快照，不能当权威来源
         WsCommand moved = ackTxService.applyAck(deviceId, cmdNo, ackCode, ackTs);
         if (ObjectUtil.isNull(moved)) {
             return false;
@@ -241,9 +237,8 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
                     null, "错设备执行结果：指令目标设备 " + command.getDeviceId() + "，实际上报设备 " + deviceId + "，忽略");
             return false;
         }
-        // 实际水量与资金结算契约只属于出水指令（cmdType=1）：紧急停止（cmdType=2，E2E-05）
-        // 同样携带 ORDER_ID 锚定活动出水链，但停止回执不承载出水量——订单终局由原出水指令的
-        // result（真机会在停止后上报已出水量）或 120s 结果超时→异常待补偿（E2E-04 售后）收口。
+        // 实际水量与资金结算契约只属于出水指令（cmdType=1）：紧急停止（cmdType=2）同带 ORDER_ID
+        // 但不承载出水量，订单终局由原出水指令 result 或 120s 结果超时收口
         boolean dispenseSettlement = ObjectUtil.equal(command.getCmdType(),
                 DeviceEnum.CmdType.START_DISPENSE.getValue())
                 && ObjectUtil.isNotNull(command.getOrderId());
@@ -257,16 +252,14 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
                 throw e;
             }
         }
-        // SENT 与 ACKED 均可接收执行结果，以兼容设备未上报 ACK 而直接上报 result 的情况。
-        // 已进入终态的指令不再推进状态，但仍尝试结算（幂等）：防止「指令已 SUCCESS 但结算事务失败」后
-        // P0-07 同 msgId 重投时因指令终态而漏结算——结算以订单终态为幂等闸，重复调用安全（L1d）。
+        // SENT/ACKED 均可收执行结果（设备可能不报 ACK 直接报 result）；已终态不再推进但仍尝试结算——
+        // 防「指令已 SUCCESS 但结算失败」后重投漏结算，结算以订单终态为幂等闸（L1d）
         boolean canTransit = DeviceEnum.CmdStatus.SENT.getValue() == command.getCmdStatus()
                 || DeviceEnum.CmdStatus.ACKED.getValue() == command.getCmdStatus();
         boolean transited = false;
         if (canTransit) {
-            // partial（部分完成）由 result 报文显式声明：success=true 但只完成一部分
-            //（批量参数同步部分生效、价格同步部分出水口未更新）。它不是成功——
-            // 落 7部分完成，批量聚合与 PC 展示都按「未全成」处理（任务书 S8/S11）。
+            // partial 由 result 报文显式声明：success=true 但只完成一部分，不是成功——
+            // 落 7部分完成，批量聚合与 PC 展示按「未全成」处理（任务书 S8/S11）
             boolean partial = success && isPartialResult(resultPayload);
             DeviceEnum.CmdStatus target = partial ? DeviceEnum.CmdStatus.PARTIAL
                     : success ? DeviceEnum.CmdStatus.SUCCESS : DeviceEnum.CmdStatus.FAILED;
@@ -283,13 +276,9 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
                     DeviceEnum.CmdStatus.getType(command.getCmdStatus()).getDesc(), "迟到执行结果，指令状态不变（仍尝试结算）");
         }
 
-        // REQ-213：参数类指令成功后回写平台侧参数快照，让平台答得出「这台设备当前参数是什么」。
-        // 只认 SUCCESS：partial 说明只生效了一部分（具体哪部分设备没说），失败更不必说；
-        // 据此回写会让平台显示「已同步」而设备其实没改，比不写更糟。
-        // 值取自我们下发的 CMD_PAYLOAD，不取 RESULT_PAYLOAD——设备回什么由厂家定，V-12.3 未答复。
-        // transited 是必要条件：迟到的 result（指令已停在 5失败/6超时等终态）不得回写。
-        // 断网补传与消息重投会让更早指令的 result 后到，那时指令本身正确地不再推进，
-        // 快照也不该被它改写；即便绕过这一层，数据层还有按 SOURCE_CMD_ID 的单调守卫兜底。
+        // REQ-213 参数快照回写：只认 SUCCESS（partial/失败回写会显示「已同步」而设备没改）；
+        // 值取下发的 CMD_PAYLOAD 不取 RESULT_PAYLOAD（设备回什么由厂家定，V-12.3 未答复）；
+        // transited 是必要条件——迟到 result 不得回写，数据层另有 SOURCE_CMD_ID 单调守卫兜底
         if (transited && success && DeviceParamServiceImpl.isParamBearing(command.getCmdType())
                 && !isPartialResult(resultPayload)) {
             try {
@@ -298,8 +287,7 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
                         deviceTimeOrServer(command, finishTs));
             }
             catch (RuntimeException snapshotFailure) {
-                // 快照是运维可见性，不是资金：写失败不得回滚已落定的指令终态，也不得让设备反复重投。
-                // 但绝不静默——留痕后继续，否则「参数快照为何没跟上」将无从追查。
+                // 快照是运维可见性不是资金：写失败不回滚指令终态、不让设备重投，但必须留痕
                 log.error("设备参数快照回写失败 cmdNo={} deviceId={}", cmdNo, command.getDeviceId(), snapshotFailure);
                 domainEventService.recordByDevice(OpsEnum.EventType.DEVICE_STATUS, cmdNo, null,
                         "设备参数快照回写失败（指令终态不受影响）：" + snapshotFailure.getMessage());
@@ -372,11 +360,9 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
         String pendingDeadline = DateUtils.timeTransition(
                 DateUtils.addDateSeconds(new Date(), -PENDING_TIMEOUT_SECONDS));
 
-        // varchar(14) 纯数字等长，字典序即时间序。三组超时：
-        // - PENDING 超时以 CREATE_TIME 为基准（PENDING 无 SENT_TIME；N-06：save 后未 publish 崩溃残留兜底）；
-        // - SENT 超时以 SENT_TIME（服务器下发时间）为基准；
-        // - ACKED→result 超时以 UPDATE_TIME 为基准（M3/R2：ACK_TIME 已改存设备上报时间不可信，改用推进 ACKED 时
-        //   刷新的服务器 UPDATE_TIME，依赖不变量「ACKED 态期间无其它 UPDATE」，将来加 ACKED 期间进度更新须重评）。
+        // varchar(14) 纯数字等长，字典序即时间序。三组超时基准：PENDING 以 CREATE_TIME（N-06 崩溃残留）、
+        // SENT 以 SENT_TIME、ACKED 以 UPDATE_TIME（M3/R2：ACK_TIME 存设备时间不可信；依赖不变量
+        // 「ACKED 态期间无其它 UPDATE」，将来加 ACKED 期间进度更新须重评）
         List<WsCommand> timeoutList = list(Wrappers.lambdaQuery(WsCommand.class)
                 .and(w -> w
                         .and(p -> p.eq(WsCommand::getCmdStatus, DeviceEnum.CmdStatus.PENDING.getValue())
@@ -464,10 +450,8 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
 
     @Override
     public Long sendAsBatchChild(Long batchId, Long deviceId, int cmdType, String cmdPayload, Long orderId) {
-        // R2-P1-2 防绕过：这是批量链路上**真正建指令并 publish** 的入口。
-        // 上游 confirm 已按最新定义复验过，这里是纵深防御——任何未来新增的调用方
-        // （补发、重试、运维脚本）若忘了复验，参数就会从这里直接落到设备上。
-        // 校验规则的唯一实现仍是 DeviceParamPayload，本处只负责取当前定义再调它。
+        // R2-P1-2 纵深防御：这是批量链路真正建指令并 publish 的入口，新增调用方若忘了复验，
+        // 参数会从这里直接落到设备上；校验唯一实现仍是 DeviceParamPayload
         if (DeviceParamServiceImpl.isParamBearing(cmdType)) {
             com.jbk.serve.service.device.DeviceParamPayload.require(
                     cmdPayload, deviceParamService.enabledDefinitions(cmdType));
@@ -493,9 +477,8 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
     }
 
     /**
-     * 只有「开始出水」指令的失败才代表这笔取水没做成。紧急停止（cmdType=2）同样携带 ORDER_ID 用于
-     * 锚定活动出水单，但它下发失败/超时只说明停不下来，把用户那笔正在出水的订单推成
-     * 「异常待补偿」既是错误结论也是错误文案——订单终局仍由原出水指令的 result 或结果超时收口。
+     * 只有「开始出水」失败才代表取水没做成；紧急停止（cmdType=2）同带 ORDER_ID，但它失败
+     * 只说明停不下来，订单终局仍由原出水指令 result 或结果超时收口。
      */
     private boolean linksWaterOrder(WsCommand command) {
         return ObjectUtil.isNotNull(command.getOrderId())
@@ -555,10 +538,9 @@ public class WsCommandServiceImpl extends ServiceImpl<WsCommandMapper, WsCommand
     }
 
     /**
-     * 批量子指令终态回写聚合（E2E-05）。放在 conditionalTransit 胜出方之后是刻意的：
-     * 全部终态路径（ACK拒绝/执行结果/超时扫描/下发失败）都经过这一个内核，且 CAS 保证
-     * 每条子指令只进入终态一次——聚合累加因此天然只触发一次，Mapper 侧无需再防重。
-     * PARTIAL 计入失败列：部分完成不是成功，批次绝不因此显示全部成功（任务书 S8/S11）。
+     * 批量子指令终态回写聚合（E2E-05）：全部终态路径都经 conditionalTransit 胜出方之后这一个内核，
+     * CAS 保证每条子指令只进终态一次，聚合天然只触发一次。PARTIAL 计入失败列——
+     * 部分完成不是成功（任务书 S8/S11）。
      */
     private void accumulateBatchIfTerminal(WsCommand command) {
         if (ObjectUtil.isNull(command.getBatchId())) {

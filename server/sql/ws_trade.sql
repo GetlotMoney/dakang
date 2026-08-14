@@ -6,7 +6,7 @@
 -- ============================================================
 -- ============================================================
 -- 六维达康 · 交易域（ws_trade）
--- 表：ws_order / ws_payment / ws_refund / ws_wallet_flow / ws_split_record / ws_split_plan / ws_split_plan_item / ws_split_component
+-- 表：ws_order / ws_payment / ws_refund / ws_wallet_flow / ws_split_record / ws_split_plan / ws_split_plan_item / ws_split_component / ws_region_agent / ws_owner_referrer / ws_owner_attribution
 -- 字典段：1340 订单类型、1341 订单状态、1342 支付状态、1343 退款状态、
 --        1344 流水类型、1345 分账状态、1346 支付方式
 -- 需求映射：订单管理 / 财务流水与对账 / 微信小程序JSAPI支付 / 支付回调验签与幂等 /
@@ -300,6 +300,46 @@ CREATE TABLE `ws_split_component` (
   COMMENT='分润V2组件证据：计算明细留痕，不代替 ws_split_record 付款状态机';
 
 -- ----------------------------
+-- 区域服务商归属（版本化）：回答「这个区县/市/省的运营中心是谁」
+--
+-- 分润 V2 的计划项早就能表达 REGION_PROVINCE/CITY/COUNTY 三级比例，但在本表出现前，
+-- 全库没有任何地方存得下「谁是这个区的服务商」——唯一沾边的 ws_station.STATION_REGION
+-- 是自由文本，按它匹配等于按字符串猜行政区划。
+--
+-- 【本表不决定订单归属】D-406：归属按推荐血缘冻结、不按地缘重算，计算器不收行政区字段。
+-- 本表只服务 D-407 的人工分配台账与运营筛选。
+-- 版本化而非一行改到底：领地会换人，审计要能回答"三月份这个区归谁"，UPDATE 会抹掉这段历史。
+-- AGENT_STATUS=2 的版本行表示「自该时点起该区域无服务商」——空态必须可表达，
+-- 靠删行会让那段时间退回更早版本，等于把已解约的人又接回去。
+--
+-- 本表不含任何比例。比例在 ws_split_plan_item，待甲方书面确认。
+-- ----------------------------
+DROP TABLE IF EXISTS `ws_region_agent`;
+CREATE TABLE `ws_region_agent` (
+  `ID`            bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`   tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY`     bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`   varchar(14)  NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY`     bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`   varchar(14)  NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `REGION_LEVEL`  varchar(16)  NOT NULL COMMENT '区域层级：PROVINCE/CITY/COUNTY，与 SplitV2Enum.RegionLevel 同源（COUNTY 对应 ws_station.DISTRICT_CODE）',
+  `REGION_CODE`   varchar(6)   NOT NULL COMMENT '行政区划码(GB/T 2260)，与 ws_station 上同层级的码等值匹配',
+  `REGION_NAME`   varchar(50)  NOT NULL COMMENT '区域名称，仅供排障与后台展示，绝不参与匹配',
+  `AGENT_USER_ID` bigint       NOT NULL COMMENT '服务商用户ID(ws_user.ID)；本表是领地登记，不决定订单归属（D-406 归属按血缘冻结）',
+  `AGENT_STATUS`  tinyint      NOT NULL COMMENT '状态：1生效 2停用；停用行表示自 EFFECT_TIME 起该区域无服务商',
+  `EFFECT_TIME`   varchar(14)  NOT NULL COMMENT '生效时间（含）yyyyMMddHHmmss；按订单创建时点选版本，变更不追溯',
+  `AGENT_REMARK`  varchar(200) DEFAULT NULL COMMENT '备注(max200)：换签原因、合同号等',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_region_agent_version` (`REGION_LEVEL`, `REGION_CODE`, `EFFECT_TIME`),
+  KEY `idx_region_agent_lookup` (`REGION_LEVEL`, `REGION_CODE`, `EFFECT_TIME`),
+  KEY `idx_region_agent_user` (`AGENT_USER_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='区域服务商归属（版本化）：区域×生效时间→服务商，不含任何分润比例';
+
+-- 不插任何归属种子：谁是哪个区的服务商属于运营事实，必须由后台录入并留痕，
+-- 不能由建表脚本替甲方决定。跨区县级差等场景由真库测试自行构造数据。
+
+-- ----------------------------
 -- 字典
 -- ----------------------------
 INSERT IGNORE INTO `api_dict_type`(`DICT_NAME`, `DICT_TYPE`, `DICT_REMARK`) VALUES ('订单类型', '1340', '订单业务类型');
@@ -429,3 +469,57 @@ CREATE TABLE `ws_split_clawback_action` (
   UNIQUE KEY `uk_split_clawback_action` (`ACTION_ID`),
   INDEX `idx_clawback_action_status` (`OUTBOX_STATUS`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='分润冲减动作级outbox（D-420 R2）';
+
+-- ----------------------------
+-- 机主加盟推荐关系（D-404/D-428）：谁把这个机主招进来的。
+-- 与用户邀请链（ws_user.REFERRER_USER_ID）物理分列——那条链回答「喝水的人谁拉来的」，
+-- 本表回答「这台机器的机主谁招来的」，D-404 明令不得混用；一人一行、建立即冻结（D-406），
+-- 无更新/删除入口，录错走申诉流程（REQ-058，未开放）。
+-- ----------------------------
+DROP TABLE IF EXISTS `ws_owner_referrer`;
+CREATE TABLE `ws_owner_referrer` (
+  `ID`               bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`      tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY`        bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`      varchar(14)  NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY`        bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`      varchar(14)  NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `OWNER_USER_ID`    bigint       NOT NULL COMMENT '机主用户ID(ws_user.ID)；一人一行终身冻结',
+  `REFERRER_USER_ID` bigint       NOT NULL COMMENT '直接推荐人用户ID(ws_user.ID)；任何身份可担任，仅此一级(D-404)',
+  `BIND_SOURCE`      varchar(20)  NOT NULL COMMENT '建立来源：ADMIN_ENTRY后台录入/INVITE_LINK邀请链路(预留)',
+  `BIND_TIME`        varchar(14)  NOT NULL COMMENT '建立时点；建立即冻结(D-406)，换绑走申诉流程(REQ-058未开放)',
+  `REFERRER_REMARK`  varchar(200) DEFAULT NULL COMMENT '备注(max200)',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_owner_referrer_owner` (`OWNER_USER_ID`),
+  KEY `idx_owner_referrer_ref` (`REFERRER_USER_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='机主加盟推荐关系：谁招来的这个机主；与用户邀请链物理分列(D-404)，一人一行建立即冻结';
+
+-- ----------------------------
+-- 机主区域归属链（D-406/D-407/D-428）：这个机主的省/市/区县运营中心各是谁。
+-- 血缘冻结不按地缘：跨行政区放设备不改归属；无行=公域未分配（推荐/区域份额落平台）。
+-- 三级可任意留空（缺席层级差切片归最近在场上级，全空才归公司，D-428）；
+-- 三级在场者必须互不相同（服务层校验：同人兼两级会破坏分账行聚合与冲减份额重算）。
+-- ----------------------------
+DROP TABLE IF EXISTS `ws_owner_attribution`;
+CREATE TABLE `ws_owner_attribution` (
+  `ID`                     bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS`            tinyint      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY`              bigint       NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME`            varchar(14)  NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY`              bigint       NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME`            varchar(14)  NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `OWNER_USER_ID`          bigint       NOT NULL COMMENT '机主用户ID(ws_user.ID)；一人一行建立即冻结',
+  `ATTRIBUTION_SOURCE`     varchar(20)  NOT NULL COMMENT '归属来源：PRIVATE_REFERRAL血缘/PUBLIC_MANUAL公域人工(D-407)；无行=公域未分配',
+  `PROVINCE_AGENT_USER_ID` bigint       DEFAULT NULL COMMENT '省级运营中心用户ID；空=该级无人(缺席级差切片归最近在场上级，D-428)',
+  `CITY_AGENT_USER_ID`     bigint       DEFAULT NULL COMMENT '市级运营中心用户ID；空=该级无人',
+  `COUNTY_AGENT_USER_ID`   bigint       DEFAULT NULL COMMENT '区县级运营中心用户ID；空=该级无人',
+  `BIND_TIME`              varchar(14)  NOT NULL COMMENT '建立时点；建立即冻结(D-406)，跨区放机不改归属',
+  `ATTRIBUTION_REMARK`     varchar(200) DEFAULT NULL COMMENT '备注(max200)：分配依据、合同号等',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_owner_attribution_owner` (`OWNER_USER_ID`),
+  KEY `idx_owner_attr_province` (`PROVINCE_AGENT_USER_ID`),
+  KEY `idx_owner_attr_city` (`CITY_AGENT_USER_ID`),
+  KEY `idx_owner_attr_county` (`COUNTY_AGENT_USER_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  COMMENT='机主区域归属链：省市区县运营中心各是谁；血缘冻结不按地缘(D-406)，无行=公域未分配';

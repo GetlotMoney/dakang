@@ -11,6 +11,7 @@ import com.jbk.serve.mapper.delivery.WsDeliveryExceptionMapper;
 import com.jbk.serve.mapper.delivery.WsDeliveryTaskMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.service.aftersale.AfterSaleStrategy;
+import com.jbk.serve.service.mini.notify.WechatNotifyEnqueue;
 import com.jbk.serve.service.aftersale.IAfterSaleActionTxService;
 import com.jbk.serve.service.delivery.DeliveryClock;
 import com.jbk.serve.service.delivery.DeliveryLinkGuard;
@@ -20,6 +21,7 @@ import com.jbk.serve.service.delivery.IDeliveryMediaService;
 import com.jbk.serve.service.message.IWsMessageService;
 import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.tool.consts.aftersale.AfterSaleEnum;
+import com.jbk.tool.consts.mini.WechatNotifyEnum;
 import com.jbk.tool.consts.delivery.DeliveryEnum;
 import com.jbk.tool.consts.message.MessageEnum;
 import com.jbk.tool.consts.ops.OpsEnum;
@@ -53,6 +55,9 @@ import java.util.List;
 @Service
 public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
 
+    /** 订阅通知登记：与站内信同事务——本事务回滚意味着那件事没发生，通知必须一起消失。 */
+    @Autowired
+    private WechatNotifyEnqueue notifyEnqueue;
     @Autowired
     private WsDeliveryAppealMapper appealMapper;
     @Autowired
@@ -241,9 +246,7 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
         DeliveryClock.requireTime(now, "当前时间");
         long appealId = decimalId(bo.getAppealId(), "appealId");
         // 裁决入参只有策略码一个真相源（E2E-04 R0-2）：白名单与终态派生都在 AfterSaleStrategy，
-        // 本类不再枚举 3/5/2——那会让「策略码说补偿、outcome 说驳回」这种自相矛盾却双双通过
-        // 校验的裁决成为可表达状态。规则18 依旧成立：资金策略只落 2成立待补偿 + 一条待执行动作，
-        // 本事务绝不写卡余额、绝不写钱包流水。
+        // 本类不再枚举 3/5/2；规则18：本事务绝不写卡余额、绝不写钱包流水
         AfterSaleEnum.StrategyCode strategy = AfterSaleStrategy.requireStrategy(bo.getStrategyCode());
         DeliveryEnum.AppealStatus outcomeEnum = AfterSaleStrategy.deriveOutcome(strategy);
         int outcome = outcomeEnum.getValue();
@@ -273,9 +276,8 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
             // 三方 userId 必须一致：申诉归属与订单/任务归属错位属数据污染，禁止裁决
             throw new JbkException("申诉共键数据异常，禁止裁决");
         }
-        // R0-2 数量边界：唯一判定在 AfterSaleStrategy（含「原因码 × 策略码」白名单——
-        // PLACEMENT/OTHER 不支持资金补偿），且必须先于任何 CAS——越界拒绝时本事务零写入。
-        // 上界所需的四个计数分别来自申诉行与任务行，此处只负责取值，不在本类复刻任何取舍规则。
+        // R0-2 数量边界唯一判定在 AfterSaleStrategy（含「原因码×策略码」白名单），
+        // 必须先于任何 CAS——越界拒绝时本事务零写入
         int approvedCount = AfterSaleStrategy.requireApprovedCount(strategy, appeal.getAppealReason(),
                 bo.getApprovedCount(), appeal.getReceivedCount(),
                 task.getDeliveryCount(), task.getActualDeliveryCount());
@@ -308,6 +310,9 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
                 "您的申诉已裁决：" + outcomeEnum.getDesc() + "。" + bo.getHandleResult().trim()
                         + (AfterSaleStrategy.refundsAssets(strategy) ? " 补偿将返还至您的水卡。" : ""),
                 "appeal", String.valueOf(appealId), now);
+        notifyEnqueue.enqueue(WechatNotifyEnum.EventType.APPEAL_SETTLED,
+                WechatNotifyEnum.BizObjectType.AFTER_SALE, String.valueOf(appealId), appeal.getUserId(),
+                JSONUtil.createObj().set("time", now).set("outcome", outcomeEnum.getDesc()));
         // 裁决是关键状态变化（申诉 1→终态 + 任务 7→5）：走可靠路径（失败抛出整体回滚，P1-3）；
         // 动作者是后台管理员，身份走会话推断（MANAGE 正确），幂等键按申诉行唯一（一裁一痕）。
         domainEventService.recordReliableOnce(OpsEnum.EventType.DELIVERY_NODE, task.getTaskNo(),
@@ -321,25 +326,14 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
     }
 
     /**
-     * 裁决产出的售后执行动作（E2E-04 包A 集成点）。
+     * 裁决产出的售后执行动作（E2E-04 包A 集成点）。三条出口由策略码唯一决定：REJECT 零写入不建行；
+     * 资金策略建 2卡内补偿 待执行行（包A 返还内核独立事务执行）；RESEND 建 4补送 且额度恒 0
+     * （补送走履约不动资金，执行路径由包C 实现）。额度只从订单冻结快照算
+     * （{@link DeliveryRefundSnapshot#require} fail-closed），无 payWay 分支。
      *
-     * <p><b>三条出口由策略码唯一决定，本方法不做二次判断</b>：
-     * REJECT 零写入不建行（"申诉不成立"必须没有任何待执行动作，否则它迟早会被某个 Worker 捡起来执行）；
-     * 三个资金策略建 {@code ACTION_TYPE=2卡内补偿} 的待执行行，由包A 返还内核在独立事务里执行；
-     * RESEND 建 {@code ACTION_TYPE=4补送} 的待执行行，四元额度恒为 0——补送走履约不动资金，
-     * 包A 的返还事务在入口就会拒绝这种类型，因此它在本包内是一条只登记不执行的待办，
-     * 由包C 实现执行路径。</p>
-     *
-     * <p><b>额度只从订单冻结快照算，绝不出现 payWay 分支</b>：「哪个维度退多少」的全部知识在
-     * {@link AfterSaleStrategy#compute}，这里只负责把三元结果搬进三个额度列。
-     * 快照 fail-closed（{@link DeliveryRefundSnapshot#require}）：历史单价是返还与封顶的共同基准，
-     * 缺失或不自洽时按当前价目表猜一个值出来，会与原扣款流水对不上。</p>
-     *
-     * <p><b>此处刻意不做累计封顶判定</b>：权威封顶只在「持卡行 X 锁 + READ_COMMITTED」的返还事务内
-     * 成立（见 {@code AfterSaleQuota} 类注释）。在本事务里再判一次既不权威，又要引入
-     * {@code sumSuccessRefundByOrderForUpdate} 这条 FOR UPDATE 聚合读——它在默认 RR 隔离级别下
-     * 会在 {@code idx_after_sale_order} 上留 gap 锁，让两笔无关订单的并发裁决互等死锁。
-     * 超额在执行期被拒绝并落「需人工对账」，运营看得到，不会静默多退。</p>
+     * <p>此处刻意不做累计封顶判定：权威封顶只在返还事务（持卡行 X 锁 + READ_COMMITTED）内成立；
+     * 本事务里做 FOR UPDATE 聚合读会在 idx_after_sale_order 上留 gap 锁，让无关订单并发裁决
+     * 互等死锁。超额在执行期被拒并落「需人工对账」，不会静默多退。</p>
      *
      * @return 登记后的动作行；REJECT 返回 {@code null}
      */
@@ -379,9 +373,8 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
     }
 
     /**
-     * 计算依据快照：出账即冻结，事后只读不重算。
-     * <p>把「当时的数量上界」与「当时的单价」一并封存——两者都会随任务签收数据与价目表变化，
-     * 事后重算得到的必然是另一组值，运营再也无法核对这笔补偿当初凭什么算出来。</p>
+     * 计算依据快照：出账即冻结，事后只读不重算——数量上界与单价都会随签收数据与价目表变化，
+     * 重算得到的必然是另一组值。
      */
     private String buildDecideSnapshot(AfterSaleEnum.StrategyCode strategy, int approvedCount,
                                        WsDeliveryAppeal appeal, WsDeliveryTask task,
@@ -394,8 +387,7 @@ public class DeliveryAppealTxServiceImpl implements IDeliveryAppealTxService {
                 .set("taskDeliveryCount", task.getDeliveryCount())
                 .set("taskActualDeliveryCount", task.getActualDeliveryCount())
                 .set("approvedCount", approvedCount)
-                // 入参与上面 requireApprovedCount 逐一相同：封存的上界必须就是当时实际判定用的那个，
-                // 换一组入参重算等于在台账上留下一个与判定无关的数字
+                // 封存的上界必须就是当时判定实际用的那组入参算出的值
                 .set("maxApprovedCount", AfterSaleStrategy.maxApprovedCount(appeal.getAppealReason(),
                         appeal.getReceivedCount(), task.getDeliveryCount(), task.getActualDeliveryCount()))
                 .set("payWay", snap.payWay())

@@ -12,26 +12,12 @@ import com.jbk.tool.utils.DateUtils;
 import java.util.Set;
 
 /**
- * 设备运营可用性判定——<b>单一出处</b>（E2E-05 包B，任务书 5.1）。
- *
- * <h3>六个入口共用这一份判定</h3>
- * <p>扫码预检、取水创单（创单时重新判定，不沿用扫码时的结论）、PC 设备详情、
- * 告警引擎、远程指令资格、机主设备详情。此前判定长在 {@code MiniDeviceServiceImpl}
- * 的私有方法里，PC 与机主端要用只能复制——复制的那份必然漂移（E2E-01 期间
- * {@code MiniCatalogServiceImpl} 的裸 {@code onlineStatus==1} 就是第一道裂缝）。</p>
- *
- * <h3>阻断条件与顺序（顺序即优先级，先命中先返回）</h3>
- * <ol>
- *   <li>离线（含未激活）；</li>
- *   <li>故障态：未知故障码 fail-closed 一律阻断（任务书 3.6——厂商新码在字典跟上前
- *       绝不放行取水）；已登记码按 {@code BLOCK_ORDER_FLAG} 判定；</li>
- *   <li>维护中 / 锁定 / 出水中；</li>
- *   <li>出水口停用（仅在给出出水口时判定）。</li>
- * </ol>
- *
- * <p>本类<b>只判定不查库</b>：故障字典行由调用方查好传入。这样判定可被纯单测穷举，
- * 而调用方无法在判定里顺手补查询把口径改宽。共键错位（设备/水站/出水口归属）
- * 不在本类射程——那是 {@code TradeOrderTxServiceImpl.verifyArchiveCoKeys} 的事务内职责。</p>
+ * 设备运营可用性判定——单一出处（E2E-05 包B，任务书 5.1）：扫码预检、取水创单、PC 设备详情、
+ * 告警引擎、远程指令资格、机主设备详情六个入口共用。阻断顺序即优先级：离线（含未激活）→
+ * 故障态（未知故障码 fail-closed 一律阻断，任务书 3.6；已登记码按 BLOCK_ORDER_FLAG）→
+ * 维护中/锁定/出水中 → 出水口停用（仅在给出出水口时判定）。本类只判定不查库
+ * （字典行由调用方传入，判定可纯单测穷举）；共键错位不在射程，属
+ * {@code TradeOrderTxServiceImpl.verifyArchiveCoKeys} 的事务内职责。
  *
  * @author dakang
  * @since 2026-07-30

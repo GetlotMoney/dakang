@@ -51,16 +51,9 @@ import java.util.List;
 
 /**
  * 充值/购卡退款的权益批次事务实现（E2E-04 包D-5，REQ-061）。
- *
- * <h3>锁序固定：订单 → 卡 → 批次</h3>
- * <p>与包D-4 的消费路径同序（那边是「卡 → 批次」，这里在它前面多锁一个订单）。
- * 顺序反过来就会与消费事务构成交叉等待：消费持卡锁等批次锁，退款持批次锁等卡锁。</p>
- *
- * <h3>受理与结算之间隔着一个外部系统</h3>
- * <p>受理只锁批次并登记动作；真正动钱的是 {@link #settleOnRefundSuccess}，
- * 而它的触发条件是「ws_refund 已被退款事实推成成功」。两者之间的窗口里，
- * 批次处于 2退款锁定，消费侧的 {@code consume} CAS 与 {@code requireConsumable} 双闸拦住它——
- * 这就是任务书「退款审核后必须锁定对应批次，防止退款处理中继续消费」的落点。</p>
+ * 锁序固定：订单 → 卡 → 批次（与包D-4 消费路径同序，反序会与消费事务交叉等待死锁）。
+ * 受理与结算之间隔着外部系统：窗口内批次处于 2退款锁定，消费侧双闸拦住它
+ * （任务书「退款审核后必须锁定对应批次」的落点）。
  *
  * @author dakang
  * @since 2026-07-29
@@ -87,14 +80,11 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
     private final WsWalletFlowMapper walletFlowMapper;
     private final WsCardMemberMapper cardMemberMapper;
     private final IWsDomainEventService domainEventService;
-    /**
-     * 分润冲减登记（D-420 R1 段1）：与机构退款结算同事务（outbox）；执行段由
-     * 退款事实管道驱动（processAction 独立事务），失败不回滚已成功的结算。
-     */
+    /** 分润冲减登记（D-420 R1 段1）：与结算同事务（outbox）；执行段独立事务，失败不回滚结算。 */
     private final com.jbk.serve.service.settlement.ISplitClawbackTxService splitClawbackTxService;
-    /** 登记走包A 的统一入口（REQUIRED 传播，并入本受理事务）：售后号与状态机起点只有那一份实现。 */
+    /** 登记走包A 统一入口（REQUIRED 并入本受理事务）：售后号与状态机起点只有那一份实现。 */
     private final IAfterSaleActionTxService actionTxService;
-    /** 当前退款通道只提供受信任来源常量；来源必须与原支付单严格同源。 */
+    /** 退款通道只提供受信任来源常量；来源必须与原支付单严格同源。 */
     private final IRefundSourceAdapter refundSourceAdapter;
 
     // ------------------------------------------------------------------
@@ -102,14 +92,9 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
     // ------------------------------------------------------------------
 
     /**
-     * 只读预览：所有金额都由 {@link EntitlementRefundPlan} 算出，页面一列不推导。
-     *
-     * <p>不加锁——预览不是安全边界，它的结论在受理事务里会被<b>重新算一遍</b>
-     * （那次是在订单/卡/批次三把锁之内）。此处加锁只会让一次查看把消费路径堵住。</p>
-     *
-     * <p>业务性拒绝一律转成 {@code blockReason} 而不是异常：不可退的四类原因
-     * （历史聚合权益 / 已退过 / 已用尽 / 账本断裂）各自对应不同的人工动作，
-     * 全部糊成一个红条等于让运营去猜。</p>
+     * 只读预览：金额全由 {@link EntitlementRefundPlan} 算出，页面一列不推导。
+     * 不加锁（结论在受理事务的三把锁内会重算一遍）；业务性拒绝一律转 {@code blockReason}——
+     * 不可退的四类原因各自对应不同的人工动作。
      */
     @Override
     @Transactional(readOnly = true)
@@ -199,8 +184,7 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
             throw new JbkException("只有购卡/充值订单可以走权益批次退款");
         }
         if (ObjectUtil.notEqual(order.getOrderStatus(), TradeEnum.OrderStatus.FINISHED.getValue())) {
-            // 4已完成 是「钱收了、权益也发了」的唯一形状。6异常待补偿 走包B 的未入账全额退款，
-            // 7/8 说明已经退过。放宽这一条就会出现「同一笔钱按两条路径各退一次」
+            // 只认 4已完成：6 走未入账路径、7/8 已退过，放宽即同一笔钱按两条路径各退一次
             throw new JbkException("订单不是已完成状态（实际 " + order.getOrderStatus()
                     + "），已入账退款只受理已完成的充值订单");
         }
@@ -216,8 +200,7 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
 
         EntitlementRefundPlan.Plan plan = EntitlementRefundPlan.of(batch);
 
-        // ── 登记动作：额度落在「水品金额」维度，合计与它相等（createPending 由分维派生合计）──
-        // 机构退款没有配送费与水量维度，两者恒 0；这样 markSuccess 的四列 WHERE 才有确定期望值。
+        // ── 登记动作：额度落「水品金额」维度，配送费与水量恒 0，markSuccess 四列 WHERE 才有确定期望值 ──
         WsAfterSaleAction draft = new WsAfterSaleAction()
                 .setSourceType(SourceType.RECHARGE_REFUND.getValue())
                 .setSourceId(order.getId())
@@ -246,9 +229,8 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
             log.info("权益批次已被本动作锁定，按幂等继续：batchId={} actionId={}", batch.getId(), action.getId());
         }
 
-        // 幂等键前缀必须留够位置：ws_domain_event.BIZ_IDEMPOTENCY_KEY 是 varchar(64)，
-        // 而售后号本身占 32 位（AS + 30）。前缀超过 32 位就会在写审计时撞 data truncation，
-        // 把一次本该成功的受理整体回滚——隔离验收第一轮就是这样红的。
+        // 幂等键前缀不得超 32 位：BIZ_IDEMPOTENCY_KEY 是 varchar(64) 而售后号占 32，
+        // 超长会在写审计时撞 data truncation 把整次受理回滚
         domainEventService.recordReliableOnce(OpsEnum.EventType.AFTER_SALE, action.getAfterSaleNo(),
                 "AFTERSALE_ACCEPT:" + action.getAfterSaleNo(), null,
                 "充值退款受理：" + JSONUtil.createObj()
@@ -266,9 +248,8 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
     // ------------------------------------------------------------------
 
     /**
-     * <b>READ_COMMITTED 与包A 的资金事务同理</b>：本方法先读退款单与动作行，再锁卡；
-     * RR 下那份锁卡前的一致性读视图会让后续的批次/卡读取停在旧版本上，
-     * 而结算的每一步 CAS 都以这些读到的前态为条件，读旧即恒 0 行、整笔结算永远推不动。
+     * READ_COMMITTED 与包A 资金事务同理：RR 下锁卡前的读视图会让批次/卡读取停在旧版本，
+     * 各步 CAS 以读到的前态为条件，读旧即恒 0 行、结算永远推不动。
      */
     @Override
     @Transactional(rollbackFor = Exception.class, propagation = Propagation.REQUIRES_NEW,
@@ -282,8 +263,7 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
             throw new JbkException("退款单不存在，无法结算");
         }
         if (ObjectUtil.notEqual(refund.getRefundStatus(), RefundEnum.RefundStatus.SUCCESS.getValue())) {
-            // 只有服务方事实确认成功的退款才允许动权益。这条断言是本方法唯一的资格来源，
-            // 绝不接受调用方「我知道它成功了」的口头保证
+            // 只有服务方事实确认成功的退款才允许动权益，不接受调用方口头保证
             throw new JbkException("退款单不是成功状态，拒绝结算权益");
         }
         WsAfterSaleAction action = actionMapper.selectByIdIncludingDeleted(refund.getAfterSaleId());
@@ -368,7 +348,7 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
                 order, batch, action.getCardId(), action.getUserId(), paymentId);
         if (ObjectUtil.notEqual(batch.getBatchStatus(), EntitlementBatchOrder.BatchStatus.REFUND_LOCKED)
                 || ObjectUtil.notEqual(batch.getRefundLockedBy(), action.getId())) {
-            // 结算只允许作用在「本动作锁定的批次」上。少了这条，任意一笔退款成功都能冲正别人的批次
+            // 结算只作用在「本动作锁定的批次」上，否则任意退款成功都能冲正别人的批次
             throw new JbkException("权益批次未被本次退款锁定（状态 " + batch.getBatchStatus()
                     + "，锁定方 " + batch.getRefundLockedBy() + "），拒绝结算");
         }
@@ -415,9 +395,8 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
             }
         }
 
-        // ⑤ 订单终态：整批分文未动 → 7已退款；被用过一部分 → 8部分退款。
-        //    判据取<b>本事务锁内重读</b>的批次行，不沿用受理时算出的计划：受理与结算之间隔着一个
-        //    外部系统，那时的「未动」到这里可能已经不成立（批次在受理前被消费过、或被并发恢复入账改形）。
+        // ⑤ 订单终态：整批分文未动 → 7已退款；被用过 → 8部分退款。
+        //    判据取本事务锁内重读的批次行，不沿用受理时的计划——受理时的「未动」到结算可能已不成立
         boolean fullyUnused = ObjectUtil.equals(batch.getGrantAmountFen(), batch.getRemainAmountFen())
                 && ObjectUtil.equals(batch.getGrantWaterMl(), batch.getRemainWaterMl());
         moveOrderToRefunded(order, fullyUnused, now);
@@ -441,10 +420,8 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
     }
 
     /**
-     * 订单终态 CAS：前态取当前实际状态，影响行必须 1。
-     *
-     * <p>前态集合刻意只含 4已完成 与 6异常待补偿 两个——这是两条退款路径各自的合法起点。
-     * 允许从任意状态推进，等于给「把一个已取消或已退款的单再退一次」放行。</p>
+     * 订单终态 CAS：前态集合只含 4/6（两条退款路径各自的合法起点）——
+     * 允许任意状态推进等于给「已退过的单再退一次」放行。
      */
     private void moveOrderToRefunded(WsOrder order, boolean fullyUnused, String now) {
         int target = fullyUnused
@@ -464,14 +441,7 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
         }
     }
 
-    /**
-     * 首购退款后的卡处置：注销或保留并重算聚合有效期。
-     *
-     * <p>证据全部在锁内查（其他批次 / 成员授权 / 未完成订单 / 冲减后余量），判定问
-     * {@link CardClosureRule}。成员授权按「非撤销即算存在」的<b>保守</b>口径计数：
-     * 时间窗判定的唯一实现在 {@code CardMemberRule}（Java 侧），在 SQL 里复制一份时间窗
-     * 就会出现两份真相；而保守计数的偏差方向是「多保留一张空卡」，不是「注销一张还有人在用的卡」。</p>
-     */
+    /** 首购退款后的卡处置：注销或保留并重算聚合有效期；证据在锁内查，判定问 {@link CardClosureRule}。 */
     private void disposeCard(WsOrder order, WsCard card, WsCardEntitlementBatch batch,
                              long reverseFen, long reverseMl, String now) {
         CardClosureRule.Decision decision = CardClosureRule.decide(
@@ -488,15 +458,10 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
     }
 
     /**
-     * 注销判定证据——<b>预览与结算共用这一份</b>。
-     *
-     * <p>两处各查一遍是本包最容易埋雷的地方：预览说「退完会注销」而结算按另一套口径保留了卡
-     * （或反过来），运营就会按一个不成立的预期做决定。故四项证据只在这里查。
-     * 预览时无锁、结算时在卡行锁内——查询口径相同，隔离强度不同，这是刻意的。</p>
-     *
-     * <p>成员授权按「非解除即算存在」的<b>保守</b>口径计数：时间窗判定的唯一实现在
-     * {@code CardMemberRule}（Java 侧），在 SQL 里复制一份时间窗就会出现两份真相；
-     * 而保守计数的偏差方向是「多保留一张空卡」，不是「注销一张还有人在用的卡」。</p>
+     * 注销判定证据——预览与结算共用这一份（各查一遍会让预览与结算口径漂移）；
+     * 预览无锁、结算在卡行锁内，查询口径相同、隔离强度不同。成员授权按「非解除即算存在」的
+     * 保守口径计数：时间窗唯一实现在 {@code CardMemberRule}，SQL 复制一份即两份真相，
+     * 保守偏差方向是「多保留一张空卡」而非「注销还有人在用的卡」。
      */
     private CardClosureRule.Evidence closureEvidence(WsOrder order, WsCard card,
                                                      WsCardEntitlementBatch batch,
@@ -526,10 +491,8 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
     }
 
     /**
-     * 重算聚合有效期：取剩余可消费批次里最晚的那个；含永久批次则为永久（NULL）。
-     *
-     * <p>没有剩余批次时不动有效期——那种卡要么刚被判定为保留（还有成员/在途单），
-     * 要么权益已空，此时把有效期改成 NULL（永久）反而是放宽。</p>
+     * 重算聚合有效期：取剩余可消费批次里最晚的；含永久批次则为永久（NULL）。
+     * 没有剩余批次时不动有效期——改成 NULL（永久）反而是放宽。
      */
     private void resetAggregateExpiry(WsCard card, String now) {
         List<WsCardEntitlementBatch> remaining = batchMapper.lockConsumableByCard(card.getId());
@@ -573,9 +536,8 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
                         .set("afterSaleNo", action.getAfterSaleNo())
                         .set("actionType", ActionType.GATEWAY_REFUND.getValue())
                         .set("refundAmount", refundedFen));
-        // 分润冲减登记（D-420 R2 段1，同事务动作级 outbox）：单行 INSERT 不可失败路径，
-        // 机构退款以本次实退额为水品退款基数（充值退款单无配送费/水量维度）。
-        // 分摊与校验全在独立执行事务；充值订单无分账行时执行段完成留痕「零冲减」
+        // 分润冲减登记（D-420 R2 段1，同事务动作级 outbox）：单行 INSERT，
+        // 以本次实退额为基数；分摊与校验在独立执行事务
         WsAfterSaleAction registered = new WsAfterSaleAction();
         registered.setId(action.getId());
         registered.setOrderId(action.getOrderId());
@@ -603,10 +565,8 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
             // 已成功的动作绝不被迟到的失败事实降级（R0-7）
             return;
         }
-        // 5需人工对账 只接受 2执行中 / 4可重试 两个前态（状态机唯一那份矩阵）。
-        // 而受理成功后的动作停在 1待执行——退款期间它没有「执行中」这一步，动钱的是结算。
-        // 故先按状态机认领一次（1→2），再落终态；两步都在本 REQUIRES_NEW 事务内，
-        // 中途失败一起回滚，绝不会留下一个卡在 2执行中却没有任何在途退款的动作。
+        // 5需人工对账 只接受 2/4 前态，而受理后的动作停在 1待执行：先按状态机认领（1→2）再落终态；
+        // 两步同在本 REQUIRES_NEW 事务，中途失败一起回滚，不会留下卡在 2执行中的孤儿动作
         WsAfterSaleAction pending = action;
         if (ObjectUtil.equals(pending.getActionStatus(), ActionStatus.PENDING.getValue())) {
             int processing = ActionStatus.PROCESSING.getValue();
@@ -629,8 +589,7 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
             log.error("退款失败落痕影响 0 行：refundId={} actionId={} status={}",
                     refundId, pending.getId(), pending.getActionStatus());
         }
-        // 批次锁定<b>刻意不解除</b>：任务书 3.4「退款永久失败时不得自动恢复为未退款，进入人工处理」。
-        // 自动解锁会让一笔可能已经在服务方侧出款的退款重新变成「可消费」，那是双花窗口。
+        // 批次锁定刻意不解除（任务书 3.4）：自动解锁会让可能已出款的退款重新可消费——双花窗口
         log.warn("充值退款失败，权益批次保持退款锁定待人工处理：refundId={} afterSaleNo={} 原因={}",
                 refundId, action.getAfterSaleNo(), reason);
     }
@@ -663,13 +622,8 @@ public class EntitlementRefundTxServiceImpl implements IEntitlementRefundTxServi
     }
 
     /**
-     * 账本自洽性闸：逐卡「批次剩余合计 == 卡聚合值」。
-     *
-     * <p>这是包D-4 维护的不变式，也是折算能成立的前提。此刻不等说明这张卡上有一部分权益
-     * 不属于任何批次（或反之），此时无论按哪一侧算退款都可能错，故 fail-closed。
-     * <b>只在退款路径上校验</b>：消费路径不校验，因为包D-4 上线前的存量漂移（批次高于卡）
-     * 一旦在消费处 fail-closed，会让那些卡直接不能用；而退款是钱真正流出系统的地方，
-     * 这里必须严格。</p>
+     * 账本自洽性闸：逐卡「批次剩余合计 == 卡聚合值」（包D-4 不变式），不等即 fail-closed。
+     * 只在退款路径校验：消费处校验会让存量漂移卡直接不能用，而退款是钱流出系统处必须严。
      */
     private void requireLedgerIntact(WsCard card, String stage) {
         long batchFen = batchMapper.sumRemainFenByCard(card.getId());

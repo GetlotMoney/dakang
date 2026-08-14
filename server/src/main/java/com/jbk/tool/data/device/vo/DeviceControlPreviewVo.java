@@ -52,6 +52,9 @@ public class DeviceControlPreviewVo implements Serializable {
     @Schema(description = "参数摘要（confirm 回显用）")
     private String paramDigest;
 
+    @Schema(description = "本次确认是否需要二级认证（D-423 档位判据）：UI 据此提前告知运营，不让口令框成为随机出现的意外")
+    private Boolean requireSafe;
+
     @Schema(description = "紧急停止锚定的活动订单号（仅紧急停止返回）")
     private String activeOrderNo;
 }

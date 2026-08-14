@@ -12,15 +12,9 @@ import lombok.experimental.Accessors;
 import java.io.Serializable;
 
 /**
- * 退款事实收件箱 Po（E2E-04 包B，R0-8）。
- *
- * <p>形状与 {@code WsPaymentEvent} 逐项对齐：退款事实与支付事实面对同一类问题
- * （重复、乱序、迟到、错金额、处理者崩溃），两套形状会让 Worker 与恢复逻辑各写一遍。</p>
- *
- * <p><b>本表是退款成功的唯一入口</b>：适配器只能把退款请求交给服务方并拿回受理凭据，
- * 真正的「退款成功」必须先落成这里的一条事实，再由 Worker 核验后推进 ws_refund。
- * 三元幂等键 (REFUND_SOURCE, FACT_CHANNEL, PROVIDER_EVENT_KEY) 由数据库唯一索引保证：
- * 同一事实重复到达多少次，也只会有一行、只会推进一次。</p>
+ * 退款事实收件箱 Po（E2E-04 包B，R0-8）。形状与 {@code WsPaymentEvent} 逐项对齐。
+ * 本表是退款成功的唯一入口：「退款成功」必须先落成一条事实，再由 Worker 核验后推进 ws_refund；
+ * 三元幂等键 (REFUND_SOURCE, FACT_CHANNEL, PROVIDER_EVENT_KEY) 由数据库唯一索引保证只落一行、只推进一次。
  */
 @Getter
 @Setter

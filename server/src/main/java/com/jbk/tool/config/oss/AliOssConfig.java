@@ -10,12 +10,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.stereotype.Component;
 
-/**
- * @ClassName AliOssConfig
- * @Author xs
- * @Date 2025/2/21 11:29
- * @Version 1.0
- */
 @Slf4j
 @Data
 @Configuration

@@ -99,6 +99,19 @@ class WaterOrderMemberTxDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -128,6 +141,7 @@ class WaterOrderMemberTxDbTest {
                     .getResources("classpath:mapper/trade/*.xml"));
             return new SqlSessionTemplate(factory.getObject());
         }
+
 
         @Bean
         MapperFactoryBean<TradeCardMapper> tradeCardMapper(SqlSessionTemplate t) {
@@ -238,6 +252,7 @@ class WaterOrderMemberTxDbTest {
     @BeforeEach
     void reset() {
         jdbc.execute("""
+
                 CREATE TABLE IF NOT EXISTS ws_card (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
                   DATA_STATUS TINYINT DEFAULT 0, CREATE_BY BIGINT, CREATE_TIME VARCHAR(20),

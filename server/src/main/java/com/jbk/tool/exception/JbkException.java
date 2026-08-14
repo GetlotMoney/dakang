@@ -5,14 +5,8 @@ public class JbkException extends RuntimeException {
     private int code;
 
     /**
-     * 该异常的 {@link #msg} 是否适合直接展示给用户。
-     *
-     * <p>GlobalExceptionHandler 把 msg 原样写进响应体，前端直接 toast。对「余额不足」
-     * 这类业务规则拒绝，原文就是用户要看的；但对不变式守卫（共键错位、前态漂移、
-     * 事实落库失败）原文是给排障看的诊断，弹给用户只会造成恐慌且毫无可操作性。</p>
-     *
-     * <p>默认 true 保持既有行为不变；诊断类异常用 {@link #internal(String)} 构造，
-     * 由 handler 替换成通用文案——精确原因仍完整落在 log.error 里，不丢排障信息。</p>
+     * 该异常的 {@link #msg} 是否适合直接展示给用户。业务规则拒绝原文即用户文案；
+     * 不变式守卫类诊断用 {@link #internal(String)} 构造，handler 替换成通用文案，精确原因仍完整进 log.error。
      */
     private boolean userFacing = true;
 

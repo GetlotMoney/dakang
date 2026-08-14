@@ -20,7 +20,7 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 /**
- * 测试登录实现（仅 {@code mini.pay-sim.enabled=true} 时注册）。
+ * 测试登录实现（仅 {@code mini.test-login.enabled=true} 时注册）。
  *
  * <p>身份判定与正式登录<b>共用同一套代码</b>（跨全部 DATA_STATUS 查询 + {@code resolveUnique}
  * + {@code assertUsable}），因此删除/禁用/注销账号、以及历史遗留的重复手机号，
@@ -30,7 +30,9 @@ import java.util.List;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "mini.pay-sim.enabled", havingValue = "true")
+// 与 MiniTestLoginController 同一个开关。两者分挂不同开关时，只开一侧会造出
+// 「控制器注册了但依赖的 Service 不存在」的启动期失败，或反过来留一个永远没人调的 Bean。
+@ConditionalOnProperty(name = "mini.test-login.enabled", havingValue = "true")
 public class MiniTestLoginServiceImpl implements IMiniTestLoginService {
 
     private final WsUserIdentityMapper identityMapper;
@@ -52,7 +54,7 @@ public class MiniTestLoginServiceImpl implements IMiniTestLoginService {
         MiniUserIdentitySupport.assertUsable(user);
 
         // 留痕：测试会话签发是一件必须能在日志里查到的事，绝不静默发 token
-        log.warn("【测试登录】为已存在账号签发 KH_USER 会话：userId={} phone={}（仅测试环境，Pay-Sim 开关开启）",
+        log.warn("【测试登录】为已存在账号签发 KH_USER 会话：userId={} phone={}（仅测试环境，mini.test-login.enabled 开启）",
                 user.getId(), StrUtil.hide(phone, 3, 7));
 
         KhUserSession token = sessionIssuer.issue(user.getId(), user.getUserName());

@@ -18,6 +18,7 @@ import com.jbk.tool.data.mini.vo.MiniAuthResultVo;
 import com.jbk.tool.data.user.po.WsUser;
 import com.jbk.tool.exception.JbkException;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
@@ -57,6 +58,8 @@ class MiniAuthServiceTest {
     private IWechatPhoneAdapter phone;
     private IKhUserSessionIssuer issuer;
     private IMiniAuthBindTx bindTx;
+    /** D-418 赠卡发放协作者：本测试断言的是**何时**调它，不是它内部怎么发。 */
+    private com.jbk.serve.service.settlement.IRegisterGiftService registerGift;
     private WechatXcxConfig config;
     private IMiniCapabilityService capabilityService;
     private RedisTemplate<String, Object> redis;
@@ -84,9 +87,9 @@ class MiniAuthServiceTest {
         // E2E-03 包B：能力投影为独立协作者；本测试只关心登录编排，投影固定返回基础能力
         capabilityService = Mockito.mock(IMiniCapabilityService.class);
         when(capabilityService.capabilitiesOf(any())).thenReturn(List.of("USER_BASE"));
+        registerGift = Mockito.mock(com.jbk.serve.service.settlement.IRegisterGiftService.class);
         service = new MiniAuthServiceImpl(identityMapper, code2Session, phone, issuer, bindTx, config,
-                capabilityService,
-                Mockito.mock(com.jbk.serve.service.settlement.IRegisterGiftService.class));
+                capabilityService, registerGift);
         ReflectionTestUtils.setField(service, "redis", redis);
     }
 
@@ -367,5 +370,92 @@ class MiniAuthServiceTest {
         MiniBindPhoneSelfBo bo = new MiniBindPhoneSelfBo();
         bo.setPhoneCode("phone-code-x");
         assertThrows(JbkException.class, () -> service.bindPhoneForCurrentUser(66L, bo));
+    }
+
+    // ========== D-418 赠卡挂点（游客态下从「建号」后移到「绑号」）==========
+
+    @Test
+    @DisplayName("仅微信身份建号不发赠卡：不可联系、不可找回的账号不得先拿到可兑付权益")
+    void phonelessRegisterGrantsNoGift() {
+        ReflectionTestUtils.setField(service, "phonelessRegisterEnabled", true);
+        when(code2Session.resolve("code-x")).thenReturn(new WechatCode2SessionResult(OPENID, null));
+        when(identityMapper.selectByOpenidIncludingDeleted(OPENID)).thenReturn(List.of());
+        when(bindTx.registerByOpenid(OPENID))
+                .thenReturn(new BoundUser(7L, "微信用户", null, true));
+        when(identityMapper.selectByIdIncludingDeleted(7L)).thenReturn(user(7L, OPENID, null, 0, 0, 1));
+
+        service.login(loginBo());
+
+        // 挂点若留在建号分支：限流器从实名 SIM 降级成微信号，而赠卡可直接在售水机取水、
+        // 不占付费卡名额、耗尽后还能充值转永久付费卡——薅取成本降到"再注册一个微信号"
+        verify(registerGift, never()).grantIfEnabled(anyLong());
+    }
+
+    @Test
+    @DisplayName("票据链绑号成功即发赠卡，且不看 newlyCreated")
+    void bindPhoneGrantsGift() {
+        when(valueOps.getAndDelete(anyString())).thenReturn(ticketJson(OPENID, "bind-phone", APPID));
+        when(phone.resolvePhone("phone-code-x")).thenReturn("13900000001");
+        // 游客态下账号早在 openid 首登时就建好了，这里恒为 false——
+        // 若仍按 newlyCreated 判定，走这条链绑号的用户一张卡都拿不到
+        // 游客态：账号早已建好（newlyCreated=false），但本次让它首次拥有手机号
+        when(bindTx.bind(OPENID, "13900000001"))
+                .thenReturn(new BoundUser(7L, "微信用户", "13900000001", false, true));
+        when(identityMapper.selectByIdIncludingDeleted(7L))
+                .thenReturn(user(7L, OPENID, "13900000001", 0, 0, 1));
+
+        service.bindPhone(bindBo("TICKET"));
+
+        verify(registerGift).grantIfEnabled(7L);
+    }
+
+    @Test
+    @DisplayName("已有会话补绑手机号同样发赠卡（游客态的主要动线）")
+    void selfBindGrantsGift() {
+        MiniBindPhoneSelfBo selfBo = new MiniBindPhoneSelfBo();
+        selfBo.setPhoneCode("phone-code-x");
+        when(phone.resolvePhone("phone-code-x")).thenReturn("13900000002");
+        when(bindTx.bindPhoneToCurrentUser(7L, "13900000002"))
+                .thenReturn(new BoundUser(7L, "微信用户", "13900000002", false, true));
+        when(identityMapper.selectByIdIncludingDeleted(7L))
+                .thenReturn(user(7L, OPENID, "13900000002", 0, 0, 1));
+
+        service.bindPhoneForCurrentUser(7L, selfBo);
+
+        verify(registerGift).grantIfEnabled(7L);
+    }
+
+    @Test
+    @DisplayName("幂等复绑同一号码不再发第二张：绑定成功 ≠ 完成了一次注册")
+    void idempotentRebindGrantsNothing() {
+        when(valueOps.getAndDelete(anyString())).thenReturn(ticketJson(OPENID, "bind-phone", APPID));
+        when(phone.resolvePhone("phone-code-x")).thenReturn("13900000001");
+        // 三参构造器 = 幂等/复用路径，两个标志都为 false
+        when(bindTx.bind(OPENID, "13900000001"))
+                .thenReturn(new BoundUser(7L, "微信用户", "13900000001"));
+        when(identityMapper.selectByIdIncludingDeleted(7L))
+                .thenReturn(user(7L, OPENID, "13900000001", 0, 0, 1));
+
+        service.bindPhone(bindBo("TICKET"));
+
+        // 判据若写成「调用成功就发」，这里会发出第二张——幂等键能挡住重复入账，
+        // 但账号在语义上变成了「每次绑号都算注册」，键规则一变就漏
+        verify(registerGift, never()).grantIfEnabled(anyLong());
+    }
+
+    @Test
+    @DisplayName("存量老用户首次用微信登录不发赠卡：那是挂 openid，不是注册")
+    void existingPhoneUserBindingOpenidGrantsNothing() {
+        when(valueOps.getAndDelete(anyString())).thenReturn(ticketJson(OPENID, "bind-phone", APPID));
+        when(phone.resolvePhone("phone-code-x")).thenReturn("13900000001");
+        // 存量账号本来就有手机号，本次只是把 openid 挂上去：phoneNewlyBound=false
+        when(bindTx.bind(OPENID, "13900000001"))
+                .thenReturn(new BoundUser(7L, "老用户", "13900000001", false, false));
+        when(identityMapper.selectByIdIncludingDeleted(7L))
+                .thenReturn(user(7L, OPENID, "13900000001", 0, 0, 1));
+
+        service.bindPhone(bindBo("TICKET"));
+
+        verify(registerGift, never()).grantIfEnabled(anyLong());
     }
 }

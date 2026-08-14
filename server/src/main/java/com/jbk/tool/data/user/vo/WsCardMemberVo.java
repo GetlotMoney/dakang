@@ -34,7 +34,7 @@ public class WsCardMemberVo extends BaseEntityVo implements Serializable {
     @Schema(description = "被授权用户姓名（关联 ws_user 派生）")
     private String memberUserName;
 
-    @Schema(description = "被授权用户手机号（关联 ws_user 派生）")
+    @Schema(description = "被授权用户手机号（关联 ws_user 派生，已脱敏）")
     private String memberUserPhone;
 
     @Schema(description = "成员备注名(max50)")

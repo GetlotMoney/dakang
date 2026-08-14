@@ -15,6 +15,7 @@ import com.jbk.tool.exception.JbkException;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.mapper.MapperFactoryBean;
@@ -76,6 +77,19 @@ class SettlementDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+
+        /**
+         * 绑号闸放行版：最小 schema 无 ws_user 表。闸本身由 MiniPhoneGateTest /
+         * PhoneGateAnchorContractTest / MiniPhoneGateChainDbTest 专门覆盖。
+         */
+        @Bean
+        com.jbk.serve.service.mini.auth.MiniPhoneGate miniPhoneGate() {
+            com.jbk.serve.mapper.user.WsUserIdentityMapper m =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(m.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new com.jbk.serve.service.mini.auth.MiniPhoneGate(m);
+        }
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -112,6 +126,7 @@ class SettlementDbTest {
             return bean;
         }
 
+
         @Bean
         MapperFactoryBean<WsSplitRecordMapper> wsSplitRecordMapper(SqlSessionTemplate t) {
             return mapper(WsSplitRecordMapper.class, t);
@@ -141,6 +156,26 @@ class SettlementDbTest {
         @Bean
         MapperFactoryBean<WsIncomeFlowMapper> wsIncomeFlowMapper(SqlSessionTemplate t) {
             return mapper(WsIncomeFlowMapper.class, t);
+        }
+
+        // V2 依赖（本 Ctx 跑 V1 口径：开关默认 false，V2 路径不触发，仅满足装配）
+        @Bean
+        com.jbk.serve.service.settlement.ISplitPlanService splitPlanService() {
+            com.jbk.serve.service.settlement.ISplitPlanService mock =
+                    Mockito.mock(com.jbk.serve.service.settlement.ISplitPlanService.class);
+            Mockito.when(mock.activePlanAt(Mockito.anyString()))
+                    .thenReturn(java.util.Optional.empty());
+            return mock;
+        }
+
+        @Bean
+        com.jbk.serve.service.settlement.IOwnerAttributionService ownerAttributionService() {
+            return Mockito.mock(com.jbk.serve.service.settlement.IOwnerAttributionService.class);
+        }
+
+        @Bean
+        com.jbk.serve.mapper.settlement.WsSplitComponentMapper wsSplitComponentMapper() {
+            return Mockito.mock(com.jbk.serve.mapper.settlement.WsSplitComponentMapper.class);
         }
 
         @Bean

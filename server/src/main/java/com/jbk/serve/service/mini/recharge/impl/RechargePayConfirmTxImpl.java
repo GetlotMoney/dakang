@@ -26,6 +26,8 @@ public class RechargePayConfirmTxImpl implements IRechargePayConfirmTx {
 
     private final RechargeCreditMapper creditMapper;
     private final RechargeIdentityMapper identityMapper;
+    /** 订阅通知登记：与支付事实同事务——确认回滚意味着这笔支付没被认定，通知必须一起消失。 */
+    private final com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -49,6 +51,14 @@ public class RechargePayConfirmTxImpl implements IRechargePayConfirmTx {
             // 支付单刚被本次改成功，订单却不在 1待支付——两者已经不同步，回滚并转人工
             throw new IllegalStateException("订单状态与支付单不同步，orderNo=" + order.getOrderNo());
         }
+        // 只在**首次**确认时登记（重复回调走上面的 alreadyOrMismatch 分支，不到这里），
+        // 因此同一笔支付不会因为微信重投而多通知一次。
+        // 这条只说「钱收到了」；「权益到卡了」是另一条（RECHARGE_CREDITED），两者之间
+        // 还隔着入账事务，不能合并成一条——合并会让入账转人工的单也发出「已到账」。
+        notifyEnqueue.enqueue(com.jbk.tool.consts.mini.WechatNotifyEnum.EventType.PAYMENT_SUCCEEDED,
+                com.jbk.tool.consts.mini.WechatNotifyEnum.BizObjectType.ORDER,
+                order.getOrderNo(), order.getUserId(),
+                cn.hutool.json.JSONUtil.createObj().set("paySuccessTime", paySuccessTime));
         return Result.CONFIRMED;
     }
 

@@ -27,6 +27,7 @@ import com.jbk.tool.exception.JbkException;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.mapper.MapperFactoryBean;
@@ -258,7 +259,15 @@ class OwnerAnalyticsDbTest {
                                        WsUserMapper userMapper, WsOrderMapper orderMapper,
                                        IWorkOrderService workOrderService, IWsDomainEventService eventService) {
             // 构造注入真实依赖：聚合 SQL、范围过滤、分页拦截器全部走生产代码
-            return new MiniOwnerServiceImpl(deviceMapper, stationMapper, outletMapper, telemetryMapper,
+            // 绑号闸放行版：本类验的是机主聚合 SQL 与范围过滤，账号一律视为已绑号。
+            // 闸的判据由 MiniPhoneGateTest 覆盖，挂点由 PhoneGateAnchorContractTest 覆盖。
+            com.jbk.serve.mapper.user.WsUserIdentityMapper identity =
+                    Mockito.mock(com.jbk.serve.mapper.user.WsUserIdentityMapper.class);
+            Mockito.when(identity.selectPhoneByIdIncludingDeleted(Mockito.anyLong()))
+                    .thenReturn("13900000000");
+            return new MiniOwnerServiceImpl(
+                    new com.jbk.serve.service.mini.auth.MiniPhoneGate(identity),
+                    deviceMapper, stationMapper, outletMapper, telemetryMapper,
                     userMapper, orderMapper, workOrderService, eventService);
         }
 

@@ -574,12 +574,7 @@ class MiniPayStatusServiceTest {
         assertFalse(vo.getRetryable());
     }
 
-    /**
-     * RECONCILIATION_REQUIRED 是「已扣款、订单异常、待人工」的终态，**绝不可轮询**。
-     * 原用例完全没走到 pay=2/order=6 这条分支，把它加进 RETRYABLE 集合不会红——
-     * 后果是小程序对一批已出问题的付款订单无限轮询，故障时刻放大 QPS，
-     * 用户看到永远"加载中"而不是"请联系客服"，人工对账窗口被无声吞掉。
-     */
+    /** RECONCILIATION_REQUIRED 是终态绝不可轮询：误入 RETRYABLE 会让小程序对问题订单无限轮询。 */
     @Test
     void reconciliationRequiredIsTerminalAndNotRetryable() {
         payment.setPayStatus(RechargePayStatus.PAY_SUCCESS);

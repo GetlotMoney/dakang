@@ -49,15 +49,9 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * 契约驱动的<b>超时关单</b>集成测试（L2 契约 v2 §6.2 第 5/6 条、§7.1、§9.1；真实 MySQL + 真实 Spring 事务）。
- *
- * <p>这里要钉死的核心事实是：<b>本地到点不关单</b>。关单只能由支付方权威查单结果（CLOSED）驱动，
- * 且推进路径与将来接入的真实微信查单完全一致——都经过同一个 {@code IRechargePayFactService}。</p>
- *
- * <p>用真库而不是 Mock，是因为三条性质只有真事务才证明得了：两条 CAS 与事实收敛在同一事务里
- * 要么全成要么全滚；唯一键让重复查单稳定命中同一条事实；关单路径确实一个字节的资金数据都没碰。</p>
- *
- * <p>无 Docker 环境自动跳过。</p>
+ * 超时关单集成测试（L2 契约 v2 §6.2 第 5/6 条、§7.1、§9.1；真实 MySQL + Spring 事务）。
+ * 核心：本地到点不关单，关单只由支付方 CLOSED 事实经 {@code IRechargePayFactService} 驱动；
+ * 真库验证 CAS+事实收敛同事务、唯一键防事实堆积、关单零资金副作用。无 Docker 自动跳过。
  */
 @Testcontainers(disabledWithoutDocker = true)
 @ExtendWith(SpringExtension.class)
@@ -99,6 +93,22 @@ class RechargePayCloseDbTest {
     @Configuration
     @EnableTransactionManagement
     static class Ctx {
+        /** 通知登记用真实实现：要验「回滚后库里没有那一行」，mock 证不了。 */
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper>
+                wechatNotifyOutboxMapper(SqlSessionTemplate t) {
+            MapperFactoryBean<com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper> bean =
+                    new MapperFactoryBean<>(com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper.class);
+            bean.setSqlSessionTemplate(t);
+            return bean;
+        }
+
+        @Bean
+        com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue(
+                com.jbk.serve.mapper.mini.WsWechatNotifyOutboxMapper m) {
+            return new com.jbk.serve.service.mini.notify.WechatNotifyEnqueue(m);
+        }
+
         @Bean
         DataSource dataSource() {
             HikariDataSource ds = new HikariDataSource();
@@ -122,6 +132,11 @@ class RechargePayCloseDbTest {
                     new com.baomidou.mybatisplus.core.MybatisConfiguration();
             cfg.setMapUnderscoreToCamelCase(true);
             factory.setConfiguration(cfg);
+            // 与生产同款自动填充：缺了它，填充字段以 NULL 落库，NOT NULL 列报错、可空列假绿。
+            com.baomidou.mybatisplus.core.config.GlobalConfig globalConfig =
+                    new com.baomidou.mybatisplus.core.config.GlobalConfig();
+            globalConfig.setMetaObjectHandler(new com.jbk.tool.config.system.mybatis.MpMetaObjectHandler());
+            factory.setGlobalConfig(globalConfig);
             factory.setMapperLocations(new org.springframework.core.io.support
                     .PathMatchingResourcePatternResolver()
                     .getResources("classpath*:mapper/trade/TradeCardMapper.xml"));
@@ -136,14 +151,7 @@ class RechargePayCloseDbTest {
         }
 
 
-        /**
-
-         * E2E-04 包D：充值入账现在同事务建立权益批次，故上下文必须提供该 Mapper。
-
-         * 缺它整个上下文起不来——本类此前一次性红掉正是这个原因。
-
-         */
-
+        /** E2E-04 包D：入账同事务建批次，缺此 Mapper 上下文起不来。 */
         @Bean
         MapperFactoryBean<WsCardEntitlementBatchMapper> wsCardEntitlementBatchMapper(SqlSessionTemplate t) {
             MapperFactoryBean<WsCardEntitlementBatchMapper> bean = new MapperFactoryBean<>(
@@ -173,8 +181,9 @@ class RechargePayCloseDbTest {
         RechargeCreditTxImpl creditTx(RechargeCreditMapper mapper, RechargeLockedState locked,
                                       RechargeLedgerVerifier ledger,
                                       WsCardEntitlementBatchMapper batchMapper,
-                                      EntitlementLedger entitlementLedger) {
-            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger);
+                                      EntitlementLedger entitlementLedger,
+                                      com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue) {
+            return new RechargeCreditTxImpl(mapper, locked, ledger, batchMapper, entitlementLedger, notifyEnqueue);
         }
 
         @Bean
@@ -217,8 +226,9 @@ class RechargePayCloseDbTest {
         }
 
         @Bean
-        RechargePayConfirmTxImpl confirmTx(RechargeCreditMapper mapper, RechargeIdentityMapper identity) {
-            return new RechargePayConfirmTxImpl(mapper, identity);
+        RechargePayConfirmTxImpl confirmTx(RechargeCreditMapper mapper, RechargeIdentityMapper identity,
+                                           com.jbk.serve.service.mini.notify.WechatNotifyEnqueue notifyEnqueue) {
+            return new RechargePayConfirmTxImpl(mapper, identity, notifyEnqueue);
         }
 
         @Bean
@@ -281,9 +291,9 @@ class RechargePayCloseDbTest {
 
     @BeforeEach
     void reset() {
-        // E2E-04 包D：充值入账同事务建立权益批次，故本类的 schema 必须包含它。
-        // uk_batch_order 是「每笔充值恰好一个批次」的物理保证——本类的重放用例
-        // 正是靠它与 uk_card_issue_order 一起把「重放不得二次发权益」钉死。
+        // E2E-04 包D：入账同事务建批次；通知 outbox 表缺失会让整个事务失败
+        com.jbk.serve.service.mini.notify.WechatNotifyTestSchema.create(jdbc);
+        com.jbk.serve.service.mini.notify.WechatNotifyTestSchema.truncate(jdbc);
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS ws_card_entitlement_batch (
                   ID BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -358,8 +368,7 @@ class RechargePayCloseDbTest {
                   ORDER_ID BIGINT, FLOW_REMARK VARCHAR(255), BIZ_IDEMPOTENCY_KEY VARCHAR(64) NULL,
                   UNIQUE KEY uk_wallet_flow_biz_key (BIZ_IDEMPOTENCY_KEY)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""");
-        // 包D 批次表逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键，
-        // 表现为与被测逻辑无关的 DuplicateKey，掩盖真正的断言
+        // 批次表逐用例清空：uk_batch_order 跨用例复用同一 ORDER_ID 会撞键
         jdbc.execute("TRUNCATE TABLE ws_card_entitlement_batch");
         jdbc.execute("TRUNCATE TABLE ws_wallet_flow");
         jdbc.execute("TRUNCATE TABLE ws_payment_event");
@@ -403,6 +412,40 @@ class RechargePayCloseDbTest {
         return json;
     }
 
+    // ================= 0：支付成功通知与支付事实同事务 =================
+
+    /** SUCCESS 事实 → 登记支付成功通知恰一行；CLOSED 一条都不该有（对照在下一用例）。 */
+    @Test
+    void successFactEnqueuesPaymentSucceededNotice() {
+        // 付款窗内：过期单上的成功事实会被送去人工核查而不是直接认定
+        reseedTiming(-5);
+        // 成功事实必须带齐交易号/成功时间/金额（共键校验），缺项的 SUCCESS 会被判伪证拒绝
+        long eventId = insertRawEvent("SUCCESS", 3, "SIM-" + ORDER_NO, "SIMTX-1",
+                "20260722194314", PAY_AMOUNT, null);
+        // 共享 helper 恒写 CURRENCY=NULL，成功事实必须带币种，故单独补上
+        jdbc.update("UPDATE ws_payment_event SET CURRENCY='CNY' WHERE ID=?", eventId);
+        IRechargePayFactService.Outcome outcome = factService.process(eventId);
+
+        assertEquals(2, payStatus(),
+                "前置不成立本用例就什么都没验：支付单应已被推进为成功，outcome=" + outcome.code()
+                        + "/" + outcome.message());
+        assertEquals(1, noticeCount("PAYMENT_SUCCEEDED"),
+                "支付被认定却没登记通知，outcome=" + outcome.code());
+    }
+
+    /** 对照：登记误写在 process 开头时，关单也会发「支付成功」——本条防这个。 */
+    @Test
+    void closedFactEnqueuesNoPaymentSucceededNotice() {
+        factService.process(insertQueryFact("CLOSED", AFTER_EXPIRE));
+        assertEquals(0, noticeCount("PAYMENT_SUCCEEDED"), "关单也发了「支付成功」");
+    }
+
+    /** 某类通知的登记条数。查真表，不查 mock。 */
+    private int noticeCount(String eventType) {
+        return jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ws_wechat_notify_outbox WHERE EVENT_TYPE = ?", Integer.class, eventType);
+    }
+
     // ================= 1：支付方 CLOSED → payment 1/order 1 → payment 4/order 5 =================
 
     @Test
@@ -418,10 +461,7 @@ class RechargePayCloseDbTest {
         assertNoMoneyTouched();
     }
 
-    /**
-     * 零副作用：关单绝不能碰卡余额、水量、有效期或任何资金流水。
-     * 这条断言没了，一次"关单"就可能顺手改动用户资产而不被发现。
-     */
+    /** 零副作用：关单绝不能碰卡余额、水量、有效期或任何资金流水。 */
     private void assertNoMoneyTouched() {
         assertEquals(CARD_ML_BEFORE, cardMl(), "关单不得改动卡水量");
         assertEquals(CARD_AMOUNT_BEFORE, cardAmount(), "关单不得改动卡余额");
@@ -463,9 +503,7 @@ class RechargePayCloseDbTest {
 
     // ================= 3：内部已 SUCCESS 时 CLOSED 转人工对账 =================
 
-    /**
-     * 已经收到款的订单收到 CLOSED：绝不能回退成"已关闭"，否则一笔真实收款会凭空消失。
-     */
+    /** 已收到款的订单收到 CLOSED：不得回退成已关闭，否则真实收款凭空消失。 */
     @Test
     void closedConflictingWithInternalSuccessGoesToReconciliation() {
         advanceToPaid();
@@ -544,11 +582,7 @@ class RechargePayCloseDbTest {
 
     // ================= 7：查单事实永不进入权益 Worker =================
 
-    /**
-     * 契约 §6.3「NOTPAY/CLOSED 永不进入权益 Worker」。守卫是 claimEvent 的
-     * {@code TRADE_STATE='SUCCESS'}：它一旦被放宽成 IN(...)，一条 CLOSED 事实就能被
-     * 权益 Worker 认领并走到入账分支。
-     */
+    /** 契约 §6.3：NOTPAY/CLOSED 永不进入权益 Worker，守卫是 claimEvent 的 {@code TRADE_STATE='SUCCESS'}。 */
     @Test
     void creditWorkerCannotClaimQueryFacts() {
         long closed = insertQueryFact("CLOSED", AFTER_EXPIRE);
@@ -619,11 +653,8 @@ class RechargePayCloseDbTest {
     // ================= 9：Pay-Sim 扮演支付方，端到端走同一条路径 =================
 
     /**
-     * 付款截止时间已过 → 模拟支付方回答 CLOSED → 统一处理器按 CAS 关单。
-     *
-     * <p>注意这里断言的是<b>路径</b>而不只是结果：事实必须落成 {@code FACT_CHANNEL=2}、
-     * 事件键必须等于按契约规范串独立算出的值、四个外部字段必须全空。
-     * 若 Pay-Sim 为自己开一条小灶（比如直接改订单状态），这些断言全部失效。</p>
+     * 截止已过 → Pay-Sim 回答 CLOSED → 统一处理器 CAS 关单。断言的是路径而非结果：
+     * FACT_CHANNEL=2、事件键按契约规范串独立复算、四个外部字段全空。
      */
     @Test
     void paySimQueryAfterExpiryClosesOrderThroughTheSharedFactPath() {
@@ -679,10 +710,7 @@ class RechargePayCloseDbTest {
         assertEquals(1, orderStatus());
     }
 
-    /**
-     * 契约 §5.3：同一事实键下的正文摘要被改动过，说明这条"事实"已不是当初落库的那条，
-     * 必须拒绝复用并转人工核查，而不是照旧拿它去推进状态。
-     */
+    /** 契约 §5.3：同一事实键下正文摘要被改动，必须拒绝复用并转人工核查。 */
     @Test
     void tamperedRawBodyDigestUnderSameKeyIsRefused() {
         reseedTiming(-5);
@@ -709,10 +737,8 @@ class RechargePayCloseDbTest {
     }
 
     /**
-     * 把订单/支付单的时间轴挪到相对<b>真实当前时刻</b>的位置。
-     *
-     * <p>Pay-Sim 查单读的是系统时钟，所以基线时间不能写死；而 PAY_EXPIRE_TIME 又必须由
-     * §2.2 冻结算法从快照算出，因此快照要跟着一起重建，不能只改支付单的字段。</p>
+     * 把时间轴挪到相对真实当前时刻的位置：Pay-Sim 读系统时钟，且 PAY_EXPIRE_TIME
+     * 必须由 §2.2 冻结算法从快照算出，故快照要一起重建。
      *
      * @param createMinutesAgo 订单创建时刻相对现在的分钟偏移（负数表示过去）
      */

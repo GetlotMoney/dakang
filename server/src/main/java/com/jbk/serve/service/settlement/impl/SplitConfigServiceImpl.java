@@ -22,14 +22,9 @@ import java.util.Map;
 import java.util.TreeSet;
 
 /**
- * 分账比例配置写入（R1 P1-3）。
- *
- * <h3>为什么必须锁在数据库层</h3>
- * <p>「读旧配置→内存断点校验→INSERT」不串行化时，两个请求改<b>不同收款方</b>互不撞
- * {@code uk_split_config_version}——各自按旧视图校验通过后双双写入，同线未来断点合计
- * 可超 100%，到点后所有配送签收在分账引擎 fail-closed，配送完成链熔断（独立复审实测
- * 9000/8000 双过→合计 11000）。修复=同一事务内：锁商品线锚行（{@code FOR UPDATE}，
- * 跨实例生效）→ 锁内重读全部版本 → 校验全部未来断点 → INSERT。同线串行、异线并发。</p>
+ * 分账比例配置写入（R1 P1-3）。断点校验必须锁在数据库层：改不同收款方互不撞
+ * uk_split_config_version，各按旧视图校验会让同线未来断点合计超 100%、到点分账引擎熔断；
+ * 同一事务内锁商品线锚行（FOR UPDATE）→ 锁内重读全部版本 → 校验 → INSERT，同线串行异线并发。
  *
  * @author dakang
  * @since 2026-08-07
@@ -45,6 +40,11 @@ public class SplitConfigServiceImpl implements ISplitConfigService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long createVersion(FinanceQueryBo bo, String effect) {
+        // ⓪ 收款方白名单：只放行 V1 引擎执行面真正消费的组合（SplitServiceImpl 的收款方
+        //    集合硬编码为 机主/配送员/平台）。字典 1377 的 4/5/6 预留值页面选得到、
+        //    本方法此前也照收——配了显示"已生效"、占用 100% 额度，引擎却永远不产行，
+        //    份额静默落平台且账面无痕（V2 立项点名的偏差 3）。平台是余数不是比例，同拒。
+        requireConsumableReceiver(bo);
         // ① 商品线锁锚：拿不到锚行=新库未执行 split-line-lock 迁移，fail-closed 拒绝写入，
         //    绝不退化为无锁校验（那正是被驳回的窗口本身）
         Integer locked = lineLockMapper.lockLine(bo.getProductLine());
@@ -109,5 +109,24 @@ public class SplitConfigServiceImpl implements ISplitConfigService {
         log.info("分账比例新版本写入：line={} receiver={} rate={} effect={} id={}",
                 bo.getProductLine(), bo.getReceiverType(), bo.getSplitRate(), effect, config.getId());
         return config.getId();
+    }
+
+    /**
+     * V1 可配收款方白名单：售水线只有机主，配送线只有机主与配送员——与
+     * {@code SplitServiceImpl.enqueueForOrder} 的执行面逐值同源。推荐人/区域服务商
+     * 的比例属 V2 整版计划（/finance/plan/create），不允许配进 V1 单行版本。
+     */
+    private static void requireConsumableReceiver(FinanceQueryBo bo) {
+        if (ObjectUtil.equal(bo.getReceiverType(), SettlementEnum.ReceiverType.PLATFORM.getValue())) {
+            throw new JbkException("平台份额恒为余数，不可配置比例");
+        }
+        boolean owner = ObjectUtil.equal(bo.getReceiverType(), SettlementEnum.ReceiverType.OWNER.getValue());
+        boolean courierOnDelivery = ObjectUtil.equal(bo.getReceiverType(),
+                SettlementEnum.ReceiverType.COURIER.getValue())
+                && ObjectUtil.equal(bo.getProductLine(), SettlementEnum.ProductLine.DELIVERY.getValue());
+        if (!owner && !courierOnDelivery) {
+            throw new JbkException("该收款方不参与此商品线的单行比例分账；"
+                    + "推荐人与区域服务商比例请在分润计划（整版）中配置");
+        }
     }
 }

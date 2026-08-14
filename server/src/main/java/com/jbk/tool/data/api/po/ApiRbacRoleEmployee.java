@@ -14,10 +14,6 @@ import lombok.Setter;
 import lombok.experimental.Accessors;
 
 /**
- * <p>
- *
- * </p>
- *
  * @author xs
  * @since 2025-09-05
  */

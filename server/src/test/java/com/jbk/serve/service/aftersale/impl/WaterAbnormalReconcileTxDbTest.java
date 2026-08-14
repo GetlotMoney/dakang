@@ -50,27 +50,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * E2E-04 包A 取水异常核账（售后来源 3）的<b>真实 MySQL + 真实 Spring 事务</b>集成测试。
- *
- * <p><b>核心被测性质是「零资金写入」</b>：核账只核对既有账本并推进订单终态，
- * 一分钱一毫升都不许动。因此每条确认用例都精确断言卡余额、卡水量与流水条数三者不变——
- * 只断言「没抛异常」会让任何一次「顺手把没退的那笔补上」的改动继续全绿。</p>
- *
- * <p>钉住的事实：</p>
- * <ol>
- *   <li><b>来源A（已退差待复核）可确认</b>：零出水 6→7已退款、部分出水 6→4已完成；
- *       两者都零资金变化、零新增流水，台账行四元额度全 0。</li>
- *   <li><b>来源B（未退差）必须拒绝</b>：它需要真实补退差（后续包），当成"已退过"确认终态
- *       等于把用户的钱无偿吞掉，且账面显示订单正常完成。</li>
- *   <li><b>双信号一真一假一律 UNKNOWN</b>：两个方向都 fail-closed 转人工。</li>
- *   <li><b>账本断裂拒绝</b>：订单-指令共键错位、退差额与「计划-实际」不符都不可确认。</li>
- *   <li><b>拒绝证据独立提交</b>：主事务回滚正是拒绝的结果，证据必须活下来。</li>
- *   <li><b>幂等</b>：状态闸拦住重复确认；外力把状态改回 6 的重放撞
- *       {@code uk_after_sale_source} 整事务回滚，不产生第二条台账。</li>
- *   <li><b>编译期护栏的运行时佐证</b>：实现类的依赖清单里没有任何写卡能力。</li>
- * </ol>
- *
- * <p>无 Docker 环境自动跳过。</p>
+ * E2E-04 包A 取水异常核账（来源3）真实 MySQL + Spring 事务集成测试。核心性质是零资金写入：
+ * 每条确认用例精确断言卡两列与流水条数不变。另钉：来源B（未退差）拒绝、双信号矛盾
+ * UNKNOWN 转人工、账本断裂拒绝、拒绝证据独立提交、重放撞 uk_after_sale_source 回滚、
+ * 实现类依赖清单无写卡能力。无 Docker 自动跳过。
  */
 @Testcontainers(disabledWithoutDocker = true)
 @ExtendWith(SpringExtension.class)
@@ -496,11 +479,8 @@ class WaterAbnormalReconcileTxDbTest {
     }
 
     /**
-     * 外力把订单状态改回 6 后的重放：台账行仍在，撞 {@code uk_after_sale_source} 整事务回滚。
-     *
-     * <p>刻意不"当成已完成返回"：订单终态 CAS 已经在本事务前面独占了 6→终态这一步，
-     * 能走到台账写入还撞键说明有本路径之外的写入方，属账本异常，必须炸出来。
-     * 因此第二次确认后订单必须回到 6（CAS 的推进随事务回滚），台账仍是一行。</p>
+     * 状态被改回 6 后的重放撞 {@code uk_after_sale_source} 整事务回滚：
+     * 能走到台账写入还撞键说明有路径外写入方，属账本异常必须炸出，不得当成已完成返回。
      */
     @Test
     void replayAfterExternalStatusResetHitsSourceUniqueKeyAndRollsBack() {
@@ -521,11 +501,8 @@ class WaterAbnormalReconcileTxDbTest {
     // ==================== 6：编译期护栏的运行时佐证 ====================
 
     /**
-     * 核账实现类的依赖清单里<b>没有任何写卡能力</b>。
-     *
-     * <p>这条把「核账绝不加钱」从注释里的约定变成可执行断言：想在核账里顺手退一笔钱，
-     * 必须先给本类新增一个具备写卡能力的字段或构造参数，而那正是本用例会立刻拦下的动作。
-     * 字段与构造参数两侧都查——只查字段的话，一个直接 new 出来的临时 Mapper 就能绕过去。</p>
+     * 核账实现类依赖清单无任何写卡能力（字段与构造参数两侧都查，
+     * 只查字段会被直接 new 的临时 Mapper 绕过）。
      */
     @Test
     void reconcileServiceDeclaresNoCardWritingDependency() {
@@ -583,12 +560,8 @@ class WaterAbnormalReconcileTxDbTest {
     }
 
     /**
-     * 隔离级别既是声明也是运行期断言，两侧都要钉住。
-     *
-     * <p>confirm 的传播级别刻意保持 REQUIRED（终态、台账与领域事件须与调用方同生共死），
-     * 而 REQUIRED 一旦加入外层事务，Spring 会静默丢弃这里声明的 READ_COMMITTED——
-     * 上面 javadoc 论证的「不拿旧账本核出终态」随之失效且不报错。
-     * 故方法体内另有运行期断言兜底；本条只保证声明侧不被人顺手删掉。</p>
+     * 隔离级别声明侧守卫：REQUIRED 加入外层事务时 Spring 会静默丢弃 READ_COMMITTED，
+     * 运行期断言在方法体内兜底，本条保证声明不被删。
      */
     @Test
     void confirmDeclaresReadCommitted() throws Exception {

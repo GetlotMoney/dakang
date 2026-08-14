@@ -11,14 +11,9 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * 员工口令的哈希、校验、初始口令生成与强度规则（R-201）。
- *
- * <p>存储格式统一为 BCrypt；历史 RSA 密文不再参与校验——{@link #verify} 对任何
- * 非 BCrypt 格式的存量值一律返回 false（fail-closed），存量数据由迁移 SQL 一次性
- * 重置为 BCrypt，禁止在代码里保留"旧格式也能登录"的兼容分支。</p>
- *
- * <p>RSA（{@link RSAUtils}）仍承担前端到后端的传输层加密，与本类的存储职责无关：
- * 请求先经 RSA 解出明文，再交本类与库内哈希比对。</p>
+ * 员工口令的哈希、校验、初始口令生成与强度规则（R-201）。存储格式统一 BCrypt，
+ * {@link #verify} 对非 BCrypt 存量值一律返回 false（fail-closed），禁止保留旧格式兼容分支。
+ * RSA（{@link RSAUtils}）只做传输层加密，与本类存储职责无关。
  */
 public final class PwdUtils {
 

@@ -96,11 +96,14 @@ public class AdminOrderServiceImpl implements IAdminOrderService {
 
     /**
      * UI-TRACE 读侧身份聚合：使用人/持卡人两个身份和用卡角色由服务端算好下发，前端不做推导。
-     * <p>分页与追溯两条查询路径都必须经过本方法：SQL 取出的持卡人原始手机号在此统一脱敏并清空，
+     * <p>分页与追溯两条查询路径都必须经过本方法：SQL 取出的使用人与持卡人原始手机号在此统一脱敏并清空，
      * 保证任何路径都不把明文号码序列化出接口；卡删除/查不到时相关字段保持空值（fail-soft，不 500）。</p>
+     * <p>使用人号码曾只脱敏出 actorMaskedPhone、原值列仍照常序列化，任一后台会话翻页即可导出全量
+     * C 端明文号码；现在与持卡人同口径——原值列 @JsonIgnore + 此处置空双保险。</p>
      */
     private void decorateActorAndOwner(AdminOrderItemVo order) {
-        order.setActorMaskedPhone(maskPhone(order.getUserPhone()));
+        order.setActorMaskedPhone(maskPhone(order.getUserPhoneRaw()));
+        order.setUserPhoneRaw(null);
         order.setCardOwnerMaskedPhone(maskPhone(order.getCardOwnerPhoneRaw()));
         order.setCardOwnerPhoneRaw(null);
         order.setAccessRole(resolveAccessRole(order.getUserId(), order.getCardOwnerUserId()));

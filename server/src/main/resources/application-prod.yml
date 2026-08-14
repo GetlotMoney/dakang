@@ -55,19 +55,51 @@ knife4j:
 
 wechat:
   xcx:
-    # TODO 待配置：六维达康小程序主体的 AppID/AppSecret。
-    # 真值只能经 .env 的 WECHAT_XCX_APPID/WECHAT_XCX_APPSECRET 注入，禁止写进本文件。
+    # 小程序主体已完成微信认证，AppID 已固定（用户端/机主端/配送端统一入口）。
+    # AppID 与 AppSecret 均按凭据管理：真值只能经 .env 的 WECHAT_XCX_APPID/WECHAT_XCX_APPSECRET
+    # 注入，本文件与任何入库文件都不得出现字面量（含注释）。由 tools/check-secret-leak.py 看守。
     appid: ${WECHAT_XCX_APPID:}
     appsecret: ${WECHAT_XCX_APPSECRET:}
+  pay:
+    # 微信支付 APIv3 商户凭据（WX-ECO S3）。六项缺任何一项即视为未配置，
+    # 所有支付组件 fail-closed 拒绝执行。多行 PEM 走文件路径（容器 secret 挂载），
+    # 不进环境变量本体；其余真值只经 .env 注入，本文件不得出现字面量（含注释）。
+    mchid: ${WECHAT_PAY_MCHID:}
+    merchant-serial: ${WECHAT_PAY_MERCHANT_SERIAL:}
+    private-key-path: ${WECHAT_PAY_PRIVATE_KEY_PATH:}
+    api-v3-key: ${WECHAT_PAY_API_V3_KEY:}
+    platform-public-key-id: ${WECHAT_PAY_PLATFORM_PUBLIC_KEY_ID:}
+    platform-public-key-path: ${WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH:}
+    # 出站 HTTP 适配器开关：默认 false=fail-closed 兜底实现在位（恒拒绝）。
+    # 联调轮真实实现以 havingValue=true 注册，两者属性互斥、不可能并存。
+    http-client:
+      enabled: ${WECHAT_PAY_HTTP_CLIENT_ENABLED:false}
+  notify:
+    # 订阅消息真实发送适配器开关：默认 false=兜底实现在位（一律不发、绝不返回成功）。
+    http-sender:
+      enabled: ${WECHAT_NOTIFY_HTTP_SENDER_ENABLED:false}
+  shipping:
+    # 发货管理同步适配器开关：默认 false=兜底在位且 Worker 休眠；
+    # 待同步行保持待处理，开启后自然补投（绝不把"没接入"写成终态）。
+    http-client:
+      enabled: ${WECHAT_SHIPPING_HTTP_CLIENT_ENABLED:false}
 
 mini:
   auth:
     phoneless-register:
       # 仅微信身份建号。默认关闭：手机号是唯一可人工找回账号的凭据，无号账号一旦丢失微信即失联。
-      # 当前演示环境小程序为个人主体、未过微信认证，getPhoneNumber 组件被平台禁用、注册链走不通，
-      # 因此用 docker-compose 的 MINI_PHONELESS_REGISTER_ENABLED 环境变量覆盖为 true，不改本文件。
-      # 小程序完成微信认证后，把该环境变量撤回 false 即恢复注册即绑号。
+      # 主体已于 2026-08-11 完成微信认证，getPhoneNumber 恢复可用，故缺省 false（注册即绑号）。
+      # 组件因额度用尽等平台侧原因再次不可用时，用 .env 的 MINI_PHONELESS_REGISTER_ENABLED
+      # 覆盖为 true 兜住注册链，不改本文件；dev 与本文件同源取值，切换见
+      # tools/wechat-certified-switch.py（它会一并核验两个 profile 未分叉）。
       enabled: ${MINI_PHONELESS_REGISTER_ENABLED:false}
+  test-login:
+    # 测试登录（按手机号直签 KH_USER 会话）。**默认关闭且写显式**：它凭一个已注册手机号
+    # 就能取得该用户的完整会话，危险度高于 Pay-Sim（后者伪造的是带永久来源标记的收款事实）。
+    # 曾与 mini.pay-sim.enabled 共用一个开关，导致「为跑通商城链开 Pay-Sim」顺带在正式登录
+    # 环境里打开了身份绕过（2026-08-11 实测可签出有效 Token）。隔离验收环境显式置 true 供
+    # 九个 e2e 跑批脚本使用；演示与生产一律保持 false。
+    enabled: ${MINI_TEST_LOGIN_ENABLED:false}
   pay-sim:
     # 生产默认关闭且**写显式**：Pay-Sim 一旦误开，模拟收款会被当成真实微信收款记账。
     # 演示环境用 docker-compose 的 MINI_PAYSIM_ENABLED 环境变量单独覆盖，不改本文件。
@@ -77,6 +109,30 @@ mini:
     # 账面显示已退款而用户一分钱没收到。演示环境用 docker-compose 的 MINI_REFUNDSIM_ENABLED
     # 环境变量单独覆盖，不改本文件。关闭时生效的是 fail-closed 的 WechatRefundSourceAdapter。
     enabled: false
+
+mall:
+  # 商城订单付款窗（分钟）：创单冻结进订单与支付单，创建后不可改。
+  pay-expire-minutes: ${MALL_PAY_EXPIRE_MINUTES:30}
+  pay-sim:
+    # 生产默认关闭且**写显式**：与 mini.pay-sim 分开授权——商城收款与取水/充值收款
+    # 是两条独立资金链，开一条不等于该开另一条。演示环境用 docker-compose 的
+    # MALL_PAYSIM_ENABLED 环境变量单独覆盖，不改本文件。
+    # 关闭时商城模拟支付端点不注册，且超时关单因无权威查单适配器而整体停摆（刻意 fail-closed，
+    # 宁可订单挂着等人工，也不凭本地时钟关掉一笔可能已支付的订单）。
+    enabled: ${MALL_PAYSIM_ENABLED:false}
+  # Refund-Sim 商城模拟退款：与 mall.pay-sim 和一期 mini.refund-sim 三者**完全独立**。
+  # 退款是出账，比收款危险一个量级：为了跑通支付而开模拟的环境，不该连模拟退款一起打开。
+  # 为 true 时 /mall/refund-sim/** 才注册；为 false/缺省时端点不存在，退款只能等真实渠道事实。
+  refund-sim:
+    enabled: ${MALL_REFUNDSIM_ENABLED:false}
+  logistics-sim:
+    # Logistics-Sim 内部模拟承运商：生产默认关闭且写显式。与两个资金模拟开关再次独立——
+    # 物流是发货动作，与收款/退款各自授权。关闭时适配器 Bean 不注册、回调端点不存在，
+    # 第三方运单创建会因取不到承运商而转人工（刻意 fail-closed）。
+    enabled: ${MALL_LOGISTICSSIM_ENABLED:false}
+
+  # 售后申请窗（天）：**内部模拟默认值**，甲方正式规则未定，不得对外表述为最终业务规则。
+  after-sale-window-days: 7
 
 delivery:
   auto-refill:
@@ -93,15 +149,15 @@ mybatis-plus:
     # 哈希非明文，但属离线爆破素材，没有理由每次登录都留一份在日志里（R-201）
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
 
-# 分润 V2（E2E-08 S1）：计算内核与计划模型已就位，但正式比例待甲方书面确认，
-# 且组件尚未与订单完成事务接线（S2 范围）。两环境都显式 false——
-# 开关关闭时任何生产路径不得调用 V2 计算器，现有 V1 分账行为保持不变。
+# 分润 V2（E2E-08 S2，D-428 六方口径）：已与订单完成事务接线（分流在 SplitServiceImpl
+# 内，完成事务类不感知）。开关开启后，订单创建时点有生效整版计划才走 V2，
+# 无计划回落 V1——切换期连续性由「版本锚=订单创建时点」保证。两环境必须显式同值。
 settlement:
   # D-421 分润冻结期：分账行创建满 N 天才结算入账（与 24h 申诉窗对齐，冻结期内
   # 退款冲减零资金动作）。改天数需重启生效。
   split-freeze-days: 1
   split-v2:
-    enabled: false
+    enabled: true
 
 # D-418「0 元注册送」：注册成功自动发放赠卡。参数未定（C-01.8）前保持关闭；
 # 甲方给出金额/水量/天数后填入并打开，重启服务后生效（无需代码变更）。

@@ -21,27 +21,16 @@ import java.util.Set;
  *                └─运营终止─► 6已终止[终]   （2/4 亦可被终止）
  * </pre>
  *
- * <p><b>本类必须是 CAS 的数据源，而不是 CAS 的旁证。</b>
- * {@link #requireSources(int)} 返回目标态的合法前态集合，由 Mapper 接口以参数形式传给
- * WsAfterSaleActionMapper.xml，XML 用 {@code <foreach>} 渲染 {@code ACTION_STATUS IN (...)}。
- * XML 里**禁止**出现任何硬编码前态数字。</p>
- *
- * <p>反面教材（就在本仓）：{@code DeliveryTransitions.allowed()} 全仓只被单测引用，
- * 生产路径走的是另一套硬编码 WHERE，于是状态机有两份真相——一份给测试看、一份给库看，
- * 二者漂移时测试全绿而线上错。本类通过「CAS 的 IN 列表只能由 requireSources 生成」
- * 把这条路堵死：改矩阵即改生产 SQL，不存在只改一边的可能。</p>
- *
- * <p>纯函数、无状态、无 Spring 依赖，供 Service 与单测共用。
- * 本类只钉状态维度；调用方还必须在 WHERE 上叠加 ID、VERSION、DATA_STATUS 与归属条件
- * （铁律①：前态与归属全带齐，影响行必须 == 1）。</p>
+ * <p>本类必须是 CAS 的数据源：{@link #requireSources(int)} 的前态集合经 Mapper 参数传入 XML
+ * 渲染 {@code ACTION_STATUS IN (...)}，XML 里禁止硬编码前态数字——否则状态机出现两份真相
+ * （测试全绿而线上错）。纯函数、无 Spring 依赖；本类只钉状态维度，调用方仍须在 WHERE 上
+ * 叠加 ID、VERSION、DATA_STATUS 与归属条件（铁律①：影响行必须 == 1）。</p>
  */
 public final class AfterSaleTransitions {
 
     /**
-     * 目标态 → 合法前态集合（全集；键不存在即该目标态不可由任何状态到达）。
-     *
-     * <p>用 LinkedHashSet 保序（升序登记）：前态集合会被渲染进 SQL 的 IN 列表，
-     * 有序输出让生成的 SQL 文本稳定可比对，便于 Mock 单测按串断言与线上慢查询归并。</p>
+     * 目标态 → 合法前态集合（键不存在即不可达）。
+     * LinkedHashSet 保序：渲染进 SQL IN 列表的文本稳定可比对。
      */
     private static final Map<Integer, Set<Integer>> SOURCES;
 
@@ -59,8 +48,7 @@ public final class AfterSaleTransitions {
         // 转人工：执行中的不可重试失败，或可重试次数耗尽
         m.put(ActionStatus.RECONCILIATION_REQUIRED.getValue(), sources(
                 ActionStatus.PROCESSING, ActionStatus.RETRY_WAIT));
-        // 终止：未落账的三个非终态都可被运营终止；3已完成与5需人工对账不在此列——
-        // 已完成的钱已动，终止它会让状态与账本背离；5 的收口是人工对账流程（包B），不走本边
+        // 终止：未落账的三个非终态可被运营终止；3已完成钱已动不可终止，5 的收口走人工对账流程
         m.put(ActionStatus.TERMINATED.getValue(), sources(
                 ActionStatus.PENDING, ActionStatus.PROCESSING, ActionStatus.RETRY_WAIT));
         SOURCES = Collections.unmodifiableMap(m);
@@ -70,11 +58,11 @@ public final class AfterSaleTransitions {
     }
 
     /**
-     * 目标态的合法前态集合——**CAS 的 IN 列表只能从这里取**。
+     * 目标态的合法前态集合——CAS 的 IN 列表只能从这里取。
      *
      * @param to 目标 ACTION_STATUS(1372)
      * @return 不可变有序集合，元素为合法前态值
-     * @throws JbkException 目标态不可达（含未登记状态值）：fail-closed，绝不返回空集让 CAS 退化成无条件更新
+     * @throws JbkException 目标态不可达：fail-closed，绝不返回空集让 CAS 退化成无条件更新
      */
     public static Set<Integer> requireSources(int to) {
         Set<Integer> from = SOURCES.get(to);
@@ -84,10 +72,7 @@ public final class AfterSaleTransitions {
         return from;
     }
 
-    /**
-     * 状态维度的转换合法性判定，供写前断言与单测全矩阵校验。
-     * <p>与 {@link #requireSources(int)} 共用同一张表：断言口径与 CAS 口径不可能分叉。</p>
-     */
+    /** 状态转换合法性判定；与 {@link #requireSources(int)} 共用同一张表，断言与 CAS 口径不可能分叉。 */
     public static boolean allowed(int from, int to) {
         Set<Integer> sources = SOURCES.get(to);
         return sources != null && sources.contains(from);
