@@ -235,7 +235,7 @@ INSERT INTO `ws_split_line_lock` (`PRODUCT_LINE`) VALUES (1), (2);
 
 -- ============================================================
 -- 分润 V2 S1：完整计划模型与组件证据（与 migrations/2026-08-06-split-v2-s1.sql 双份逐字一致）
--- 正式比例待甲方确认：不插任何计划种子；V2 开关两环境默认 false。
+-- D-428 正式比例已确认；文件末尾插入整版生效计划，V2 开关两环境显式开启。
 -- ============================================================
 DROP TABLE IF EXISTS `ws_split_plan`;
 CREATE TABLE `ws_split_plan` (
@@ -252,7 +252,7 @@ CREATE TABLE `ws_split_plan` (
   PRIMARY KEY (`ID`),
   UNIQUE KEY `uk_split_plan_version` (`PLAN_VERSION`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-  COMMENT='分润V2完整计划头：整版发布整版生效，正式比例未确认前不得有生效行';
+  COMMENT='分润V2完整计划头：整版发布、按订单创建时点选择生效版本';
 
 DROP TABLE IF EXISTS `ws_split_plan_item`;
 CREATE TABLE `ws_split_plan_item` (
@@ -523,3 +523,39 @@ CREATE TABLE `ws_owner_attribution` (
   KEY `idx_owner_attr_county` (`COUNTY_AGENT_USER_ID`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
   COMMENT='机主区域归属链：省市区县运营中心各是谁；血缘冻结不按地缘(D-406)，无行=公域未分配';
+
+
+-- ============================================================
+-- 老板测试版 D-428 六方分润计划（售水线）+ 配送费独立线。
+-- 计划自 2026-08-14 甲方口径确认时点起生效；历史订单不重算。
+-- 售水：水站50% / 商务推广5% / 运营中心省5市3区县2级差 / 平台余数40%。
+-- 配送：配送员90% / 平台余数10%，与售水线完全分开。
+-- ============================================================
+INSERT INTO `ws_split_plan`
+(`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,
+ `PLAN_VERSION`,`EFFECT_TIME`,`PLAN_STATUS`,`PLAN_REMARK`)
+SELECT 0,1,'20260828090000',1,'20260828090000',
+       'DEMO-D428-V1','20260814000000',2,'老板测试版六方分润；D-428'
+WHERE NOT EXISTS (
+  SELECT 1 FROM `ws_split_plan` WHERE `PLAN_VERSION`='DEMO-D428-V1'
+);
+
+INSERT INTO `ws_split_plan_item`
+(`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,
+ `PLAN_ID`,`PRODUCT_LINE`,`ROLE_CODE`,`REGION_LEVEL`,`RATE_BP`,`RATE_MODE`)
+SELECT 0,1,'20260828090000',1,'20260828090000',
+       p.ID,s.PRODUCT_LINE,s.ROLE_CODE,s.REGION_LEVEL,s.RATE_BP,s.RATE_MODE
+FROM `ws_split_plan` p
+JOIN (
+  SELECT 'WATER_SALE' PRODUCT_LINE,'WATER_OWNER' ROLE_CODE,'NONE' REGION_LEVEL,5000 RATE_BP,'FIXED' RATE_MODE
+  UNION ALL SELECT 'WATER_SALE','WATER_DIRECT_REFERRER','NONE',500,'FIXED'
+  UNION ALL SELECT 'WATER_SALE','REGION_PROVINCE','PROVINCE',500,'REGIONAL_CUMULATIVE'
+  UNION ALL SELECT 'WATER_SALE','REGION_CITY','CITY',300,'REGIONAL_CUMULATIVE'
+  UNION ALL SELECT 'WATER_SALE','REGION_COUNTY','COUNTY',200,'REGIONAL_CUMULATIVE'
+  UNION ALL SELECT 'DELIVERY_FEE','DELIVERY_COURIER','NONE',9000,'FIXED'
+) s
+WHERE p.PLAN_VERSION='DEMO-D428-V1'
+  AND NOT EXISTS (
+    SELECT 1 FROM `ws_split_plan_item` i
+    WHERE i.PLAN_ID=p.ID AND i.PRODUCT_LINE=s.PRODUCT_LINE AND i.ROLE_CODE=s.ROLE_CODE
+  );

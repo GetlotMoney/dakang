@@ -122,10 +122,6 @@ function handleCardTap() {
     goTo('U10')
   }
 }
-
-function handleFutureEntry(name: string) {
-  toast.show(`${name}暂未开放`)
-}
 </script>
 
 <template>
@@ -310,15 +306,6 @@ function handleFutureEntry(name: string) {
           </view>
           <text class="services__name">
             商城
-          </text>
-        </view>
-        <!-- 健康尚无真实能力，图标用中性底降权，不与已实现入口争视觉权重 -->
-        <view class="services__item pressable" @click="handleFutureEntry('健康')">
-          <view class="services__icon services__icon--muted">
-            <wd-icon name="heart" size="24px" />
-          </view>
-          <text class="services__name">
-            健康
           </text>
         </view>
       </view>

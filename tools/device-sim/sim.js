@@ -95,6 +95,12 @@ client.on('message', (topic, buf) => {
   const cmd = JSON.parse(buf.toString())
   console.log(`[${ts()}] ↓ ${topic}`, buf.toString())
   const { cmdNo, cmdType } = cmd
+  const demoScenario = cmdType === 1 ? (cmd.payload?.demoScenario || 'NORMAL') : 'NORMAL'
+
+  if (demoScenario === 'TIMEOUT') {
+    console.log('  （演示控制：本次设备保持静默，等待平台收敛超时）')
+    return
+  }
 
   if (modes.has('silent')) {
     console.log('  （silent 模式：不回执，等平台 30s 判超时）')
@@ -119,7 +125,10 @@ client.on('message', (topic, buf) => {
       result.reason = '部分出水口执行成功（模拟）'
     }
     // 出水指令附带实际水量；当前模拟器的运维指令不使用该字段。
-    if (cmdType === 1) result.actualMl = 4980
+    if (cmdType === 1) {
+      const planMl = Number(cmd.payload?.planMl || 5000)
+      result.actualMl = demoScenario === 'SHORT' ? Math.max(0, Math.floor(planMl * 0.8)) : 4980
+    }
     if (cmdType === 3) result.status = { onlineStatus: 1, runStatus: modeledRunStatus }
     if (cmdType === 8 && priceVersion) result.priceVersion = priceVersion
     return result
@@ -127,7 +136,7 @@ client.on('message', (topic, buf) => {
   const sendAck = () => {
     // ackCode 必填：平台只认非空 accepted 为已受理，缺省不再兼容为接受（fail-open 已移除）
     const ack = { msgId: nextMsgId(), cmdNo, ackTs: ts(), ackCode: 'accepted' }
-    if (modes.has('reject-ack')) {
+    if (modes.has('reject-ack') || demoScenario === 'REJECT') {
       ack.ackCode = 'rejected'
       ack.reason = '设备拒绝执行（模拟）'
     }
@@ -147,7 +156,7 @@ client.on('message', (topic, buf) => {
   }
 
   sendAck()
-  if (modes.has('reject-ack') || modes.has('busy-ack')) {
+  if (modes.has('reject-ack') || modes.has('busy-ack') || demoScenario === 'REJECT') {
     console.log('  （拒绝/忙 ACK：不再回结果，平台应已按失败终态）')
     return
   }
@@ -193,6 +202,13 @@ client.on('message', (topic, buf) => {
       return
     }
     up('result', result)
+
+    if (demoScenario === 'DUPLICATE') {
+      setTimeout(() => {
+        up('result', result)
+        console.log('  （演示控制：同 msgId 重复上报，平台应按唯一键去重）')
+      }, 700)
+    }
 
     // 锁机建模：锁/解锁成功后运行状态翻转并主动 status 上报（PC/机主端读到一致投影）
     if (modes.has('lock-model') && result.success && (cmdType === 4 || cmdType === 5)) {

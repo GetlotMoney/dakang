@@ -44,8 +44,13 @@ export type RouteId
     | 'O04'
     | 'O05'
     | 'O06'
+    | 'I01'
+    | 'I02'
+    | 'H01'
+    | 'R01'
+    | 'X01'
 
-export type RouteGroup = 'common' | 'user' | 'courier' | 'owner'
+export type RouteGroup = 'common' | 'user' | 'courier' | 'owner' | 'identity' | 'channel' | 'region'
 
 export interface RouteParamContract {
   name: string
@@ -124,6 +129,11 @@ export const appRoutes = [
   // 无分润账户呈现零余额空态，不泄露他人数据。回退目标取「我的」而非机主概览——
   // 非机主进不去 O01，回退到进不去的页面等于把用户困在钱包页。
   { id: 'O06', path: '/pages/owner/wallet/index', title: '收益钱包', group: 'owner', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U03' },
+  { id: 'I01', path: '/pages/identity/index', title: '身份与能力', group: 'identity', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U03' },
+  { id: 'I02', path: '/pages/identity/apply', title: '身份申请', group: 'identity', requiredCapability: 'USER_BASE', params: [{ name: 'type', required: true, values: ['owner', 'channel', 'region'] }], defaultBackTo: 'I01' },
+  { id: 'H01', path: '/pages/channel/overview/index', title: '渠道推广', group: 'channel', requiredCapability: 'CHANNEL_VIEW', params: [], defaultBackTo: 'U01' },
+  { id: 'R01', path: '/pages/region/overview/index', title: '区域运营', group: 'region', requiredCapability: 'REGION_VIEW', params: [], defaultBackTo: 'U01' },
+  { id: 'X01', path: '/pages/demo/control/index', title: '演示控制台', group: 'identity', requiredCapability: 'USER_BASE', params: [], defaultBackTo: 'U03' },
 ] as const satisfies readonly AppRouteContract[]
 
 export interface ParsedRouteLocation {

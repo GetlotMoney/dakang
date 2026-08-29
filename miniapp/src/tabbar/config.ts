@@ -7,6 +7,8 @@ export interface TabbarItem {
   text: string
   pagePath: string
   icon: string
+  iconPath: string
+  selectedIconPath: string
 }
 
 export const tabbarItems: TabbarItem[] = [
@@ -15,31 +17,34 @@ export const tabbarItems: TabbarItem[] = [
     text: '首页',
     pagePath: '/pages/user/home/index',
     icon: 'home',
+    iconPath: 'static/tabbar/home.png',
+    selectedIconPath: 'static/tabbar/home-active.png',
   },
   {
     name: 'order',
     text: '订单',
     pagePath: '/pages/user/order/index',
-    icon: 'cart',
+    icon: 'list',
+    iconPath: 'static/tabbar/order.png',
+    selectedIconPath: 'static/tabbar/order-active.png',
   },
   {
     name: 'profile',
     text: '我的',
     pagePath: '/pages/user/profile/index',
-    icon: 'user',
+    icon: 'user-circle',
+    iconPath: 'static/tabbar/profile.png',
+    selectedIconPath: 'static/tabbar/profile-active.png',
   },
 ]
 
 /**
- * 原生 tabBar 声明。`custom: true` 下微信不渲染它，可见的是 tabbar/index.vue 的 wd-tabbar，
- * 因此下面的配色**改了也不会影响线上观感**——真正生效的是 style/index.scss 里的
- * `--wot-tabbar-*` 变量。此处仍与品牌 token 对齐，是为了让 `list` 之外的字段不再自述一套
- * 早已作废的旧色（selectedColor 长期写着 #5D87FF，与主色 #2E7CF6 不是一个值），
- * 避免后来者据此推断线上颜色，或在关掉 custom 时突然掉色。
+ * 微信小程序使用原生 Tabbar，优先保证三个主入口稳定存在；图标与选中图标均为本地 PNG，
+ * 不再退化成只有三个小字。H5 等非微信端仍可复用 tabbar/index.vue 的 Wot Tabbar。
  * `list` 不可删：switchTab 依赖它做路由登记。
  */
 export const tabBar: TabBar = {
-  custom: true,
+  custom: false,
   color: '#646A73',
   selectedColor: '#2E7CF6',
   backgroundColor: '#FFFFFF',
@@ -47,5 +52,7 @@ export const tabBar: TabBar = {
   list: tabbarItems.map(item => ({
     pagePath: item.pagePath.slice(1),
     text: item.text,
+    iconPath: item.iconPath,
+    selectedIconPath: item.selectedIconPath,
   })) as TabBar['list'],
 }

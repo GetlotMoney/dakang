@@ -67,7 +67,7 @@ public interface WsRefundEventMapper extends BaseMapper<WsRefundEvent> {
 
     /** 事实落非成功态：4待重试 或 5需对账。只允许从 2处理中 出发，否则迟到失败判定会把已处理(3)的事实拖回重试、重复消费。 */
     @Update("UPDATE ws_refund_event SET PROCESSING_STATUS = #{toStatus}, NEXT_RETRY_TIME = #{nextRetryTime}, "
-            + "LEASE_UNTIL = NULL, LAST_ERROR = #{lastError}, "
+            + "LEASE_UNTIL = NULL, LAST_ERROR = LEFT(#{lastError}, 500), "
             + "UPDATE_BY = #{opUserId}, UPDATE_TIME = #{now} "
             + "WHERE ID = #{id} AND PROCESSING_STATUS = 2 AND DATA_STATUS = 0")
     int park(@Param("id") Long id,

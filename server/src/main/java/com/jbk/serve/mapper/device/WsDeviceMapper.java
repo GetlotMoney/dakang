@@ -5,6 +5,7 @@ import com.jbk.tool.data.device.po.WsDevice;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 /**
  * 设备 Mapper
@@ -27,4 +28,24 @@ public interface WsDeviceMapper extends BaseMapper<WsDevice> {
      */
     @Select("SELECT * FROM ws_device WHERE ID = #{deviceId} AND DATA_STATUS = 0 FOR UPDATE")
     WsDevice selectByIdForUpdate(@Param("deviceId") Long deviceId);
+
+    /**
+     * 老板测试环境按水站统一设备机主归属。
+     *
+     * <p>使用显式 SQL 是为了让演示初始化器不依赖 MyBatis-Plus Lambda 元数据缓存的
+     * 初始化顺序；完整 Spring 容器和独立单测因此执行同一条更新语义。</p>
+     */
+    @Update("""
+            UPDATE ws_device
+               SET OWNER_USER_ID = #{ownerUserId},
+                   UPDATE_BY = #{actorId},
+                   UPDATE_TIME = #{now}
+             WHERE STATION_ID = #{stationId}
+               AND DATA_STATUS = 0
+               AND (OWNER_USER_ID IS NULL OR OWNER_USER_ID <> #{ownerUserId})
+            """)
+    int assignOwnerByStation(@Param("stationId") Long stationId,
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("actorId") Long actorId,
+            @Param("now") String now);
 }

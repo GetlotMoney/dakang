@@ -4,6 +4,7 @@ import type { OrderStatus } from './order'
 import { ContractError } from './common'
 import { withRealSession } from './real-session'
 import { post } from './request'
+import { isDemoMode } from './runtime'
 
 export type PayStatus = 1 | 2 | 3 | 4
 
@@ -265,6 +266,9 @@ const realRechargeApi: RechargeApi = {
     })
   },
   async simulatePay(orderNo) {
+    if (!isDemoMode()) {
+      throw new ContractError('PAY_SIM_DISABLED', '当前版本不允许模拟支付')
+    }
     return withRealSession(async () => {
       const raw = await post<Record<string, unknown>>(rechargeEndpoints.paySim, { orderNo })
       return {

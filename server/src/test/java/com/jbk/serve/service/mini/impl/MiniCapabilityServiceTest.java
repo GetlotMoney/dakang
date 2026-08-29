@@ -2,6 +2,7 @@ package com.jbk.serve.service.mini.impl;
 
 import com.jbk.serve.mapper.device.WsDeviceMapper;
 import com.jbk.serve.mapper.station.WsStationMapper;
+import com.jbk.serve.mapper.identity.WsIdentityProfileMapper;
 import com.jbk.serve.mapper.user.WsCourierMapper;
 import com.jbk.tool.data.user.po.WsCourier;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,6 +26,7 @@ class MiniCapabilityServiceTest {
     private WsCourierMapper courierMapper;
     private WsDeviceMapper deviceMapper;
     private WsStationMapper stationMapper;
+    private WsIdentityProfileMapper identityProfileMapper;
     private MiniCapabilityServiceImpl service;
 
     @BeforeEach
@@ -32,7 +34,8 @@ class MiniCapabilityServiceTest {
         courierMapper = Mockito.mock(WsCourierMapper.class);
         deviceMapper = Mockito.mock(WsDeviceMapper.class);
         stationMapper = Mockito.mock(WsStationMapper.class);
-        service = new MiniCapabilityServiceImpl(courierMapper, deviceMapper, stationMapper);
+        identityProfileMapper = Mockito.mock(WsIdentityProfileMapper.class);
+        service = new MiniCapabilityServiceImpl(courierMapper, deviceMapper, stationMapper, identityProfileMapper);
     }
 
     private WsCourier courier(int status) {

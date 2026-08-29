@@ -41,6 +41,9 @@ public class MiniWalletVo implements Serializable {
     @Schema(description = "近 50 条收益流水（倒序）")
     private List<Flow> flows;
 
+    @Schema(description = "按身份职责拆分的累计已入账与在途收益；可用余额仍由同一账户统一提现")
+    private List<RoleSummary> roleSummaries;
+
     @Schema(description = "证据模式：real=真实库账务")
     private String evidenceMode;
 
@@ -66,5 +69,24 @@ public class MiniWalletVo implements Serializable {
 
         @Schema(description = "时间")
         private String createTime;
+
+        @Schema(description = "来源收款方类型(1377)：1机主 2配送员 5商务推广 6区域代理；提现类流水为空")
+        private Integer receiverType;
+    }
+
+    @Getter
+    @Setter
+    @Accessors(chain = true)
+    public static class RoleSummary implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        @Schema(description = "收款方类型(1377)：1机主 2配送员 5商务推广 6区域代理")
+        private Integer receiverType;
+
+        @Schema(description = "该职责累计已入账净收益(分)，不扣除后续提现")
+        private Long settledFen;
+
+        @Schema(description = "该职责冻结期内在途收益(分)")
+        private Long pendingFen;
     }
 }

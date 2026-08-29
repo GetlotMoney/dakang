@@ -40,6 +40,7 @@ REDIS_PWD="${DAKANG_ACC_REDIS_PASSWORD}"
 DB_NAME="dakang"
 BACKEND_PORT=13340
 RUN_DIR="${SCRIPT_DIR}/.run"
+BASELINE_DUMP="${RUN_DIR}/baseline.sql"
 JAR="${REPO_ROOT}/server/target/dakang-server.jar"
 SIM="${REPO_ROOT}/tools/device-sim/sim.js"
 
@@ -55,19 +56,20 @@ acc_mysql() {
 wait_mysql_ready() {
   # 就绪判据：正式实例（TCP）可查询 + 底座表已由 init SQL 建出。
   echo "等待验收 MySQL 就绪（init SQL 执行完毕 + 正式实例监听 TCP）..."
-  for i in $(seq 1 120); do
+  for i in $(seq 1 180); do
     if acc_mysql -e "SELECT 1 FROM ${DB_NAME}.api_employee LIMIT 1" >/dev/null 2>&1; then
       echo "验收 MySQL 就绪。"
       return 0
     fi
     sleep 2
   done
-  echo "错误：验收 MySQL 120 次探测内未就绪" >&2
+  echo "错误：验收 MySQL 180 次探测内未就绪" >&2
   return 1
 }
 
 cmd_up() {
-  "${COMPOSE[@]}" up -d
+  # 空库阶段只启动基础设施；迁移和验收种子完成前不得让后端抢先连接半初始化数据库。
+  "${COMPOSE[@]}" up -d mysql redis emqx
   wait_mysql_ready
 }
 
@@ -100,16 +102,34 @@ cmd_rebuild() {
   echo "验收库重建完成（init + migrations + seed）。"
 }
 
+cmd_snapshot() {
+  echo "保存验收基线快照（init + migrations + acc-seed）"
+  docker exec "${MYSQL_CONTAINER}" mysqldump -uroot -p"${MYSQL_PWD}" \
+    --single-transaction --routines --triggers --set-gtid-purged=OFF --databases "${DB_NAME}" \
+    > "${BASELINE_DUMP}"
+  test -s "${BASELINE_DUMP}" || { echo "错误：验收基线快照为空" >&2; exit 1; }
+  docker cp "${BASELINE_DUMP}" "${MYSQL_CONTAINER}:/tmp/dakang-acc-baseline.sql" >/dev/null
+  echo "验收基线快照已保存：${BASELINE_DUMP}"
+}
+
+cmd_restore() {
+  test -s "${BASELINE_DUMP}" || { echo "错误：缺少验收基线快照，先执行 rebuild && snapshot" >&2; exit 1; }
+  cmd_backend_stop
+  cmd_sim_stop
+  echo "恢复验收基线快照（仅 dakang-acc-mysql:3309）"
+  acc_mysql -e "DROP DATABASE IF EXISTS ${DB_NAME};"
+  docker cp "${BASELINE_DUMP}" "${MYSQL_CONTAINER}:/tmp/dakang-acc-baseline.sql" >/dev/null
+  docker exec -e MYSQL_PWD="${MYSQL_PWD}" "${MYSQL_CONTAINER}" \
+    sh -c 'mysql -h127.0.0.1 -uroot --default-character-set=utf8mb4 < /tmp/dakang-acc-baseline.sql'
+  docker exec dakang-acc-redis redis-cli -a "${REDIS_PWD}" FLUSHALL >/dev/null
+  echo "验收基线恢复完成。"
+}
+
 cmd_backend_start() {
   if [ ! -f "${JAR}" ]; then
     echo "错误：缺少 ${JAR}；先执行 cd server && mvn -DskipTests package" >&2
     exit 1
   fi
-  if [ -f "${RUN_DIR}/backend.pid" ] && kill -0 "$(cat "${RUN_DIR}/backend.pid")" 2>/dev/null; then
-    echo "验收后端已在运行（pid $(cat "${RUN_DIR}/backend.pid")）"
-    return 0
-  fi
-  export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
   # 与生产同 profile；数据源/Redis/MQTT/端口/开关全部指向验收容器（命令行参数优先级最高）。
   # Refund-Sim 与 Pay-Sim 是**两个独立开关**：退款是出账，比收款危险一个量级，
   # 任何为了跑通支付而开模拟的环境不该连模拟退款一起打开。验收环境两者都要开，
@@ -126,37 +146,10 @@ cmd_backend_start() {
   # mini.test-login.enabled；演示与生产一律缺省 false（它凭手机号即可取得完整会话）。
   # 设备监控关闭：验收场景不依赖离线/超时兜底，
   # 且避免无模拟器的 ACC-DEV-0002 在长跑中被翻离线，污染 S6「因范围被拒」的语义。
-  TZ=Asia/Shanghai nohup "${JAVA_HOME}/bin/java" -Xms256m -Xmx512m -Dfile.encoding=UTF-8 \
-    -jar "${JAR}" \
-    --spring.profiles.active=prod \
-    --server.port="${BACKEND_PORT}" \
-    --spring.datasource.druid.url="jdbc:mysql://127.0.0.1:3309/${DB_NAME}?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=UTC&nullCatalogMeansCurrent=true" \
-    --spring.datasource.druid.username=root \
-    --spring.datasource.druid.password="${MYSQL_PWD}" \
-    --spring.redis.host=127.0.0.1 \
-    --spring.redis.port=6381 \
-    --spring.redis.password="${REDIS_PWD}" \
-    --spring.ratelimiter.redis-address=redis://127.0.0.1:6381 \
-    --spring.ratelimiter.redis-password="${REDIS_PWD}" \
-    --mqtt.enabled=true \
-    --mqtt.broker-url=tcp://127.0.0.1:1884 \
-    --mqtt.client-id=dakang-server-acc \
-    --mini.pay-sim.enabled=true \
-    --mini.test-login.enabled=true \
-    --mini.refund-sim.enabled=true \
-    --mall.pay-sim.enabled=true \
-    --mall.refund-sim.enabled=true \
-    --mall.logistics-sim.enabled=true \
-    --mall.logistics-outbox.fixed-delay="${ACC_LOGISTICS_OUTBOX_DELAY:-5000}" \
-    --mall.logistics-outbox.initial-delay="${ACC_LOGISTICS_OUTBOX_INITIAL_DELAY:-5000}" \
-    --delivery.auto-refill.enabled="${ACC_AUTO_REFILL_ENABLED:-false}" \
-    --delivery.auto-refill.fixed-delay="${ACC_AUTO_REFILL_FIXED_DELAY:-300000}" \
-    --delivery.auto-refill.initial-delay="${ACC_AUTO_REFILL_INITIAL_DELAY:-60000}" \
-    --dakang.device.monitor-enabled="${ACC_MONITOR_ENABLED:-false}" \
-    --dakang.device.control-ticket-ttl-seconds="${ACC_CONTROL_TICKET_TTL:-120}" \
-    > "${RUN_DIR}/backend.log" 2>&1 &
-  echo $! > "${RUN_DIR}/backend.pid"
-  echo "验收后端启动中（pid $(cat "${RUN_DIR}/backend.pid")），等待端口 ${BACKEND_PORT} ..."
+  "${COMPOSE[@]}" up -d --force-recreate backend
+  echo "dakang-acc-server" > "${RUN_DIR}/backend.container"
+  rm -f "${RUN_DIR}/backend.pid"
+  echo "验收后端容器启动中，等待端口 ${BACKEND_PORT} ..."
   for i in $(seq 1 90); do
     local code
     code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/dakangApi/mini/package/list" -H 'Content-Type: application/json' -d '{}' || true)"
@@ -171,11 +164,9 @@ cmd_backend_start() {
 }
 
 cmd_backend_stop() {
-  if [ -f "${RUN_DIR}/backend.pid" ]; then
-    kill "$(cat "${RUN_DIR}/backend.pid")" 2>/dev/null || true
-    rm -f "${RUN_DIR}/backend.pid"
-    echo "验收后端已停止。"
-  fi
+  "${COMPOSE[@]}" stop backend >/dev/null 2>&1 || true
+  rm -f "${RUN_DIR}/backend.pid" "${RUN_DIR}/backend.container"
+  echo "验收后端已停止。"
 }
 
 # sim-start [deviceNo] [模式...]：默认 ACC-DEV-0001 正常模式（心跳+遥测+ack/result，
@@ -216,7 +207,12 @@ cmd_sim_stop() {
 
 cmd_status() {
   "${COMPOSE[@]}" ps
-  for name in backend sim; do
+  if docker inspect -f '{{.State.Running}}' dakang-acc-server 2>/dev/null | grep -q true; then
+    echo "backend: 容器运行中（dakang-acc-server）"
+  else
+    echo "backend: 未运行"
+  fi
+  for name in sim; do
     if [ -f "${RUN_DIR}/${name}.pid" ] && kill -0 "$(cat "${RUN_DIR}/${name}.pid")" 2>/dev/null; then
       echo "${name}: 运行中（pid $(cat "${RUN_DIR}/${name}.pid")）"
     else
@@ -231,13 +227,15 @@ case "${1:-}" in
   migrate)       cmd_migrate ;;
   seed)          cmd_seed ;;
   rebuild)       cmd_rebuild ;;
+  snapshot)      cmd_snapshot ;;
+  restore)       cmd_restore ;;
   backend-start) cmd_backend_start ;;
   backend-stop)  cmd_backend_stop ;;
   sim-start)     shift; cmd_sim_start "$@" ;;
   sim-stop)      shift; cmd_sim_stop "$@" ;;
   status)        cmd_status ;;
   *)
-    echo "用法：$0 <rebuild|up|down|migrate|seed|backend-start|backend-stop|sim-start|sim-stop|status>"
+    echo "用法：$0 <rebuild|snapshot|restore|up|down|migrate|seed|backend-start|backend-stop|sim-start|sim-stop|status>"
     echo "  rebuild        每轮验收前重建验收库（down -v → up → init 等待 → migrations → seed）"
     echo "  backend-start  以验收数据源/Redis/EMQX + Pay-Sim 开启启动后端（端口 ${BACKEND_PORT}）"
     echo "  sim-start      启动 tools/device-sim（默认 ACC-DEV-0001；可带设备号与模式参数，连验收 EMQX 1884）"

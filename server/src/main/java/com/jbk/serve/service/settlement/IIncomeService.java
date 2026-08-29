@@ -34,6 +34,12 @@ public interface IIncomeService extends IService<WsIncomeAccount> {
     void applyWithdraw(Long userId, long amountFen, String requestId);
 
     /**
+     * 演示出金完成：必须锚定既有 WITHDRAW 冻结流水，原子减少冻结额并写
+     * WITHDRAW-DONE 幂等流水；不接触真实支付通道。
+     */
+    void completeWithdrawSimulated(Long userId, long amountFen, String requestId);
+
+    /**
      * 提现驳回（PC 审核骨架）：冻结 CAS 回可用 + 流水(5驳回解冻) + 审计。
      * 审核通过（真实出金）属外部能力，本期不提供通过路径。
      */

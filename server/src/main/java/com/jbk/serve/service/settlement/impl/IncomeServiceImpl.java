@@ -10,6 +10,7 @@ import com.jbk.tool.consts.settlement.SettlementEnum;
 import com.jbk.tool.utils.DateUtils;
 import com.jbk.tool.data.settlement.po.WsIncomeAccount;
 import com.jbk.tool.data.settlement.po.WsIncomeFlow;
+import com.jbk.tool.data.settlement.po.WsSplitRecord;
 import com.jbk.tool.data.mini.vo.MiniWalletVo;
 import com.jbk.tool.exception.JbkException;
 import lombok.extern.slf4j.Slf4j;
@@ -19,6 +20,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 收益账户服务实现。加入调用方事务（Worker 的推进事务）：入账失败整体回滚，
@@ -126,6 +130,11 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
                         .eq(WsIncomeFlow::getUserId, userId)
                         .orderByDesc(WsIncomeFlow::getId)
                         .last("LIMIT 50"));
+        List<Long> splitIds = flows.stream().map(WsIncomeFlow::getSplitId)
+                .filter(ObjectUtil::isNotNull).distinct().toList();
+        Map<Long, WsSplitRecord> splitById = splitIds.isEmpty() ? Map.of()
+                : splitRecordMapper.selectBatchIds(splitIds).stream()
+                .collect(Collectors.toMap(WsSplitRecord::getId, Function.identity()));
         // D-421 在途分润（R1-P2 整改）：SUM/MIN 下沉 SQL 聚合，不把全部行拉进 JVM——
         // 旧写法全表扫描且随全平台分账量退化（复验 EXPLAIN type=ALL 实测）。只聚合
         // SPLIT_AMOUNT>0：零元行不计在途、不许把最早解冻时间提前。平台行
@@ -155,12 +164,20 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
                 .setClawbackDeficitFen(deficitFen)
                 .setPendingSplitFen(pendingFen)
                 .setEarliestUnfreezeTime(earliestUnfreeze)
+                .setRoleSummaries(splitRecordMapper.aggregateRoleIncomeByReceiver(userId).stream()
+                        .map(row -> new MiniWalletVo.RoleSummary()
+                                .setReceiverType(row.getReceiverType())
+                                .setSettledFen(ObjectUtil.defaultIfNull(row.getSettledFen(), 0L))
+                                .setPendingFen(ObjectUtil.defaultIfNull(row.getPendingFen(), 0L)))
+                        .toList())
                 .setFlows(flows.stream().map(flow -> new MiniWalletVo.Flow()
                         .setFlowType(flow.getFlowType())
                         .setAmountFen(flow.getAmountFen())
                         .setAfterFen(flow.getAfterFen())
                         .setOrderNo(flow.getOrderNo())
-                        .setCreateTime(flow.getCreateTime())).toList())
+                        .setCreateTime(flow.getCreateTime())
+                        .setReceiverType(flow.getSplitId() == null || splitById.get(flow.getSplitId()) == null
+                                ? null : splitById.get(flow.getSplitId()).getReceiverType())).toList())
                 .setEvidenceMode("real");
     }
 
@@ -223,6 +240,51 @@ public class IncomeServiceImpl extends ServiceImpl<WsIncomeAccountMapper, WsInco
         if (!updated) {
             // CAS 输了整体回滚（含刚插的流水）：让用户重试，绝不出现半迁移
             throw new JbkException("余额并发变动，请重试提现");
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void completeWithdrawSimulated(Long userId, long amountFen, String requestId) {
+        if (amountFen <= 0 || StrUtilLike.isBlankUuid(requestId)) {
+            throw new JbkException("模拟出金参数不合法");
+        }
+        String doneKey = "WITHDRAW-DONE:" + requestId;
+        if (ObjectUtil.isNotNull(flowByKey(doneKey))) {
+            requireSameReplay(doneKey, userId, -amountFen, "模拟出金完成");
+            return;
+        }
+        WsIncomeFlow freeze = flowByKey("WITHDRAW:" + requestId);
+        if (ObjectUtil.isNull(freeze) || ObjectUtil.notEqual(freeze.getUserId(), userId)
+                || freeze.getAmountFen() != -amountFen) {
+            throw new JbkException("模拟出金与原提现冻结事实不一致");
+        }
+        WsIncomeAccount account = baseMapper.selectByUserIdForUpdate(userId);
+        if (ObjectUtil.isNull(account) || account.getFrozenFen() < amountFen) {
+            throw new JbkException("提现冻结余额不足，无法完成模拟出金");
+        }
+        WsIncomeFlow done = new WsIncomeFlow()
+                .setUserId(userId)
+                .setFlowType(SettlementEnum.IncomeFlowType.WITHDRAW_DONE.getValue())
+                .setAmountFen(-amountFen)
+                .setAfterFen(account.getBalanceFen())
+                .setBizIdempotencyKey(doneKey)
+                .setFlowRemark("演示环境模拟打款完成（不触发真实出金）");
+        try {
+            flowMapper.insert(done);
+        }
+        catch (DuplicateKeyException e) {
+            requireSameReplay(doneKey, userId, -amountFen, "模拟出金完成");
+            return;
+        }
+        boolean updated = update(Wrappers.lambdaUpdate(WsIncomeAccount.class)
+                .eq(WsIncomeAccount::getId, account.getId())
+                .eq(WsIncomeAccount::getFrozenFen, account.getFrozenFen())
+                .eq(WsIncomeAccount::getVersion, account.getVersion())
+                .set(WsIncomeAccount::getFrozenFen, account.getFrozenFen() - amountFen)
+                .set(WsIncomeAccount::getVersion, account.getVersion() + 1));
+        if (!updated) {
+            throw new JbkException("账户并发变动，请重试模拟出金");
         }
     }
 

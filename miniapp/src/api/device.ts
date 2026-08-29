@@ -204,6 +204,14 @@ export interface OwnerWalletFlow {
   afterFen: number
   orderNo?: string
   createTime?: BusinessTime
+  /** 分账来源职责；提现类流水为空。 */
+  receiverType?: number
+}
+
+export interface OwnerWalletRoleSummary {
+  receiverType: number
+  settledFen: number
+  pendingFen: number
 }
 
 /** 机主收益钱包（E2E-08 / REQ-072）：分润净额账务口径，与经营毛额（OwnerOverview）并存不互改。 */
@@ -217,6 +225,8 @@ export interface OwnerWallet {
   /** 最早一笔在途分润的预计解冻时间；无在途时缺省。 */
   earliestUnfreezeTime?: BusinessTime
   flows: OwnerWalletFlow[]
+  /** 统一钱包下的身份收益来源拆分；不等于多个可提现余额。 */
+  roleSummaries: OwnerWalletRoleSummary[]
 }
 
 export interface DeviceApi {
@@ -411,6 +421,7 @@ const realDeviceApi: DeviceApi = {
         pendingSplitFen?: unknown
         earliestUnfreezeTime?: unknown
         flows?: Array<Record<string, unknown>>
+        roleSummaries?: Array<Record<string, unknown>>
       }>(
         deviceEndpoints.ownerWallet,
         {},
@@ -439,12 +450,18 @@ const realDeviceApi: DeviceApi = {
         earliestUnfreezeTime: typeof raw.earliestUnfreezeTime === 'string'
           ? raw.earliestUnfreezeTime as BusinessTime
           : undefined,
+        roleSummaries: (raw.roleSummaries ?? []).map(row => ({
+          receiverType: toNonNegativeFen(row.receiverType),
+          settledFen: toNonNegativeFen(row.settledFen),
+          pendingFen: toNonNegativeFen(row.pendingFen),
+        })),
         flows: (raw.flows ?? []).map(row => ({
           flowType: toNonNegativeFen(row.flowType),
           amountFen: toSafeInt(row.amountFen),
           afterFen: toSafeInt(row.afterFen),
           orderNo: typeof row.orderNo === 'string' ? row.orderNo : undefined,
           createTime: typeof row.createTime === 'string' ? row.createTime as BusinessTime : undefined,
+          receiverType: row.receiverType == null ? undefined : toNonNegativeFen(row.receiverType),
         })),
       }
     })

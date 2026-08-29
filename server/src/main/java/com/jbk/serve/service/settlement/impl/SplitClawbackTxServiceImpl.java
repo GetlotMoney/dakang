@@ -103,12 +103,16 @@ public class SplitClawbackTxServiceImpl implements ISplitClawbackTxService {
             return;
         }
         WsSplitClawbackAction outbox = new WsSplitClawbackAction()
+                .setDataStatus(0)
+                .setCreateBy(0L)
+                .setCreateTime(now)
+                .setUpdateBy(0L)
+                .setUpdateTime(now)
                 .setActionId(action.getId())
                 .setOrderId(action.getOrderId())
                 .setActionType(action.getActionType())
                 .setRefundProductFen(refundFen)
-                .setOutboxStatus(SettlementEnum.ClawbackStatus.PENDING.getValue())
-                .setCreateTime(now);
+                .setOutboxStatus(SettlementEnum.ClawbackStatus.PENDING.getValue());
         try {
             actionOutboxMapper.insert(outbox);
         }

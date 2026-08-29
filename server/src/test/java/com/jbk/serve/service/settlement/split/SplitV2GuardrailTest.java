@@ -114,17 +114,31 @@ class SplitV2GuardrailTest {
                 "SplitCalcInput 不再含 regionChain，本护栏的前提已变，需重新评审 D-406 落码方式");
     }
 
-    /** 任务书 5.1：正式比例未确认前，任何种子文件不得插入计划行。 */
+    /** D-428：正式比例已确认，初始化、领域 SQL 与在库迁移必须同为一套整版计划。 */
     @Test
-    void noSeedPlanAnywhere() throws IOException {
+    void d428SeedPlanMatchesAcrossAllTracks() throws IOException {
+        String oldMigration = read("deploy/mysql/migrations/2026-08-06-split-v2-s1.sql").toUpperCase();
+        assertFalse(oldMigration.contains("INSERT INTO `WS_SPLIT_PLAN")
+                        || oldMigration.contains("INSERT IGNORE INTO `WS_SPLIT_PLAN"),
+                "S1 历史迁移只建模型，不得被回写正式计划；现有库走新的 D-428 幂等迁移");
         for (String sql : new String[] {
-                "deploy/mysql/migrations/2026-08-06-split-v2-s1.sql",
                 "deploy/mysql/init/02-ws-business.sql",
-                "server/sql/ws_trade.sql" }) {
-            String body = read(sql).toUpperCase();
-            assertFalse(body.contains("INSERT INTO `WS_SPLIT_PLAN")
-                            || body.contains("INSERT IGNORE INTO `WS_SPLIT_PLAN"),
-                    sql + " 出现计划种子——会议中的比例全部是讨论示例，正式参数待甲方书面确认");
+                "server/sql/ws_trade.sql",
+                "deploy/mysql/migrations/2026-08-28-demo-full-mode-repair.sql" }) {
+            String body = read(sql);
+            assertTrue(body.contains("'DEMO-D428-V1'"), sql + " 缺少 D-428 整版计划版本锚");
+            assertTrue(body.contains("'WATER_OWNER' ROLE_CODE,'NONE' REGION_LEVEL,5000 RATE_BP"),
+                    sql + " 水站比例不是50%");
+            assertTrue(body.contains("'WATER_DIRECT_REFERRER','NONE',500,'FIXED'"),
+                    sql + " 商务推广比例不是5%");
+            assertTrue(body.contains("'REGION_PROVINCE','PROVINCE',500,'REGIONAL_CUMULATIVE'"),
+                    sql + " 省级累计比例不是5%");
+            assertTrue(body.contains("'REGION_CITY','CITY',300,'REGIONAL_CUMULATIVE'"),
+                    sql + " 市级累计比例不是3%");
+            assertTrue(body.contains("'REGION_COUNTY','COUNTY',200,'REGIONAL_CUMULATIVE'"),
+                    sql + " 区县累计比例不是2%");
+            assertTrue(body.contains("'DELIVERY_FEE','DELIVERY_COURIER','NONE',9000,'FIXED'"),
+                    sql + " 配送员比例不是90%");
         }
     }
 

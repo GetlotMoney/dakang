@@ -86,10 +86,11 @@ import static org.junit.jupiter.api.Assertions.fail;
 class SplitClawbackProductionChainDbTest {
 
     @Container
-    static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0")
+    static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0.39")
             .withDatabaseName("it")
             .withUsername("root")
             .withPassword("ittest")
+            .withStartupTimeoutSeconds(300)
             .withCommand("--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci");
 
     private static final long USER_ID = 9L;

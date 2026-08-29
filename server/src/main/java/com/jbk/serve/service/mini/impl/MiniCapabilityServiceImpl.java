@@ -33,6 +33,7 @@ public class MiniCapabilityServiceImpl implements IMiniCapabilityService {
     private final WsCourierMapper courierMapper;
     private final WsDeviceMapper deviceMapper;
     private final WsStationMapper stationMapper;
+    private final com.jbk.serve.mapper.identity.WsIdentityProfileMapper identityProfileMapper;
 
     @Override
     public List<String> capabilitiesOf(Long userId) {
@@ -60,6 +61,18 @@ public class MiniCapabilityServiceImpl implements IMiniCapabilityService {
         if (ownsDevice || ownsStation) {
             capabilities.add("OWNER_VIEW");
             capabilities.add("OWNER_SERVICE");
+        }
+        java.util.List<com.jbk.tool.data.identity.po.WsIdentityProfile> profiles = identityProfileMapper.selectList(
+                Wrappers.lambdaQuery(com.jbk.tool.data.identity.po.WsIdentityProfile.class)
+                        .eq(com.jbk.tool.data.identity.po.WsIdentityProfile::getUserId, userId)
+                        .eq(com.jbk.tool.data.identity.po.WsIdentityProfile::getProfileStatus, 1));
+        for (com.jbk.tool.data.identity.po.WsIdentityProfile profile : profiles) {
+            if (ObjectUtil.equal(profile.getCapabilityType(), 3)) {
+                capabilities.add("CHANNEL_VIEW");
+            }
+            if (ObjectUtil.equal(profile.getCapabilityType(), 4)) {
+                capabilities.add("REGION_VIEW");
+            }
         }
         return capabilities;
     }

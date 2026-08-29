@@ -24,7 +24,7 @@ name: dakang-acc
 
 services:
   mysql:
-    image: mysql:8.0
+    image: mysql:8.0.39
     container_name: dakang-acc-mysql
     command:
       - mysqld
@@ -46,7 +46,9 @@ services:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
       timeout: 4s
-      retries: 30
+      retries: 60
+      # Windows Docker Desktop 的 MySQL 8.0.46 空卷初始化实测约 3 分钟；宽限不足会把正常初始化误判为失败。
+      start_period: 300s
 
   redis:
     image: redis:7-alpine
@@ -71,6 +73,74 @@ services:
       interval: 10s
       timeout: 10s
       retries: 12
+
+  backend:
+    image: eclipse-temurin:17-jre
+    container_name: dakang-acc-server
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      emqx:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      DAKANG_DB_USERNAME: root
+      DAKANG_DB_PASSWORD: ${DAKANG_ACC_DB_PASSWORD:?set DAKANG_ACC_DB_PASSWORD in .env}
+      DAKANG_REDIS_PASSWORD: ${DAKANG_ACC_REDIS_PASSWORD:?set DAKANG_ACC_REDIS_PASSWORD in .env}
+      DAKANG_JWT_SECRET: ${DAKANG_JWT_SECRET:?set DAKANG_JWT_SECRET in .env}
+      DAKANG_RSA_PRIVATE_KEY: ${DAKANG_RSA_PRIVATE_KEY:?set DAKANG_RSA_PRIVATE_KEY in .env}
+      DAKANG_RSA_PUBLIC_KEY: ${DAKANG_RSA_PUBLIC_KEY:?set DAKANG_RSA_PUBLIC_KEY in .env}
+      DAKANG_MQTT_USERNAME: ""
+      DAKANG_MQTT_PASSWORD: ""
+    volumes:
+      - ../../server/target/dakang-server.jar:/app/app.jar:ro
+      - ./.run/data:/app/data
+    command:
+      - java
+      - -Xms256m
+      - -Xmx512m
+      - -Dfile.encoding=UTF-8
+      - -jar
+      - /app/app.jar
+      - --spring.profiles.active=prod
+      - --server.port=13340
+      - --spring.datasource.druid.url=jdbc:mysql://mysql:3306/dakang?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=UTC&nullCatalogMeansCurrent=true
+      - --spring.datasource.druid.username=root
+      - --spring.datasource.druid.password=${DAKANG_ACC_DB_PASSWORD}
+      - --spring.redis.host=redis
+      - --spring.redis.port=6379
+      - --spring.redis.password=${DAKANG_ACC_REDIS_PASSWORD}
+      - --spring.ratelimiter.redis-address=redis://redis:6379
+      - --spring.ratelimiter.redis-password=${DAKANG_ACC_REDIS_PASSWORD}
+      - --mqtt.enabled=true
+      - --mqtt.broker-url=tcp://emqx:1883
+      - --mqtt.client-id=dakang-server-acc
+      - --mini.pay-sim.enabled=true
+      - --mini.test-login.enabled=true
+      - --mini.refund-sim.enabled=true
+      - --mall.pay-sim.enabled=true
+      - --mall.refund-sim.enabled=true
+      - --mall.logistics-sim.enabled=true
+      - --mall.logistics-outbox.fixed-delay=${ACC_LOGISTICS_OUTBOX_DELAY:-5000}
+      - --mall.logistics-outbox.initial-delay=${ACC_LOGISTICS_OUTBOX_INITIAL_DELAY:-5000}
+      - --delivery.auto-refill.enabled=${ACC_AUTO_REFILL_ENABLED:-false}
+      - --delivery.auto-refill.fixed-delay=${ACC_AUTO_REFILL_FIXED_DELAY:-300000}
+      - --delivery.auto-refill.initial-delay=${ACC_AUTO_REFILL_INITIAL_DELAY:-60000}
+      - --delivery.demo-sim.enabled=false
+      - --demo-simulation.enabled=${ACC_DEMO_SIMULATION_ENABLED:-false}
+      - --settlement.split-freeze-days=0
+      - --dakang.device.monitor-enabled=${ACC_MONITOR_ENABLED:-false}
+      - --dakang.device.control-ticket-ttl-seconds=${ACC_CONTROL_TICKET_TTL:-120}
+    ports:
+      - "127.0.0.1:13340:13340"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/13340"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 45s
 
 volumes:
   dakang-acc-mysql-data:

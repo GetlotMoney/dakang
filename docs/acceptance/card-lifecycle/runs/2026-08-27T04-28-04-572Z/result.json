@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "batchId": "2026-08-27T04-28-04-572Z",
+  "round": "unlabeled",
+  "createdAt": "2026-08-27T04:28:28.656Z",
+  "envFingerprint": {
+    "base": "http://127.0.0.1:13340/dakangApi",
+    "dbHost": "127.0.0.1",
+    "dbPort": 3309,
+    "dbName": "dakang",
+    "round": "unlabeled",
+    "seedSentinel": true,
+    "paySimGateOpen": true
+  },
+  "scriptSha256": "7f5b0bdca10b69e8b6767cc61c3a20947a183da5469697665cfd07c8577546b7",
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "首次购卡：无卡创单(CARD_ID=NULL)→Pay-Sim→原子发卡入账",
+      "pass": true,
+      "evidence": [
+        "套餐 验收100元500升卡 售价10000分/500000ml/null天",
+        "order4/payment2 tx=SIMTXRC37B1421709394BA8ADBAE2D3C67DEB flow#3 biz=RECHARGE:RC37B1421709394BA8ADBAE2D3C67DEB event3",
+        "card#3 issueOrder=4 ml=500000 expire=永久(NULL) scope=[9101]"
+      ],
+      "error": "",
+      "durationMs": 1412
+    },
+    {
+      "id": "S2",
+      "name": "同卡再充：原卡加权益不建二卡，永久有效期保持 NULL",
+      "pass": true,
+      "evidence": [
+        "order4/payment2 tx=SIMTXRC7E73F7CCE1904252C30A86EE5A917E flow#4 biz=RECHARGE:RC7E73F7CCE1904252C30A86EE5A917E event3",
+        "同卡#3 ml 500000→1000000 expire 永久保持NULL"
+      ],
+      "error": "",
+      "durationMs": 969
+    },
+    {
+      "id": "S3",
+      "name": "待支付恢复：创单不付→order1/payment1 无流水→继续支付→完成入账",
+      "pass": true,
+      "evidence": [
+        "创单未付 order1/payment1 flow=0（RCC186537D28B551FF6BC559D8EA80F6）",
+        "order4/payment2 tx=SIMTXRCC186537D28B551FF6BC559D8EA80F6 flow#5 biz=RECHARGE:RCC186537D28B551FF6BC559D8EA80F6 event3"
+      ],
+      "error": "",
+      "durationMs": 1077
+    },
+    {
+      "id": "S4",
+      "name": "幂等与超时：同参返原单/改参拒绝/重复支付一次入账/NOTPAY/改截止后 CLOSED",
+      "pass": true,
+      "evidence": [
+        "同参重放幂等命中（RCCEA2E1E6F564785AF98B15EE2CA577）",
+        "改参拒绝：同一 requestId 不可更换水卡或套餐",
+        "Pay-Sim×3 → CREDITED + 2次拒绝/幂等（拒:订单已完成，无需再次支付、拒:订单已完成，无需再次支付），流水恰1条",
+        "截止前 query=NOTPAY，payment1/order1 保持",
+        "改截止(20260827105810)后 query=CLOSED → payment4/order5，卡与流水零变化"
+      ],
+      "error": "",
+      "durationMs": 3049
+    },
+    {
+      "id": "S5",
+      "name": "可恢复/不可恢复：冻结→RETRY_WAIT→解冻 Worker 自动入账；改归属→事实5转人工",
+      "pass": false,
+      "evidence": [],
+      "error": "/api/auth/loginEmployee 应成功（code=540 msg=账号或密码错误）",
+      "durationMs": 460
+    },
+    {
+      "id": "S6",
+      "name": "范围外拒绝：扫水站2码→预检 CARD_SCOPE_DENIED→强行提交被拒零变化、会话不消费",
+      "pass": true,
+      "evidence": [
+        "强行提交被拒：该水卡不适用于当前设备，请更换设备或水卡",
+        "CARD_SCOPE_DENIED；订单/流水/指令零变化；会话未消费"
+      ],
+      "error": "",
+      "durationMs": 576
+    },
+    {
+      "id": "S7",
+      "name": "范围内取水退差：计划10000ml 预扣→ACK/result 4980→补偿5020→净扣4980",
+      "pass": true,
+      "evidence": [
+        "order4 actual=4980 cmd#CMD20260827122814042235(4) flows[-10000,+5020] 卡 2000000→1995020（净-4980）"
+      ],
+      "error": "",
+      "durationMs": 3858
+    },
+    {
+      "id": "S8",
+      "name": "冻结解冻：PC 冻结→预检 CARD_FROZEN→解冻→重新预检可取",
+      "pass": false,
+      "evidence": [],
+      "error": "/user/card/changeStatus 应成功（code=1401 msg=登录状态异常）",
+      "durationMs": 6045
+    },
+    {
+      "id": "S9",
+      "name": "成员授权限额：日限6000 取5000成功→再取2000拒→撤销后拒",
+      "pass": true,
+      "evidence": [
+        "成员取水 order4 actual=4980 卡 1995020→1990040（订单/流水 USER_ID=9002）",
+        "同日再取2000 → 超出成员单日取水限额",
+        "撤销授权后 → CARD_NOT_ACCESSIBLE；下单拒绝：水卡不存在或无权使用"
+      ],
+      "error": "",
+      "durationMs": 4509
+    },
+    {
+      "id": "S10",
+      "name": "活动赠卡不可充值：赠卡 canRecharge=false，充值创单被拒零写入",
+      "pass": false,
+      "evidence": [],
+      "error": "拒绝话术应指明赠卡不可充值（msg=活动赠卡在有效期内暂不支持充值，权益用完或到期后可充值转为正式水卡）",
+      "durationMs": 220
+    }
+  ],
+  "passed": 7,
+  "total": 10,
+  "pass": false
+}

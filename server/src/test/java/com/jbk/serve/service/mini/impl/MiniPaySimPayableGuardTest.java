@@ -63,7 +63,8 @@ class MiniPaySimPayableGuardTest {
         creditMapper = Mockito.mock(RechargeCreditMapper.class);
         factService = Mockito.mock(IRechargePayFactService.class);
         IRechargePaySourceAdapter adapter = () -> IRechargePaySourceAdapter.PAY_SIM;
-        service = new MiniPaySimServiceImpl(identityMapper, creditMapper, factService, adapter);
+        service = new MiniPaySimServiceImpl(identityMapper, creditMapper, factService, adapter,
+                Mockito.mock(com.jbk.serve.service.identity.DemoScenarioService.class));
 
         order = order(RechargePayStatus.ORDER_PENDING);
         payment = payment(RechargePayStatus.PAY_PENDING, FUTURE_EXPIRE);

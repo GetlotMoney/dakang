@@ -48,7 +48,10 @@ PUBLIC_BY_DESIGN = ("PUBLIC",)
 # 门禁的取值范围是运营决定的，不是实现者决定的。
 # 撤回后 yml / env 模板 / 端上常量注释里都不得再出现 AppID 字面量，
 # 需要说明配置时只写变量名。
-PUBLIC_BY_EXACT_NAME = frozenset()
+# 老板测试档用稳定业务键定位初始化水站。它与 `ws_station.STATION_CODE` 同源，
+# 会进入 SQL、表单和模拟器配置，不具备认证能力；只按完整变量名放行，避免把其他
+# 含 CODE 的验证码、票据或密钥一并放过。
+PUBLIC_BY_EXACT_NAME = frozenset({"DELIVERY_DEMOSIM_STATION_CODE"})
 
 
 def env_secrets():

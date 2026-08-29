@@ -3,20 +3,26 @@ import { evaluateRouteAccess } from './guard'
 import { appRoutes, buildRouteUrl, findRouteById } from './routes'
 
 describe('miniapp route contracts', () => {
-  it('contains 41 unique routes and exactly three fixed tab pages', () => {
+  it('contains 46 unique routes and exactly three fixed tab pages', () => {
     // E2E-08 增 O06 收益钱包：28→29；S2 增 U16 自动补货规则：29→30；
     // E2E-09 S1 增 M01 商城首页 + M02 商品详情：30→32；
     // E2E-09 S2 增 M03 购物车 + M04 确认订单 + M05 商城订单 + M06 订单详情：32→36。
     // E2E-09 S3-B 增 M07 商城配送任务 + M08 商城任务详情（配送端，与一期水配送任务分域）：36→38；
     // E2E-09 S4 增 M09 申请售后 + M10 我的售后 + M11 售后详情：38→41。
     // Tabbar 仍固定 home/order/profile 三个，商城四页全部走 navigateTo，不进底栏。
-    expect(appRoutes).toHaveLength(41)
-    expect(new Set(appRoutes.map(route => route.id)).size).toBe(41)
-    expect(new Set(appRoutes.map(route => route.path)).size).toBe(41)
+    expect(appRoutes).toHaveLength(46)
+    expect(new Set(appRoutes.map(route => route.id)).size).toBe(46)
+    expect(new Set(appRoutes.map(route => route.path)).size).toBe(46)
 
     const tabRoutes = appRoutes.filter(route => 'tab' in route)
     expect(tabRoutes.map(route => route.tab)).toEqual(['home', 'order', 'profile'])
     expect(tabRoutes.map(route => route.id)).toEqual(['U01', 'U02', 'U03'])
+  })
+
+  it('keeps channel and region workspaces behind approved capabilities', () => {
+    expect(findRouteById('I01').requiredCapability).toBe('USER_BASE')
+    expect(findRouteById('H01').requiredCapability).toBe('CHANNEL_VIEW')
+    expect(findRouteById('R01').requiredCapability).toBe('REGION_VIEW')
   })
 
   it('keeps courier and owner pages behind their matching capabilities', () => {

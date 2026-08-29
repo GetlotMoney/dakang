@@ -596,7 +596,7 @@ INSERT IGNORE INTO `api_dict_data`(`DICT_CLASS`, `DICT_DEFAULT_FLAG`, `DICT_TYPE
 -- ----------------------------
 INSERT IGNORE INTO `ws_package` (`ID`, `DATA_STATUS`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `PACKAGE_NAME`, `PAY_AMOUNT`, `WATER_ML`, `BONUS_AMOUNT`, `UNIT_PRICE_SNAP`, `SCOPE_JSON`, `EXPIRE_DAYS`, `PACKAGE_STATUS`, `PACKAGE_REMARK`) VALUES
 (1, 0, 1, '20260710120000', 1, '20260710120000', '100元500升卡', 10000, 500000, 0, '20.00', '{"scopeType":"specified","stationIds":["1"]}', NULL, 1, '一期主推：1升=0.2元；付费卡永久有效（D-213）'),
-(2, 0, 1, '20260710120000', 1, '20260710120000', '50元充值(送5元)', 5000, 0, 500, '0', NULL, NULL, 1, '纯余额充值，按出水口单价计费');
+(2, 0, 1, '20260710120000', 1, '20260710120000', '50元充值(送5元)', 5000, 0, 500, '0', '{"scopeType":"specified","stationIds":["1"]}', NULL, 1, '纯余额充值，按出水口单价计费；首次购卡时新卡继承光谷软件园水站范围');
 
 INSERT IGNORE INTO `ws_card` (`ID`, `DATA_STATUS`, `CREATE_BY`, `CREATE_TIME`, `UPDATE_BY`, `UPDATE_TIME`, `CARD_NO`, `CARD_TYPE`, `USER_ID`, `BALANCE_AMOUNT`, `BALANCE_ML`, `PACKAGE_ID`, `PACKAGE_SNAP`, `SCOPE_JSON`, `EXPIRE_TIME`, `CARD_STATUS`, `CARD_REMARK`) VALUES
 (1, 0, 1, '20260710120000', 1, '20260710120000', 'VC20260710000001', 1, 1, 5500, 495000, 1, '{"packageName":"100元500升卡","payAmount":10000,"waterMl":500000,"unitPriceSnap":"20.00"}', '{"scopeType":"specified","stationIds":[1],"stationNames":["光谷软件园水站"]}', NULL, 1, '光谷社区主力水卡（付费卡永久有效 D-213；范围=发卡套餐快照的站级范围，与套餐1一致，同款续充才能过精确相等校验）'),
@@ -932,7 +932,7 @@ INSERT INTO `ws_split_line_lock` (`PRODUCT_LINE`) VALUES (1), (2);
 
 -- ============================================================
 -- 分润 V2 S1：完整计划模型与组件证据（与 migrations/2026-08-06-split-v2-s1.sql 双份逐字一致）
--- 正式比例待甲方确认：不插任何计划种子；V2 开关两环境默认 false。
+-- D-428 正式比例已确认；文件末尾插入整版生效计划，V2 开关两环境显式开启。
 -- ============================================================
 CREATE TABLE `ws_split_plan` (
   `ID`           bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -948,7 +948,7 @@ CREATE TABLE `ws_split_plan` (
   PRIMARY KEY (`ID`),
   UNIQUE KEY `uk_split_plan_version` (`PLAN_VERSION`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-  COMMENT='分润V2完整计划头：整版发布整版生效，正式比例未确认前不得有生效行';
+  COMMENT='分润V2完整计划头：整版发布、按订单创建时点选择生效版本';
 
 CREATE TABLE `ws_split_plan_item` (
   `ID`           bigint      NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -3271,3 +3271,39 @@ CREATE TABLE `ws_wechat_notify_outbox` (
   COMMENT='微信订阅通知出站队列：业务事务只登记，Worker 提交后发送，绝不在事务内外呼';
 
 -- 不插任何种子：待发通知是运行时事实。
+
+
+-- ============================================================
+-- 老板测试版 D-428 六方分润计划（售水线）+ 配送费独立线。
+-- 计划自 2026-08-14 甲方口径确认时点起生效；历史订单不重算。
+-- 售水：水站50% / 商务推广5% / 运营中心省5市3区县2级差 / 平台余数40%。
+-- 配送：配送员90% / 平台余数10%，与售水线完全分开。
+-- ============================================================
+INSERT INTO `ws_split_plan`
+(`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,
+ `PLAN_VERSION`,`EFFECT_TIME`,`PLAN_STATUS`,`PLAN_REMARK`)
+SELECT 0,1,'20260828090000',1,'20260828090000',
+       'DEMO-D428-V1','20260814000000',2,'老板测试版六方分润；D-428'
+WHERE NOT EXISTS (
+  SELECT 1 FROM `ws_split_plan` WHERE `PLAN_VERSION`='DEMO-D428-V1'
+);
+
+INSERT INTO `ws_split_plan_item`
+(`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,
+ `PLAN_ID`,`PRODUCT_LINE`,`ROLE_CODE`,`REGION_LEVEL`,`RATE_BP`,`RATE_MODE`)
+SELECT 0,1,'20260828090000',1,'20260828090000',
+       p.ID,s.PRODUCT_LINE,s.ROLE_CODE,s.REGION_LEVEL,s.RATE_BP,s.RATE_MODE
+FROM `ws_split_plan` p
+JOIN (
+  SELECT 'WATER_SALE' PRODUCT_LINE,'WATER_OWNER' ROLE_CODE,'NONE' REGION_LEVEL,5000 RATE_BP,'FIXED' RATE_MODE
+  UNION ALL SELECT 'WATER_SALE','WATER_DIRECT_REFERRER','NONE',500,'FIXED'
+  UNION ALL SELECT 'WATER_SALE','REGION_PROVINCE','PROVINCE',500,'REGIONAL_CUMULATIVE'
+  UNION ALL SELECT 'WATER_SALE','REGION_CITY','CITY',300,'REGIONAL_CUMULATIVE'
+  UNION ALL SELECT 'WATER_SALE','REGION_COUNTY','COUNTY',200,'REGIONAL_CUMULATIVE'
+  UNION ALL SELECT 'DELIVERY_FEE','DELIVERY_COURIER','NONE',9000,'FIXED'
+) s
+WHERE p.PLAN_VERSION='DEMO-D428-V1'
+  AND NOT EXISTS (
+    SELECT 1 FROM `ws_split_plan_item` i
+    WHERE i.PLAN_ID=p.ID AND i.PRODUCT_LINE=s.PRODUCT_LINE AND i.ROLE_CODE=s.ROLE_CODE
+  );

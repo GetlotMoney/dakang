@@ -9,6 +9,7 @@ import com.jbk.serve.mapper.station.WsStationMapper;
 import com.jbk.serve.mapper.trade.WsOrderMapper;
 import com.jbk.serve.service.device.DeviceAvailabilityGuard;
 import com.jbk.serve.service.device.IDispenseDispatchTxService;
+import com.jbk.serve.service.identity.DemoScenarioService;
 import com.jbk.serve.service.ops.IWsDomainEventService;
 import com.jbk.serve.service.trade.ITradeOrderTxService;
 import com.jbk.serve.service.trade.WaterOrderSnapshot;
@@ -47,6 +48,7 @@ public class DispenseDispatchTxServiceImpl implements IDispenseDispatchTxService
     private final DeviceAvailabilityGuard availabilityGuard;
     private final ITradeOrderTxService tradeOrderTxService;
     private final IWsDomainEventService domainEventService;
+    private final DemoScenarioService demoScenarioService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -139,6 +141,11 @@ public class DispenseDispatchTxServiceImpl implements IDispenseDispatchTxService
         payload.set("waterType", outlet.getWaterType());
         payload.set("planMl", order.getPlanMl());
         payload.set("orderNo", order.getOrderNo());
+        String demoScenario = demoScenarioService.consumeNextDeviceResult(order.getUserId());
+        if (demoScenario != null && !DemoScenarioService.DEVICE_NORMAL.equals(demoScenario)) {
+            // 演示结果进入持久化指令快照，事后可从 ws_command 解释设备为何拒绝、超时或少出水。
+            payload.set("demoScenario", demoScenario);
+        }
         WsCommand command = new WsCommand()
                 .setCmdNo("CMD" + DateUtils.time() + RandomUtil.randomNumbers(6))
                 .setDeviceId(device.getId())

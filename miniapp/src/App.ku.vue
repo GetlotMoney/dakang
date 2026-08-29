@@ -1,12 +1,9 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
-import { ref } from 'vue'
 import { evaluateRouteAccess } from '@/router/guard'
 import { useAccountStore } from '@/store/account'
-import AppTabbar from '@/tabbar/index.vue'
-import { isTabbarPage, syncTabbarByCurrentPage } from '@/tabbar/store'
+import { syncTabbarByCurrentPage } from '@/tabbar/store'
 
-const showTabbar = ref(false)
 const accountStore = useAccountStore()
 let handlingDirectAccess = false
 
@@ -56,7 +53,6 @@ function handleDirectAccessDenied(message: string) {
 
 onShow(async () => {
   syncTabbarByCurrentPage()
-  showTabbar.value = isTabbarPage()
 
   const url = currentPageUrl()
   if (!url) {
@@ -72,7 +68,6 @@ onShow(async () => {
   }
   const decision = evaluateRouteAccess(url, accountStore.context)
   if (!decision.allowed) {
-    showTabbar.value = false
     handleDirectAccessDenied(decision.message)
   }
 })
@@ -81,6 +76,5 @@ onShow(async () => {
 <template>
   <wd-config-provider>
     <KuRootView />
-    <AppTabbar v-if="showTabbar" />
   </wd-config-provider>
 </template>

@@ -669,7 +669,9 @@ scenario('S10', '活动赠卡不可充值：赠卡 canRecharge=false，充值创
 
   const before = await q('SELECT ID FROM ws_order WHERE CARD_ID = ?', [gift.ID])
   const denied = await apiFail('/mini/order/recharge/create', { cardId: String(gift.ID), packageId: ACC_PACKAGE_ID, requestId: crypto.randomUUID() }, ctx.owner)
-  ok(String(denied.msg || '').includes('活动赠卡不支持充值'), '拒绝话术应指明赠卡不可充值', `msg=${denied.msg}`)
+  const deniedMessage = String(denied.msg || '')
+  ok(deniedMessage.includes('活动赠卡') && deniedMessage.includes('暂不支持充值')
+    && deniedMessage.includes('转为正式水卡'), '拒绝话术应符合 D-213/D-416 现行口径', `msg=${denied.msg}`)
   const after = await q('SELECT ID FROM ws_order WHERE CARD_ID = ?', [gift.ID])
   eq(after.length, before.length, '拒绝必须零写入（不产生订单）')
   ev.push(`gift#${gift.ID} canRecharge=false；创单拒绝：${denied.msg}`)

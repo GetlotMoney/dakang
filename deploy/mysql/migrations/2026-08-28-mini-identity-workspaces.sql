@@ -1,0 +1,189 @@
+-- 小程序身份申请、代理血缘、公域轮转与演示提现（2026-08-28）
+-- 既有库无损迁移：只新增表/字典，不删除、不覆盖既有业务数据。
+
+CREATE TABLE IF NOT EXISTS `ws_identity_application` (
+  `ID` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY` bigint NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME` varchar(14) NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY` bigint NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME` varchar(14) NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `USER_ID` bigint NOT NULL COMMENT '申请用户ID(ws_user.ID)，服务端从会话取得',
+  `CAPABILITY_TYPE` tinyint NOT NULL COMMENT '申请能力(1410)：1配送员 2机主 3渠道 4区域代理',
+  `APPLICATION_STATUS` tinyint NOT NULL COMMENT '申请状态(1411)：1待审核 2已通过 3已暂停 4已驳回',
+  `SUBJECT_TYPE` tinyint NOT NULL COMMENT '主体类型(1412)：1个人 2企业',
+  `APPLICANT_NAME` varchar(100) NOT NULL COMMENT '申请人或企业名称(max100)',
+  `BOUND_PHONE` varchar(20) NOT NULL COMMENT '提交时绑定手机号快照(max20)',
+  `REGION_NAME` varchar(50) DEFAULT NULL COMMENT '唯一经营区域(max50)，渠道/区域代理/机主可用',
+  `AGENT_LEVEL` tinyint DEFAULT NULL COMMENT '区域代理级别(1413)：1省 2市 3区县',
+  `INVITE_CODE` varchar(50) DEFAULT NULL COMMENT '提交的邀请码快照(max50)',
+  `STATION_NAME` varchar(50) DEFAULT NULL COMMENT '首个水站名称(max50，仅机主)',
+  `STATION_ADDRESS` varchar(200) DEFAULT NULL COMMENT '首个水站地址(max200，仅机主)',
+  `FORM_JSON` text COMMENT '表单快照JSON；owner=身份扩展/courier=范围，不保存证件密文',
+  `REQUEST_ID` varchar(36) NOT NULL COMMENT '提交幂等UUID',
+  `REVIEW_MODE` tinyint NOT NULL COMMENT '审核方式：1演示自动 2正式人工',
+  `SUBMITTED_TIME` varchar(14) NOT NULL COMMENT '提交时间',
+  `REVIEWED_TIME` varchar(14) DEFAULT NULL COMMENT '审核完成时间',
+  `REVIEWER_USER_ID` bigint DEFAULT NULL COMMENT '审核人；演示自动审核为0',
+  `REVIEW_REMARK` varchar(500) DEFAULT NULL COMMENT '审核说明(max500)',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_identity_application_user_type` (`USER_ID`,`CAPABILITY_TYPE`),
+  UNIQUE KEY `uk_identity_application_request` (`REQUEST_ID`),
+  KEY `idx_identity_application_status` (`CAPABILITY_TYPE`,`APPLICATION_STATUS`,`CREATE_TIME`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='小程序身份能力申请（一人每类一行，驳回后原行重提）';
+
+CREATE TABLE IF NOT EXISTS `ws_identity_profile` (
+  `ID` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY` bigint NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME` varchar(14) NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY` bigint NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME` varchar(14) NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `USER_ID` bigint NOT NULL COMMENT '主体用户ID(ws_user.ID)',
+  `CAPABILITY_TYPE` tinyint NOT NULL COMMENT '主体能力(1410)：2机主 3渠道 4区域代理',
+  `PROFILE_STATUS` tinyint NOT NULL COMMENT '主体状态：1正常 2暂停 3撤销',
+  `SUBJECT_TYPE` tinyint NOT NULL COMMENT '主体类型(1412)：1个人 2企业',
+  `SUBJECT_NAME` varchar(100) NOT NULL COMMENT '主体名称(max100)',
+  `REGION_NAME` varchar(50) DEFAULT NULL COMMENT '唯一经营区域(max50)',
+  `AGENT_LEVEL` tinyint DEFAULT NULL COMMENT '区域代理级别(1413)：1省 2市 3区县',
+  `PARENT_PROFILE_ID` bigint DEFAULT NULL COMMENT '直接上级区域代理主体ID；平台直邀为空',
+  `APPLICATION_ID` bigint NOT NULL COMMENT '来源申请ID(ws_identity_application.ID)',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_identity_profile_user_type` (`USER_ID`,`CAPABILITY_TYPE`),
+  KEY `idx_identity_profile_region` (`CAPABILITY_TYPE`,`REGION_NAME`,`PROFILE_STATUS`),
+  KEY `idx_identity_profile_parent` (`PARENT_PROFILE_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='小程序经营身份主体（机主/渠道/区域代理）';
+
+CREATE TABLE IF NOT EXISTS `ws_identity_audit` (
+  `ID` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY` bigint NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME` varchar(14) NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY` bigint NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME` varchar(14) NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `APPLICATION_ID` bigint NOT NULL COMMENT '身份申请ID',
+  `FROM_STATUS` tinyint DEFAULT NULL COMMENT '变更前状态(1411)，首次提交为空',
+  `TO_STATUS` tinyint NOT NULL COMMENT '变更后状态(1411)',
+  `ACTOR_TYPE` tinyint NOT NULL COMMENT '操作方：1申请人 2演示审核器 3后台审核人',
+  `ACTOR_USER_ID` bigint NOT NULL COMMENT '操作人；演示审核器为0',
+  `AUDIT_REMARK` varchar(500) NOT NULL COMMENT '操作说明(max500)',
+  PRIMARY KEY (`ID`),
+  KEY `idx_identity_audit_application` (`APPLICATION_ID`,`ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='身份申请审核轨迹（只插不改）';
+
+CREATE TABLE IF NOT EXISTS `ws_invite_code` (
+  `ID` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY` bigint NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME` varchar(14) NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY` bigint NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME` varchar(14) NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `INVITE_CODE` varchar(50) NOT NULL COMMENT '邀请码，业务唯一(max50)',
+  `INVITER_PROFILE_ID` bigint DEFAULT NULL COMMENT '邀请人主体ID；平台邀请码为空',
+  `TARGET_CAPABILITY_TYPE` tinyint NOT NULL COMMENT '目标能力(1410)：2机主 3渠道 4区域代理',
+  `REGION_NAME` varchar(50) DEFAULT NULL COMMENT '固定唯一区域；平台首次准入码可空',
+  `TARGET_AGENT_LEVEL` tinyint DEFAULT NULL COMMENT '目标区域代理级别(1413)，非区域邀请为空',
+  `USE_LIMIT` int NOT NULL DEFAULT 1 COMMENT '最大使用次数；0表示不限',
+  `USED_COUNT` int NOT NULL DEFAULT 0 COMMENT '已确认使用次数',
+  `EXPIRE_TIME` varchar(14) DEFAULT NULL COMMENT '过期时间；空表示不过期',
+  `CODE_STATUS` tinyint NOT NULL COMMENT '状态：1有效 2停用',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_invite_code_value` (`INVITE_CODE`),
+  KEY `idx_invite_code_inviter` (`INVITER_PROFILE_ID`,`TARGET_CAPABILITY_TYPE`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='身份与机主血缘邀请码';
+
+CREATE TABLE IF NOT EXISTS `ws_public_lead` (
+  `ID` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY` bigint NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME` varchar(14) NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY` bigint NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME` varchar(14) NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `OWNER_USER_ID` bigint NOT NULL COMMENT '申请成为机主的用户ID',
+  `APPLICATION_ID` bigint NOT NULL COMMENT '机主申请ID',
+  `REGION_NAME` varchar(50) NOT NULL COMMENT '公域线索区域(max50)',
+  `ASSIGNED_PROFILE_ID` bigint DEFAULT NULL COMMENT '当前获配区域代理主体ID',
+  `LEAD_STATUS` tinyint NOT NULL COMMENT '公域线索状态(1414)：1待分配 2待确认 3已确认 4已超时',
+  `ASSIGNED_TIME` varchar(14) DEFAULT NULL COMMENT '本轮分配时间',
+  `RESPONSE_DEADLINE` varchar(14) DEFAULT NULL COMMENT '24小时响应截止',
+  `CONFIRMED_TIME` varchar(14) DEFAULT NULL COMMENT '机主确认时间',
+  `ASSIGN_ROUND` int NOT NULL DEFAULT 0 COMMENT '分配轮次',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_public_lead_application` (`APPLICATION_ID`),
+  KEY `idx_public_lead_rotation` (`REGION_NAME`,`LEAD_STATUS`,`ASSIGNED_TIME`),
+  KEY `idx_public_lead_agent` (`ASSIGNED_PROFILE_ID`,`LEAD_STATUS`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='无推荐码机主公域线索与等额轮转记录';
+
+CREATE TABLE IF NOT EXISTS `ws_withdraw_order` (
+  `ID` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY` bigint NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME` varchar(14) NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY` bigint NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME` varchar(14) NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `WITHDRAW_NO` varchar(32) NOT NULL COMMENT '提现单号，业务唯一',
+  `REQUEST_ID` varchar(36) NOT NULL COMMENT '客户端幂等UUID',
+  `USER_ID` bigint NOT NULL COMMENT '收益人ID，服务端按会话强制写入',
+  `AMOUNT_FEN` bigint NOT NULL COMMENT '提现金额(分)，最低100分',
+  `WITHDRAW_STATUS` tinyint NOT NULL COMMENT '提现状态(1415)：1处理中 2已打款 3失败已解冻',
+  `PAYOUT_SOURCE` tinyint NOT NULL COMMENT '出金来源：1演示模拟 2真实通道',
+  `APPLIED_TIME` varchar(14) NOT NULL COMMENT '申请时间',
+  `FINISHED_TIME` varchar(14) DEFAULT NULL COMMENT '终态时间',
+  `FAIL_REASON` varchar(200) DEFAULT NULL COMMENT '失败原因(max200)',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_withdraw_order_no` (`WITHDRAW_NO`),
+  UNIQUE KEY `uk_withdraw_order_request` (`REQUEST_ID`),
+  KEY `idx_withdraw_order_user_time` (`USER_ID`,`CREATE_TIME`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='收益提现申请与模拟出金终态';
+
+CREATE TABLE IF NOT EXISTS `ws_demo_control` (
+  `ID` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `DATA_STATUS` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除：0正常 1删除',
+  `CREATE_BY` bigint NOT NULL COMMENT '创建人ID',
+  `CREATE_TIME` varchar(14) NOT NULL COMMENT '创建时间yyyyMMddHHmmss',
+  `UPDATE_BY` bigint NOT NULL COMMENT '更新人ID',
+  `UPDATE_TIME` varchar(14) NOT NULL COMMENT '更新时间yyyyMMddHHmmss',
+  `USER_ID` bigint NOT NULL COMMENT '演示操作者用户ID',
+  `NEXT_PAY_RESULT` varchar(20) NOT NULL DEFAULT 'SUCCESS' COMMENT '下一笔支付：SUCCESS/CANCEL/INSUFFICIENT/TIMEOUT/DUPLICATE',
+  `NEXT_DEVICE_RESULT` varchar(20) NOT NULL DEFAULT 'NORMAL' COMMENT '下一次设备：NORMAL/SHORT/REJECT/TIMEOUT/DUPLICATE',
+  `DELIVERY_AUTO` tinyint NOT NULL DEFAULT 1 COMMENT '本人配送单是否由虚拟配送员自动推进：1是 2否',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `uk_demo_control_user` (`USER_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='演示环境下一次外部行为配置';
+
+INSERT INTO `api_dict_type`(`DICT_NAME`,`DICT_TYPE`,`DICT_REMARK`)
+SELECT s.* FROM (SELECT '身份能力类型' DICT_NAME,'1410' DICT_TYPE,'小程序经营身份申请类型' DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE=s.DICT_TYPE);
+INSERT INTO `api_dict_type`(`DICT_NAME`,`DICT_TYPE`,`DICT_REMARK`)
+SELECT s.* FROM (SELECT '身份申请状态' DICT_NAME,'1411' DICT_TYPE,'身份申请与审核状态' DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE=s.DICT_TYPE);
+INSERT INTO `api_dict_type`(`DICT_NAME`,`DICT_TYPE`,`DICT_REMARK`)
+SELECT s.* FROM (SELECT '经营主体类型' DICT_NAME,'1412' DICT_TYPE,'个人或企业主体' DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE=s.DICT_TYPE);
+INSERT INTO `api_dict_type`(`DICT_NAME`,`DICT_TYPE`,`DICT_REMARK`)
+SELECT s.* FROM (SELECT '区域代理级别' DICT_NAME,'1413' DICT_TYPE,'省市区县代理级别' DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE=s.DICT_TYPE);
+INSERT INTO `api_dict_type`(`DICT_NAME`,`DICT_TYPE`,`DICT_REMARK`)
+SELECT s.* FROM (SELECT '公域线索状态' DICT_NAME,'1414' DICT_TYPE,'机主公域线索轮转状态' DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE=s.DICT_TYPE);
+INSERT INTO `api_dict_type`(`DICT_NAME`,`DICT_TYPE`,`DICT_REMARK`)
+SELECT s.* FROM (SELECT '提现状态' DICT_NAME,'1415' DICT_TYPE,'模拟或真实出金终态' DICT_REMARK) s
+WHERE NOT EXISTS (SELECT 1 FROM api_dict_type t WHERE t.DICT_TYPE=s.DICT_TYPE);
+
+INSERT INTO `api_dict_data`(`DICT_CLASS`,`DICT_DEFAULT_FLAG`,`DICT_TYPE`,`DICT_SORT`,`DICT_VALUE`,`DICT_LABEL`)
+SELECT NULL,1,s.DICT_TYPE,s.DICT_SORT,s.DICT_VALUE,s.DICT_LABEL FROM (
+  SELECT '1410' DICT_TYPE,1 DICT_SORT,1 DICT_VALUE,'配送员' DICT_LABEL UNION ALL SELECT '1410',2,2,'机主' UNION ALL SELECT '1410',3,3,'渠道' UNION ALL SELECT '1410',4,4,'区域代理'
+  UNION ALL SELECT '1411',1,1,'待审核' UNION ALL SELECT '1411',2,2,'已通过' UNION ALL SELECT '1411',3,3,'已暂停' UNION ALL SELECT '1411',4,4,'已驳回'
+  UNION ALL SELECT '1412',1,1,'个人' UNION ALL SELECT '1412',2,2,'企业'
+  UNION ALL SELECT '1413',1,1,'省级' UNION ALL SELECT '1413',2,2,'市级' UNION ALL SELECT '1413',3,3,'区县级'
+  UNION ALL SELECT '1414',1,1,'待分配' UNION ALL SELECT '1414',2,2,'待确认' UNION ALL SELECT '1414',3,3,'已确认' UNION ALL SELECT '1414',4,4,'已超时'
+  UNION ALL SELECT '1415',1,1,'处理中' UNION ALL SELECT '1415',2,2,'已打款' UNION ALL SELECT '1415',3,3,'失败已解冻'
+) s WHERE NOT EXISTS (SELECT 1 FROM api_dict_data d WHERE d.DICT_TYPE=s.DICT_TYPE AND d.DICT_VALUE=s.DICT_VALUE);
+
+-- 平台演示邀请码不授予任何现有用户身份；新用户仍只有 USER_BASE，必须提交申请。
+INSERT IGNORE INTO `ws_invite_code`(`ID`,`DATA_STATUS`,`CREATE_BY`,`CREATE_TIME`,`UPDATE_BY`,`UPDATE_TIME`,`INVITE_CODE`,`INVITER_PROFILE_ID`,`TARGET_CAPABILITY_TYPE`,`REGION_NAME`,`TARGET_AGENT_LEVEL`,`USE_LIMIT`,`USED_COUNT`,`EXPIRE_TIME`,`CODE_STATUS`) VALUES
+(910001,0,1,'20260828090000',1,'20260828090000','DK-DEMO-CHANNEL',NULL,3,NULL,NULL,0,0,NULL,1),
+(910002,0,1,'20260828090000',1,'20260828090000','DK-DEMO-REGION-P',NULL,4,NULL,1,0,0,NULL,1),
+(910003,0,1,'20260828090000',1,'20260828090000','DK-DEMO-REGION-C',NULL,4,NULL,2,0,0,NULL,1),
+(910004,0,1,'20260828090000',1,'20260828090000','DK-DEMO-REGION-D',NULL,4,NULL,3,0,0,NULL,1),
+(910005,0,1,'20260828090000',1,'20260828090000','DK-DEMO-OWNER',NULL,2,NULL,NULL,0,0,NULL,1);

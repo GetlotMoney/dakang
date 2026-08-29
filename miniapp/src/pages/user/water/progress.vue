@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { OrderDetail, OrderTraceNode } from '@/api/order'
 import type { TagTone } from '@/utils/format'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onUnload } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { orderApi } from '@/api/order'
@@ -46,6 +46,9 @@ const pageState = ref<'loading' | 'ready' | 'error'>('loading')
 const errorMessage = ref('')
 
 const detail = ref<OrderDetail | null>(null)
+let currentOrderNo = ''
+let refreshing = false
+let pollTimer: ReturnType<typeof setTimeout> | null = null
 
 // 轨迹一次性全量展示。这里曾有一套 700ms 逐节点回放，只对 evidenceMode=prototype 的
 // 原型单生效——而真实订单从不携带 mockMeta，那条分支在任何出货构建里都进不去，
@@ -99,18 +102,51 @@ onLoad((query?: Record<string, string | undefined>) => {
     errorMessage.value = '请从订单列表进入'
     return
   }
-  void load(orderNo)
+  currentOrderNo = orderNo
+  void load(true)
 })
 
-async function load(orderNo: string) {
-  pageState.value = 'loading'
+onUnload(stopPolling)
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+}
+
+function schedulePolling() {
+  stopPolling()
+  pollTimer = setTimeout(() => void load(false), 1500)
+}
+
+async function load(initial: boolean) {
+  if (refreshing || !currentOrderNo) {
+    return
+  }
+  refreshing = true
+  if (initial) {
+    pageState.value = 'loading'
+  }
   try {
-    detail.value = await orderApi.getOrderDetail(orderNo)
+    const next = await orderApi.getOrderDetail(currentOrderNo)
+    detail.value = next
     pageState.value = 'ready'
+    if (!TERMINAL_STATUSES.includes(next.order.orderStatus)) {
+      schedulePolling()
+    }
   }
   catch (error) {
-    pageState.value = 'error'
-    errorMessage.value = error instanceof ContractError ? error.message : '取水进度加载失败，请重试'
+    if (detail.value === null) {
+      pageState.value = 'error'
+      errorMessage.value = error instanceof ContractError ? error.message : '取水进度加载失败，请重试'
+    }
+    else {
+      schedulePolling()
+    }
+  }
+  finally {
+    refreshing = false
   }
 }
 

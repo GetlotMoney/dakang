@@ -249,8 +249,9 @@ class OwnerAnalyticsDbTest {
         @Bean
         IMiniCapabilityService capabilityService(WsCourierMapper courierMapper,
                                                  WsDeviceMapper deviceMapper,
-                                                 WsStationMapper stationMapper) {
-            return new MiniCapabilityServiceImpl(courierMapper, deviceMapper, stationMapper);
+                                                 WsStationMapper stationMapper,
+                                                 com.jbk.serve.mapper.identity.WsIdentityProfileMapper identityProfileMapper) {
+            return new MiniCapabilityServiceImpl(courierMapper, deviceMapper, stationMapper, identityProfileMapper);
         }
 
         @Bean

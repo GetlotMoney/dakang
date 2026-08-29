@@ -125,6 +125,10 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
     @Autowired
     private WsCourierMapper courierMapper;
     @Autowired
+    private com.jbk.serve.mapper.user.WsUserMapper userMapper;
+    @org.springframework.beans.factory.annotation.Value("${demo-simulation.enabled:false}")
+    private boolean demoSimulationEnabled;
+    @Autowired
     private IMiniFamilyService familyService;
 
     // ==================== 用户侧 ====================
@@ -320,6 +324,13 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
     @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class,
             isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public MiniCourierAdmissionVo submitAdmission(com.jbk.tool.data.mini.bo.MiniAdmissionSubmitBo bo, Long userId) {
+        com.jbk.tool.data.user.po.WsUser applicant = userMapper.selectById(userId);
+        if (ObjectUtil.isNull(applicant) || cn.hutool.core.util.StrUtil.isBlank(applicant.getUserPhone())) {
+            throw new JbkException("申请配送员前请先绑定手机号");
+        }
+        if (!ObjectUtil.equal(applicant.getUserPhone(), bo.getPhone())) {
+            throw new JbkException("申请手机号必须与当前账号已绑定手机号一致");
+        }
         List<Long> stationIds = bo.getRequestedStationIds() == null ? List.of()
                 : bo.getRequestedStationIds().stream().filter(ObjectUtil::isNotNull).distinct().toList();
         String region = StrUtil.trimToNull(bo.getRequestedRegion());
@@ -348,6 +359,8 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
         String now = DateUtils.time();
         String stationIdsText = stationIds.isEmpty() ? null
                 : stationIds.stream().map(String::valueOf).collect(Collectors.joining(","));
+        int targetStatus = demoSimulationEnabled ? UserEnum.CourierStatus.ENABLED.getValue()
+                : UserEnum.CourierStatus.PENDING.getValue();
         Long recordId;
         if (ObjectUtil.isNull(existing)) {
             WsCourier fresh = new WsCourier()
@@ -356,7 +369,7 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
                     .setCourierPhone(bo.getPhone())
                     .setStationIds(stationIdsText)
                     .setServiceRegion(region)
-                    .setCourierStatus(UserEnum.CourierStatus.PENDING.getValue());
+                    .setCourierStatus(targetStatus);
             courierMapper.insert(fresh);
             recordId = fresh.getId();
         }
@@ -369,14 +382,26 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
                     .set(WsCourier::getCourierPhone, bo.getPhone())
                     .set(WsCourier::getStationIds, stationIdsText)
                     .set(WsCourier::getServiceRegion, region)
-                    .set(WsCourier::getCourierStatus, UserEnum.CourierStatus.PENDING.getValue()));
+                    .set(WsCourier::getCourierStatus, targetStatus));
             if (updated != 1) {
                 throw new JbkException("申请状态已变化，请刷新后重试");
             }
             recordId = existing.getId();
         }
         else if (ObjectUtil.equal(existing.getCourierStatus(), UserEnum.CourierStatus.PENDING.getValue())) {
-            throw new JbkException("申请正在审核中，请耐心等待结果");
+            if (!demoSimulationEnabled) {
+                throw new JbkException("申请正在审核中，请耐心等待结果");
+            }
+            int updated = courierMapper.update(null, Wrappers.lambdaUpdate(WsCourier.class)
+                    .eq(WsCourier::getId, existing.getId())
+                    .eq(WsCourier::getCourierStatus, UserEnum.CourierStatus.PENDING.getValue())
+                    .set(WsCourier::getCourierName, bo.getApplicantName().trim())
+                    .set(WsCourier::getCourierPhone, bo.getPhone())
+                    .set(WsCourier::getStationIds, stationIdsText)
+                    .set(WsCourier::getServiceRegion, region)
+                    .set(WsCourier::getCourierStatus, targetStatus));
+            if (updated != 1) throw new JbkException("申请状态已变化，请刷新后重试");
+            recordId = existing.getId();
         }
         else if (ObjectUtil.equal(existing.getCourierStatus(), UserEnum.CourierStatus.ENABLED.getValue())) {
             throw new JbkException("您已具备配送能力，无需重复申请");
@@ -389,9 +414,11 @@ public class MiniDeliveryServiceImpl implements IMiniDeliveryService {
         // 站内消息同事务：发送失败=提交整体回滚（用户重试即可，绝不留半套事实）
         domainEventService.recordReliableInTx(OpsEnum.EventType.DELIVERY_NODE,
                 "ADMISSION:" + userId, ObjectUtil.isNull(existing) ? null : existing.getCourierStatus(),
-                UserEnum.CourierStatus.PENDING.getValue());
+                targetStatus);
         messageService.sendInApp(userId, MessageEnum.MsgDomain.DELIVERY,
-                "配送准入申请已提交", "申请已进入审核，结果将另行通知", "admission",
+                demoSimulationEnabled ? "配送准入已通过" : "配送准入申请已提交",
+                demoSimulationEnabled ? "演示环境已按准入条件自动审核，可以进入任务中心" : "申请已进入审核，结果将另行通知",
+                "admission",
                 String.valueOf(recordId), now);
         return getAdmission(userId);
     }

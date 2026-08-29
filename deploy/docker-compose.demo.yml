@@ -1,0 +1,48 @@
+# 老板测试环境覆盖档：只替换外部支付、退款、物流与物理设备能力。
+# 使用时必须与 docker-compose.yml 同时加载；正式部署禁止加载本文件。
+services:
+  demo-init:
+    image: mysql:8.0.39
+    container_name: dakang-demo-init
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_PWD: ${DAKANG_DB_PASSWORD:?set DAKANG_DB_PASSWORD in .env}
+    volumes:
+      - ./demo:/demo:ro
+    command: ["sh", "-c", "mysql -hmysql -uroot --default-character-set=utf8mb4 dakang < /demo/01-demo-seed.sql"]
+
+  backend:
+    depends_on:
+      demo-init:
+        condition: service_completed_successfully
+    environment:
+      DAKANG_DEMO_SIMULATION_ENABLED: "true"
+      MINI_PAYSIM_ENABLED: "true"
+      MALL_PAYSIM_ENABLED: "true"
+      MINI_REFUNDSIM_ENABLED: "true"
+      MALL_REFUNDSIM_ENABLED: "true"
+      MALL_LOGISTICSSIM_ENABLED: "true"
+      DELIVERY_DEMOSIM_ENABLED: "true"
+      DELIVERY_DEMOSIM_CUSTOMER_PHONE: ${DELIVERY_DEMOSIM_CUSTOMER_PHONE:?set DELIVERY_DEMOSIM_CUSTOMER_PHONE in .env}
+      DELIVERY_DEMOSIM_COURIER_PHONE: ${DELIVERY_DEMOSIM_COURIER_PHONE:-13800001111}
+      DELIVERY_DEMOSIM_STATION_CODE: ${DELIVERY_DEMOSIM_STATION_CODE:-WS-WH-001}
+      DELIVERY_DEMOSIM_STAGE_DELAY_SECONDS: "4"
+      WECHAT_PAY_HTTP_CLIENT_ENABLED: "false"
+      WECHAT_NOTIFY_HTTP_SENDER_ENABLED: "false"
+      WECHAT_SHIPPING_HTTP_CLIENT_ENABLED: "false"
+
+  device-sim:
+    build:
+      context: ../tools/device-sim
+    container_name: dakang-device-sim
+    restart: unless-stopped
+    depends_on:
+      emqx:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      BROKER: tcp://emqx:1883
+      TZ: Asia/Shanghai

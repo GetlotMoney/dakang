@@ -58,6 +58,7 @@ rsync -a --delete --prune-empty-dirs \
   --exclude='deploy/backups/' \
   --exclude='deploy/backup/' \
   --exclude='deploy/logs/' \
+  --exclude='docs/acceptance/**/runs/' \
   --exclude='*.bak' \
   --exclude='*.sql.gz' \
   --exclude='miniapp/dist/' \

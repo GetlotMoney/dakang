@@ -190,6 +190,13 @@ export const INCOME_FLOW_TYPE_LABELS: Record<number, string> = {
   5: '提现驳回解冻',
 }
 
+export const INCOME_RECEIVER_TYPE_LABELS: Record<number, string> = {
+  1: '机主',
+  2: '配送员',
+  5: '渠道推广',
+  6: '区域代理',
+}
+
 /**
  * 支付方式(1346)：本表只回答「用哪种方式付」；有没有真走微信是每笔订单的事实，由服务端 paySource 按单记录。
  * 不得把构建期模式拼进文案后缀——后缀依赖构建开关而不是订单事实。

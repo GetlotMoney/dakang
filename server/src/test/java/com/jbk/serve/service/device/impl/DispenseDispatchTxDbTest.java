@@ -205,7 +205,8 @@ class DispenseDispatchTxDbTest {
         IDispenseDispatchTxService dispatchTxService(WsCommandMapper c, WsOrderMapper o, WsStationMapper s,
                                                      DeviceAvailabilityGuard g, ITradeOrderTxService t,
                                                      IWsDomainEventService e) {
-            return new DispenseDispatchTxServiceImpl(c, o, s, g, t, e);
+            return new DispenseDispatchTxServiceImpl(c, o, s, g, t, e,
+                    Mockito.mock(com.jbk.serve.service.identity.DemoScenarioService.class));
         }
 
         @Bean

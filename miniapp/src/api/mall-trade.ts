@@ -3,6 +3,7 @@ import { ContractError } from './common'
 import { normalizeFen, normalizeId, optionalText, specsOf, strictNonNegInt, textOf } from './mall'
 import { withRealSession } from './real-session'
 import { post } from './request'
+import { isDemoMode } from './runtime'
 
 /**
  * 商城交易 API（E2E-09 S2）：购物车、结算预览、下单、订单查询与取消、模拟支付。
@@ -455,6 +456,9 @@ async function payStatus(orderNo: string): Promise<MallOrderDetail> {
 
 /** 触发一次模拟支付；真实微信支付接入后这里换成 requestPayment。 */
 async function simulatePay(orderNo: string): Promise<MallOrderDetail> {
+  if (!isDemoMode()) {
+    throw new ContractError('MALL_PAY_SIM_DISABLED', '商城微信支付尚未开通')
+  }
   return withRealSession(async () => normalizeOrderDetail(
     await post(mallTradeEndpoints.paySimPay, { orderNo }),
   ))
