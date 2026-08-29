@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { MallOrderStatus, MallOrderSummary } from '@/api/mall-trade'
-import { onLoad, onReachBottom, onShow } from '@dcloudio/uni-app'
+import { onHide, onLoad, onReachBottom, onShow, onUnload } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { mallTradeApi } from '@/api/mall-trade'
@@ -13,6 +13,7 @@ import {
   MALL_ORDER_STATUS_TONES,
 } from '@/utils/format'
 import { goTo } from '@/utils/navigation'
+import { createPagePoller } from '@/utils/page-poller'
 
 definePage({
   style: {
@@ -66,12 +67,23 @@ onLoad((query) => {
   }
 })
 
-// onShow 刷新：从详情页支付或取消后返回，列表立即反映最新状态
-onShow(() => reload())
+// 第一屏订单在页面可见时每5秒静默同步；加载过更多页后停用自动重排，仅保留 onShow 刷新。
+const orderPoller = createPagePoller(() => reload(true), 5000)
+onShow(() => {
+  void reload()
+  orderPoller.start()
+})
+onHide(orderPoller.stop)
+onUnload(orderPoller.stop)
 
-async function reload() {
-  loading.value = true
-  errorMessage.value = ''
+async function reload(silent = false) {
+  if (silent && (loading.value || loadingMore.value || nextPage.value !== 2)) {
+    return
+  }
+  if (!silent) {
+    loading.value = true
+    errorMessage.value = ''
+  }
   try {
     const page = await mallTradeApi.listOrders({
       current: 1,
@@ -84,12 +96,16 @@ async function reload() {
     moreState.value = orders.value.length >= total.value ? 'finished' : 'loading'
   }
   catch (error) {
-    orders.value = []
-    total.value = 0
-    errorMessage.value = error instanceof ContractError ? error.message : '订单加载失败，请重试'
+    if (!silent) {
+      orders.value = []
+      total.value = 0
+      errorMessage.value = error instanceof ContractError ? error.message : '订单加载失败，请重试'
+    }
   }
   finally {
-    loading.value = false
+    if (!silent) {
+      loading.value = false
+    }
   }
 }
 
@@ -136,7 +152,7 @@ function openOrder(item: MallOrderSummary) {
 
     <view class="page-section filter-card">
       <wd-sticky :offset-top="stickyOffsetTop">
-        <wd-tabs v-model="activeTab" slidable="always" @change="reload">
+        <wd-tabs v-model="activeTab" slidable="always" @change="reload()">
           <wd-tab v-for="title in TAB_TITLES" :key="title" :title="title" />
         </wd-tabs>
       </wd-sticky>
@@ -149,7 +165,7 @@ function openOrder(item: MallOrderSummary) {
     <view v-else-if="errorMessage" class="page-section">
       <AppPageState state="error" :message="errorMessage">
         <template #actions>
-          <wd-button plain size="small" @click="reload">
+          <wd-button plain size="small" @click="reload()">
             重新加载
           </wd-button>
         </template>

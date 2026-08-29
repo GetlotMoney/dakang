@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DeliveryTask, DeliveryTaskView } from '@/api/delivery'
 import AppPageState from '@/components/app-page-state.vue'
-import { onLoad, onShow } from '@dcloudio/uni-app'
+import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { deliveryApi, deliveryTotalText } from '@/api/delivery'
@@ -15,6 +15,7 @@ import {
   TASK_STATUS_TONES,
 } from '@/utils/format'
 import { goTo } from '@/utils/navigation'
+import { createPagePoller } from '@/utils/page-poller'
 
 definePage({
   style: {
@@ -60,9 +61,19 @@ onLoad((query) => {
 /** 能力投影只决定这一屏渲染哪种状态，最终授权在服务端；无 COURIER_WORK 是 blocked，不是加载失败。 */
 const hasCourierWork = computed(() => accountStore.hasCapability('COURIER_WORK'))
 
-onShow(refresh)
+// 待接任务由其他用户随时创建；停留在任务中心时每4秒静默同步，离开页面立即停止。
+const taskPoller = createPagePoller(() => refresh(true), 4000)
+onShow(() => {
+  void refresh()
+  taskPoller.start()
+})
+onHide(taskPoller.stop)
+onUnload(taskPoller.stop)
 
-async function refresh() {
+async function refresh(silent = false) {
+  if (silent && status.value === 'loading') {
+    return
+  }
   if (!accountStore.restored) {
     await accountStore.restoreSession().catch(() => null)
   }
@@ -72,8 +83,10 @@ async function refresh() {
     return
   }
   const sequence = ++requestSequence
-  status.value = 'loading'
-  errorMessage.value = ''
+  if (!silent) {
+    status.value = 'loading'
+    errorMessage.value = ''
+  }
   try {
     if (!accountStore.restored) {
       await accountStore.restoreSession().catch(() => null)
@@ -94,7 +107,9 @@ async function refresh() {
       return
     }
     tasks.value = list
-    await loadExceptionMarks(list, sequence)
+    if (!silent) {
+      await loadExceptionMarks(list, sequence)
+    }
     if (sequence === requestSequence) {
       status.value = 'ready'
     }
@@ -103,10 +118,12 @@ async function refresh() {
     if (sequence !== requestSequence) {
       return
     }
-    tasks.value = []
-    // COURIER_SCOPE_DENIED / CAPABILITY_DENIED 等按契约原因原位展示，不伪装为空数据。
-    errorMessage.value = error instanceof ContractError ? error.message : '配送任务加载失败'
-    status.value = 'error'
+    if (!silent) {
+      tasks.value = []
+      // COURIER_SCOPE_DENIED / CAPABILITY_DENIED 等按契约原因原位展示，不伪装为空数据。
+      errorMessage.value = error instanceof ContractError ? error.message : '配送任务加载失败'
+      status.value = 'error'
+    }
   }
 }
 
@@ -201,7 +218,7 @@ function latestNodeText(task: DeliveryTask) {
       </view>
 
       <view class="page-section">
-        <wd-tabs v-model="view" @change="refresh">
+        <wd-tabs v-model="view" @change="refresh()">
           <wd-tab
             v-for="item in VIEW_OPTIONS"
             :key="item.name"
