@@ -29,6 +29,13 @@ export const useAccountStore = defineStore('account', {
       if (this.context) {
         return this.context
       }
+      return this.refreshSession()
+    },
+    /**
+     * 服务端身份、手机号或能力刚发生变化时强制重读账号上下文。
+     * 与冷启动恢复共用同一个进行中 Promise，避免申请完成和页面 onShow 并发发两次请求。
+     */
+    async refreshSession() {
       if (restorePromise) {
         return restorePromise
       }

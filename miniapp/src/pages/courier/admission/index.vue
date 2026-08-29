@@ -150,6 +150,9 @@ async function handleSubmit() {
       requestedRegion: model.requestedRegion.trim() || undefined,
       declarationAccepted: model.declaration,
     })
+    // 演示环境会在提交事务内直接启用配送能力；立即刷新上下文，避免首页继续使用旧缓存。
+    await accountStore.refreshSession()
+    toast.success(admission.value.status === 2 ? '配送能力已自动启用' : '准入申请已提交')
     model.phone = ''
     model.declaration = false
   }

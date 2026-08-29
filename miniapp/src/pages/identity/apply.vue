@@ -76,7 +76,9 @@ async function submit() {
   submitting.value = true
   try {
     const result = await identityApi.apply(input)
-    await accountStore.restoreSession().catch(() => null)
+    // 申请可能在同一请求内自动审核并新增能力；冷启动 restore 会命中旧缓存，
+    // 必须强制重读服务端上下文，让首页无需退出重进就出现新工作台。
+    await accountStore.refreshSession()
     const role = result.roles.find(item => item.capabilityType === capabilityType.value)
     toast.success(role?.status === 2 ? '申请已自动通过' : '申请已提交')
     setTimeout(() => goTo('I01'), 500)
