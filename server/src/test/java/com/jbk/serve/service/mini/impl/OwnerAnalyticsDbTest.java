@@ -180,6 +180,15 @@ class OwnerAnalyticsDbTest {
         }
 
         @Bean
+        com.jbk.serve.mapper.identity.WsIdentityProfileMapper identityProfileMapper() {
+            // 本类只验证机主归属与经营聚合；渠道/区域身份投影由身份域测试覆盖。
+            com.jbk.serve.mapper.identity.WsIdentityProfileMapper mapper =
+                    Mockito.mock(com.jbk.serve.mapper.identity.WsIdentityProfileMapper.class);
+            Mockito.when(mapper.selectList(Mockito.any())).thenReturn(List.of());
+            return mapper;
+        }
+
+        @Bean
         MapperFactoryBean<WsWorkOrderMapper> wsWorkOrderMapper(SqlSessionTemplate t) {
             return mapper(WsWorkOrderMapper.class, t);
         }

@@ -127,6 +127,11 @@ class MiniAdmissionSubmitDbTest {
             return mapper(WsStationMapper.class, t);
         }
 
+        @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.user.WsUserMapper> wsUserMapper(SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.user.WsUserMapper.class, t);
+        }
+
         // ==== submitAdmission 依赖面之外的字段全部 mock（Spring 对 @Bean 产物做全量
         // required 注入，缺 bean 即拒绝启动）；本类不触碰任务/申诉/媒体/订单路径 ====
 
