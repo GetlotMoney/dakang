@@ -87,7 +87,9 @@ def _sources() -> list[tuple[str, str]]:
     for p in sorted(SCAN_ROOT.rglob("*")):
         if p.suffix not in EXTS or not p.is_file():
             continue
-        rel = str(p.relative_to(ROOT))
+        # 白名单与 CI 输出统一使用仓库路径的 `/`；Windows 的 `str(Path)` 会生成
+        # 反斜杠，导致 token 定义文件无法命中白名单、把全部主题色误报为业务色值。
+        rel = p.relative_to(ROOT).as_posix()
         body = strip_comments(p.read_text(encoding="utf-8", errors="ignore"), p.suffix == ".vue")
         out.append((rel, body))
     return out

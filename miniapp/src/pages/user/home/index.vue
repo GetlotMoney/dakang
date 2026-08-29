@@ -299,10 +299,10 @@ function chooseFace(next: HomeFace) {
   gap: var(--sp-2);
   margin-top: var(--sp-2);
   padding: 8px 8px 8px 10px;
-  border: 1px solid rgb(93 135 255 / 12%);
+  border: 1px solid var(--tint-primary-strong);
   border-radius: var(--r-lg);
-  background: rgb(255 255 255 / 76%);
-  box-shadow: 0 10px 28px rgb(42 91 178 / 9%);
+  background: var(--app-bg-card);
+  box-shadow: var(--sh-card);
   backdrop-filter: blur(12px);
 }
 
@@ -367,7 +367,7 @@ function chooseFace(next: HomeFace) {
 }
 
 .face-picker-trigger.is-open {
-  box-shadow: inset 0 0 0 1px rgb(46 124 246 / 20%);
+  box-shadow: inset 0 0 0 1px var(--tint-primary-strong);
 }
 
 .face-picker-label {
@@ -397,10 +397,10 @@ function chooseFace(next: HomeFace) {
   overflow: hidden;
   width: 236px;
   padding: 6px;
-  border: 1px solid rgb(66 101 158 / 12%);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-lg);
-  background: #fff;
-  box-shadow: 0 18px 42px rgb(35 66 120 / 20%);
+  background: var(--app-bg-card);
+  box-shadow: var(--sh-card);
 }
 
 .face-dropdown-option {
