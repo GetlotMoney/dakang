@@ -372,7 +372,9 @@ public class MiniIdentityServiceImpl implements IMiniIdentityService {
                                 .in(WsPublicLead::getLeadStatus,
                                         IdentityEnum.LeadStatus.ASSIGNED.getValue(),
                                         IdentityEnum.LeadStatus.CONFIRMED.getValue())))
-                .thenComparingLong(WsIdentityProfile::getId)).orElseThrow();
+                // 没有区域代理是合法冷启动：机主线索先留在公域池，后续区域代理通过时再轮转。
+                // 这里返回 null 与 assignPublicLead 的 UNASSIGNED 分支同构；抛异常会让首个机主永远申请失败。
+                .thenComparingLong(WsIdentityProfile::getId)).orElse(null);
     }
 
     private void bindOwnerRelationships(Long ownerUserId, WsIdentityProfile direct, String source, String now) {
