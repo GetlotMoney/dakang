@@ -1,7 +1,9 @@
 import type { BusinessTime } from '@/api/common'
 import type { RechargePayStatus } from '@/api/recharge'
 import { rechargeApi } from '@/api/recharge'
+import { isDemoMode } from '@/api/runtime'
 import { formatBizTime, formatFen } from '@/utils/format'
+import { prepayWechat, requestWechatPayment } from '@/utils/wechat-pay'
 
 /**
  * 充值付款与到账确认的唯一实现：充值页（U05）与订单详情页（U06 继续支付）共用，
@@ -79,8 +81,21 @@ export async function payAndSettle(
   if (!confirmed) {
     return null
   }
-  await rechargeApi.simulatePay(orderNo)
-  const settled = await pollUntilSettled(orderNo)
+  let settled: RechargePayStatus
+  if (isDemoMode()) {
+    // 测试包仅替换外部收银台：Pay-Sim 仍写支付事实、流水并推进真实充值事务。
+    await rechargeApi.simulatePay(orderNo)
+    settled = await pollUntilSettled(orderNo)
+  }
+  else {
+    const params = await prepayWechat(orderNo)
+    const result = await requestWechatPayment(orderNo, params)
+    settled = result.status.retryable ? await pollUntilSettled(orderNo) : result.status
+    if (result.sheet === 'cancelled' && settled.payStatusCode !== 'COMPLETED') {
+      prompts.notify('info', '已取消支付，可稍后在订单详情继续支付')
+      return settled
+    }
+  }
   if (settled.payStatusCode === 'COMPLETED') {
     prompts.notify('success', prompts.completedMessage ?? '充值已到账')
   }

@@ -3,7 +3,7 @@ import { ContractError } from './common'
 
 export interface CapabilityDefinition {
   code: CapabilityCode
-  group: 'water' | 'courier' | 'owner'
+  group: 'water' | 'courier' | 'owner' | 'channel' | 'region'
   title: string
   entryPath: string
 }
@@ -38,6 +38,18 @@ export const capabilityRegistry: CapabilityDefinition[] = [
     group: 'owner',
     title: '设备服务',
     entryPath: '/pages/owner/service/index',
+  },
+  {
+    code: 'CHANNEL_VIEW',
+    group: 'channel',
+    title: '渠道推广',
+    entryPath: '/pages/channel/overview/index',
+  },
+  {
+    code: 'REGION_VIEW',
+    group: 'region',
+    title: '区域运营',
+    entryPath: '/pages/region/overview/index',
   },
 ]
 

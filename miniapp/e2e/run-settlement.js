@@ -24,6 +24,7 @@ const { Buffer } = require('node:buffer')
 const { execFile, spawn } = require('node:child_process')
 const { sha256File } = require('./e1b-core')
 const { newBatchId } = require('./report-core')
+const { verifyAccBackendContainer } = require('./acc-backend-proof')
 
 if (String(process.env.SETTLE_ACC_MODE || '').trim() !== 'full') {
   console.error('安全闸拒绝执行：必须显式设置 SETTLE_ACC_MODE=full（本脚本会真实写验收库）')
@@ -81,8 +82,8 @@ const QR_DEV1 = 'ACC-QR-DEV1-O1'
 const WATER_TYPE_ID = 1
 const PACKAGE_ID = '9501' // 首购套餐（含水量权益，payWay3 场景依赖）
 const CASH_PACKAGE_ID = '9502' // 现金充值套餐（指定卡追充）
-// 种子分账比例（acc-seed.sql 9801~9805，演示值）：售水 机主7000/平台余数；配送 6000/3000/余数
-const RATE = { waterOwner: 7000, deliveryOwner: 6000, deliveryCourier: 3000 }
+// D-428 生效整版计划：售水机主50%，无归属时推广/区域份额落平台；配送费线配送员90%。
+const RATE = { waterOwner: 5000, deliveryCourier: 9000 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const rid = () => crypto.randomUUID()
@@ -327,7 +328,7 @@ function scenario(id, name, fn) {
   scenarios.push({ id, name, fn })
 }
 
-scenario('S1', '水线真实链分账：余额取水完成→机主70%快照+平台余数→Worker结算入账', async (ev) => {
+scenario('S1', '水线真实链分账：余额取水完成→D-428机主50%快照+平台余数→Worker结算入账', async (ev) => {
   await simStart(DEV1.no)
   const card = await ensureOwnerCard(8000)
   ctx.cardId = card.ID
@@ -342,12 +343,12 @@ scenario('S1', '水线真实链分账：余额取水完成→机主70%快照+平
   ok(owner && platform, '机主与平台行都在')
   eq(owner.RECEIVER_USER_ID, OWNER_ID, '机主收款人=9001')
   eq(platform.RECEIVER_USER_ID, 0, '平台行恒 0 哨兵（NULL 不参与唯一约束）')
-  eq(owner.SPLIT_RATE_SNAP, String(RATE.waterOwner), '机主比例快照=7000')
+  eq(owner.SPLIT_RATE_SNAP, String(RATE.waterOwner), '机主比例快照=5000')
   eq(platform.SPLIT_RATE_SNAP, 'REMAINDER', '平台行快照=REMAINDER')
   const base = Number(owner.SPLIT_AMOUNT) + Number(platform.SPLIT_AMOUNT)
   ok(base > 0, '基数为正')
   ok(base < Number(order.ORDER_AMOUNT), '基数=实扣（预扣-退差）应小于订单金额', `${base} vs ${order.ORDER_AMOUNT}`)
-  eq(owner.SPLIT_AMOUNT, Math.floor(base * RATE.waterOwner / 10000), '机主=基数×70% 向下取整')
+  eq(owner.SPLIT_AMOUNT, Math.floor(base * RATE.waterOwner / 10000), '机主=基数×50% 向下取整')
 
   await pollUntil('分账 Worker 应把两行推到已分账', async () => {
     const settled = await one('SELECT COUNT(*) AS c FROM ws_split_record WHERE ORDER_ID=? AND SPLIT_STATUS=2 AND SPLIT_TIME IS NOT NULL', [order.ID])
@@ -366,7 +367,7 @@ scenario('S1', '水线真实链分账：余额取水完成→机主70%快照+平
   ev.push(`基数 ${base}（订单 ${order.ORDER_AMOUNT} 扣退差），机主 ${owner.SPLIT_AMOUNT} + 平台 ${platform.SPLIT_AMOUNT}`)
 })
 
-scenario('S2', '配送链三方分账（D-419 分线）：签收即完成→水费按售水线70%、配送费按配送线60%/30%各自计算，平台吃两线余数', async (ev) => {
+scenario('S2', '配送链三方分账（D-419/D-428 分线）：水费机主50%、配送费配送员90%，平台吃两线余数', async (ev) => {
   const card = await ensureOwnerCard(8000)
   const created = await apiOk('/mini/delivery/order/create', {
     requestId: rid(),
@@ -396,15 +397,15 @@ scenario('S2', '配送链三方分账（D-419 分线）：签收即完成→水�
   eq(owner.RECEIVER_USER_ID, OWNER_ID, '机主=站归属 9001')
   eq(courier.RECEIVER_USER_ID, COURIER_ID, '配送员=签收人 9003')
   const base = Number(order.ORDER_AMOUNT)
-  // D-419：配送费与水费分线——水费按售水线机主比例、配送费按配送线机主/配送员比例
+  // D-419/D-428：配送费与水费分线——机主只参与水费线，配送员只参与配送费线。
   const taskAmounts = await one('SELECT WATER_AMOUNT, DELIVERY_FEE FROM ws_delivery_task WHERE ORDER_ID=?', [order.ID])
   const waterFen = Number(taskAmounts.WATER_AMOUNT)
   const feeFen = Number(taskAmounts.DELIVERY_FEE)
   eq(waterFen + feeFen, base, '任务行水费+配送费=整单金额（创单冻结恒等式）')
   eq(Number(owner.SPLIT_AMOUNT) + Number(courier.SPLIT_AMOUNT) + Number(platform.SPLIT_AMOUNT), base, '三行合计=整单金额')
-  eq(Number(owner.SPLIT_AMOUNT), Math.floor(waterFen * RATE.waterOwner / 10000) + Math.floor(feeFen * RATE.deliveryOwner / 10000), '机主=水费线70%+配送费线60% 各自向下取整')
-  eq(Number(courier.SPLIT_AMOUNT), Math.floor(feeFen * RATE.deliveryCourier / 10000), '配送员=配送费线30% 向下取整')
-  eq(owner.SPLIT_RATE_SNAP, `W${RATE.waterOwner}+D${RATE.deliveryOwner}`, '机主快照记两线比例')
+  eq(Number(owner.SPLIT_AMOUNT), Math.floor(waterFen * RATE.waterOwner / 10000), '机主=水费线50%，不参与配送费线')
+  eq(Number(courier.SPLIT_AMOUNT), Math.floor(feeFen * RATE.deliveryCourier / 10000), '配送员=配送费线90% 向下取整')
+  eq(owner.SPLIT_RATE_SNAP, `W${RATE.waterOwner}`, '机主快照只记水费线比例')
   eq(courier.SPLIT_RATE_SNAP, `D${RATE.deliveryCourier}`, '配送员快照记配送费线比例')
   eq(platform.SPLIT_RATE_SNAP, 'REMAINDER', '平台吃余数')
 
@@ -434,31 +435,32 @@ scenario('S3', '口径边界：充值单不分账；水量支付(payWay3)零金�
   ev.push(`充值单 ${top.orderNo} 与水量单 ${mlOrder.ORDER_NO} 均零分账`)
 })
 
-scenario('S4', '比例版本生效语义：新版本只影响此后新单，历史快照不追溯，过去时点拒绝', async (ev) => {
-  const newId = await apiOk('/finance/config/create', { productLine: 1, receiverType: 1, splitRate: 6500, remark: '验收演练版本' }, ctx.ops)
+scenario('S4', '整版计划生效语义：新版本只影响此后新单，历史快照不追溯，过去时点拒绝', async (ev) => {
+  const plan = { waterOwnerBp: 6500, waterReferrerBp: 500, regionProvinceCumBp: 500, regionCityCumBp: 300, regionCountyCumBp: 200, deliveryCourierBp: 9000 }
+  const newId = await apiOk('/finance/plan/create', { ...plan, remark: '验收演练版本' }, ctx.ops)
   ok(newId, '新版本应写入')
   const order = await waterOrderThrough(ctx.cardId, 2)
   const owner = await one('SELECT * FROM ws_split_record WHERE ORDER_ID=? AND RECEIVER_TYPE=1', [order.ID])
   eq(owner.SPLIT_RATE_SNAP, '6500', '新单吃新版本快照')
   const oldOwner = await one('SELECT SPLIT_RATE_SNAP FROM ws_split_record WHERE ID=?', [ctx.waterOwnerSplit.ID])
-  eq(oldOwner.SPLIT_RATE_SNAP, '7000', '历史行快照不追溯')
+  eq(oldOwner.SPLIT_RATE_SNAP, '5000', '历史行快照不追溯')
 
-  await apiFail('/finance/config/create', { productLine: 1, receiverType: 1, splitRate: 7000, effectTime: '20200101000000' }, ctx.ops)
-  await apiFail('/finance/config/create', { productLine: 1, receiverType: 1, splitRate: 10001 }, ctx.ops)
-  // 复位到演示值 7000：同秒撞 uk_split_config_version，等 1.2s 保证生效时点不同
+  await apiFail('/finance/plan/create', { ...plan, effectTime: '20200101000000' }, ctx.ops)
+  await apiFail('/finance/plan/create', { ...plan, waterOwnerBp: 10001 }, ctx.ops)
+  // 复位到 D-428 演示值：同秒版本号可能撞键，等 1.2s 保证生效时点不同。
   await sleep(1200)
-  await apiOk('/finance/config/create', { productLine: 1, receiverType: 1, splitRate: 7000, remark: '验收复位' }, ctx.ops)
-  const page = await apiOk('/finance/config/page', { productLine: 1, current: 1, size: 100 }, ctx.ops)
-  ok((page.list || []).filter(item => item.receiverType === 1).length >= 3, '售水机主线含历史版本可审计')
+  await apiOk('/finance/plan/create', { ...plan, waterOwnerBp: 5000, remark: '验收复位' }, ctx.ops)
+  const page = await apiOk('/finance/plan/page', { current: 1, size: 100 }, ctx.ops)
+  ok((page.list || []).length >= 3, '整版计划含历史版本可审计')
   ctx.rawParts.push(JSON.stringify(page))
-  ev.push(`版本 ${newId} 生效于新单（6500），历史行保持 7000；过去时点/超万分比双拒绝`)
+  ev.push(`整版计划 ${newId} 生效于新单（6500），历史行保持 5000；过去时点/超万分比双拒绝`)
 })
 
 scenario('S5', '库层资金铁闸：分账行/入账流水唯一键防重放，结算恰一次', async (ev) => {
   const s = ctx.waterOwnerSplit
   await expectDupKey(
     `INSERT INTO ws_split_record (DATA_STATUS, CREATE_BY, CREATE_TIME, UPDATE_BY, UPDATE_TIME, ORDER_ID, RECEIVER_TYPE, RECEIVER_USER_ID, SPLIT_AMOUNT, SPLIT_RATE_SNAP, SPLIT_STATUS)
-     VALUES (0,1,'20260101000000',1,'20260101000000',?,?,?,1,'7000',1)`,
+     VALUES (0,1,'20260101000000',1,'20260101000000',?,?,?,1,'5000',1)`,
     [s.ORDER_ID, 1, OWNER_ID],
     '同单同收款方重放插入应撞 uk_split_order_receiver',
   )
@@ -730,20 +732,31 @@ async function verifyEnvironment() {
   ok(owner && owner.USER_PHONE === OWNER_PHONE, '种子哨兵缺失（先 acc-env.sh rebuild）')
   const configs = await one('SELECT COUNT(*) AS c FROM ws_split_config WHERE ID BETWEEN 9801 AND 9805')
   eq(configs.c, 5, 'E2E-08 分账配置种子 9801~9805 缺失')
-  // 脏库拒跑：上一轮会留下 S4 的新比例版本与分账行，直接跑会让 S1 的 7000 期望失真
+  const d428 = await one('SELECT ID FROM ws_split_plan WHERE PLAN_VERSION=\'DEMO-D428-V1\' AND PLAN_STATUS=2')
+  ok(d428, 'D-428 生效整版计划缺失')
+  const d428Items = await one('SELECT COUNT(*) AS c FROM ws_split_plan_item WHERE PLAN_ID=?', [d428.ID])
+  eq(d428Items.c, 6, 'D-428 计划必须六项齐全')
+  // 脏库拒跑：上一轮会留下 S4 的新整版计划与分账行，直接跑会让 S1 的5000期望失真。
+  const plans = await one('SELECT COUNT(*) AS c FROM ws_split_plan')
+  eq(plans.c, 1, '验收基线必须恰一套 D-428 计划（有多余版本=脏库，需 restore）')
   const waterVersions = await one('SELECT COUNT(*) AS c FROM ws_split_config WHERE PRODUCT_LINE=1')
   eq(waterVersions.c, 2, '售水线必须恰两版种子配置（有多余版本=脏库，需 rebuild）')
   const splitRows = await one('SELECT COUNT(*) AS c FROM ws_split_record')
   eq(splitRows.c, 0, '分账面必须干净（有历史行=脏库，需 rebuild）')
   fingerprint.seedSentinel = true
 
-  const pids = await lsofPort(BACKEND_PORT)
-  ok(pids.length > 0, `端口 ${BACKEND_PORT} 无监听进程`)
-  const pidFile = path.join(ACC_ENV_RUN_DIR, 'backend.pid')
-  ok(fs.existsSync(pidFile), 'acc-env backend.pid 缺失')
-  const recordedPid = fs.readFileSync(pidFile, 'utf8').trim()
-  ok(pids.includes(recordedPid), `端口被非 acc-env 进程占用（${pids.join(',')} vs ${recordedPid}）`)
-  fingerprint.backendPidVerified = true
+  if (process.env.ACC_BACKEND_CONTAINER) {
+    fingerprint.backendContainerVerified = verifyAccBackendContainer(process.env.ACC_BACKEND_CONTAINER, BACKEND_PORT)
+  }
+  else {
+    const pids = await lsofPort(BACKEND_PORT)
+    ok(pids.length > 0, `端口 ${BACKEND_PORT} 无监听进程`)
+    const pidFile = path.join(ACC_ENV_RUN_DIR, 'backend.pid')
+    ok(fs.existsSync(pidFile), 'acc-env backend.pid 缺失')
+    const recordedPid = fs.readFileSync(pidFile, 'utf8').trim()
+    ok(pids.includes(recordedPid), `端口被非 acc-env 进程占用（${pids.join(',')} vs ${recordedPid}）`)
+    fingerprint.backendPidVerified = true
+  }
 
   const jar = fs.readdirSync(JAR_GLOB_DIR).find(f => f.endsWith('.jar') && !f.endsWith('.jar.original'))
   ok(jar, 'server/target 缺少构建产物')

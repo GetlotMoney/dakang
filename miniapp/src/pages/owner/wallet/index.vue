@@ -2,11 +2,14 @@
 import type { OwnerWallet } from '@/api/device'
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
+import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
 import { deviceApi } from '@/api/device'
+import { createIdentityRequestId, identityApi } from '@/api/identity'
+import { isDemoMode } from '@/api/runtime'
 import AppNavbar from '@/components/app-navbar.vue'
 import AppPageState from '@/components/app-page-state.vue'
-import { formatBizTimeShort, formatFen, INCOME_FLOW_TYPE_LABELS, pendingSplitLineText } from '@/utils/format'
+import { formatBizTimeShort, formatFen, INCOME_FLOW_TYPE_LABELS, INCOME_RECEIVER_TYPE_LABELS, pendingSplitLineText } from '@/utils/format'
 import { backOr } from '@/utils/navigation'
 
 definePage({
@@ -23,6 +26,10 @@ const CALIBER_NOTE
 const loading = ref(true)
 const errorMessage = ref('')
 const wallet = ref<OwnerWallet | null>(null)
+const withdrawing = ref(false)
+const message = useMessage()
+const toast = useToast()
+const demoMode = isDemoMode()
 
 let fetching = false
 
@@ -47,11 +54,48 @@ async function refresh() {
     loading.value = false
   }
 }
+
+function parseYuanFen(value: string): number | null {
+  const match = value.trim().match(/^(\d+)(?:\.(\d{1,2}))?$/)
+  if (!match)
+    return null
+  return Number(match[1]) * 100 + Number((match[2] ?? '').padEnd(2, '0'))
+}
+
+async function withdraw() {
+  if (!wallet.value || withdrawing.value)
+    return
+  let result
+  try {
+    result = await message.prompt({
+      title: '模拟提现',
+      inputPlaceholder: '最低1元，例如 10.00',
+      inputPattern: /^\d+(?:\.\d{1,2})?$/,
+      inputError: '请输入正确金额，最多两位小数',
+      confirmButtonText: '确认提现',
+    })
+  }
+  catch { return }
+  const fen = parseYuanFen(String(result?.value ?? ''))
+  if (fen === null || fen < 100) {
+    toast.error('最低提现金额为1元')
+    return
+  }
+  withdrawing.value = true
+  try {
+    const withdrawNo = await identityApi.simulateWithdraw(fen, createIdentityRequestId())
+    toast.success(`模拟打款成功：${withdrawNo}`)
+    await refresh()
+  }
+  catch (error) { toast.error(error instanceof Error ? error.message : '提现失败') }
+  finally { withdrawing.value = false }
+}
 </script>
 
 <template>
   <view class="page-shell">
     <AppNavbar title="收益钱包" back-to="U03" />
+    <wd-toast /><wd-message-box />
 
     <view v-if="loading" class="page-section">
       <AppPageState state="loading" :row-col="[1, 1, { width: '60%' }]" />
@@ -85,6 +129,36 @@ async function refresh() {
           <view class="muted-text caliber-note">
             {{ CALIBER_NOTE }}
           </view>
+          <view v-if="demoMode" class="withdraw-row">
+            <wd-button size="small" :loading="withdrawing" :disabled="wallet.balanceFen < 100 || wallet.clawbackDeficitFen > 0" @click="withdraw">
+              提现
+            </wd-button>
+            <text class="muted-text">
+              最低1元，演示环境自动模拟打款
+            </text>
+          </view>
+        </wd-card>
+      </view>
+
+      <view class="page-section">
+        <wd-card title="身份收益构成">
+          <view v-if="wallet.roleSummaries.length" class="role-summary-list">
+            <view v-for="role in wallet.roleSummaries" :key="role.receiverType" class="role-summary-row">
+              <view>{{ INCOME_RECEIVER_TYPE_LABELS[role.receiverType] ?? `职责${role.receiverType}` }}</view>
+              <view class="role-summary-amount">
+                <text>累计 {{ formatFen(role.settledFen) }}</text>
+                <text v-if="role.pendingFen > 0" class="muted-text">
+                  在途 {{ formatFen(role.pendingFen) }}
+                </text>
+              </view>
+            </view>
+          </view>
+          <view v-else class="muted-text">
+            暂无按身份产生的分润
+          </view>
+          <view class="muted-text caliber-note">
+            各身份分别留痕；可用余额仍汇总到上方统一钱包提现
+          </view>
         </wd-card>
       </view>
 
@@ -95,7 +169,9 @@ async function refresh() {
               <view class="flow-main">
                 <view>{{ INCOME_FLOW_TYPE_LABELS[flow.flowType] ?? `类型${flow.flowType}` }}</view>
                 <view class="muted-text">
-                  {{ flow.orderNo ? `订单 ${flow.orderNo}` : '—' }} · {{ formatBizTimeShort(flow.createTime) }}
+                  {{ flow.orderNo ? `订单 ${flow.orderNo}` : '—' }}<template v-if="flow.receiverType">
+                    · {{ INCOME_RECEIVER_TYPE_LABELS[flow.receiverType] ?? `职责${flow.receiverType}` }}
+                  </template> · {{ formatBizTimeShort(flow.createTime) }}
                 </view>
               </view>
               <view class="flow-side">
@@ -114,7 +190,7 @@ async function refresh() {
         </wd-card>
       </view>
 
-      <view class="page-section readonly-footer">
+      <view v-if="!demoMode" class="page-section readonly-footer">
         <wd-icon name="lock-on" size="14px" color="var(--app-text-secondary)" />
         <text>暂不支持提现</text>
       </view>
@@ -128,6 +204,7 @@ async function refresh() {
   font-weight: 700;
   margin-bottom: 6px;
 }
+.withdraw-row { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-4); }
 
 .caliber-note {
   margin-top: 8px;
@@ -148,6 +225,10 @@ async function refresh() {
 .flow-side {
   text-align: right;
 }
+
+.role-summary-row { display: flex; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-2) 0; }
+.role-summary-row + .role-summary-row { border-top: 1px solid var(--line-1); }
+.role-summary-amount { display: flex; flex-direction: column; align-items: flex-end; }
 
 .amount-in {
   color: var(--app-color-success);

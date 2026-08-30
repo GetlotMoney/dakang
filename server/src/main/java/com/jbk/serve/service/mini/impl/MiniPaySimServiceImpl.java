@@ -4,6 +4,7 @@ import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.StrUtil;
 import com.jbk.serve.mapper.trade.RechargeCreditMapper;
 import com.jbk.serve.mapper.trade.RechargeIdentityMapper;
+import com.jbk.serve.service.identity.DemoScenarioService;
 import com.jbk.serve.service.mini.IMiniPaySimService;
 import com.jbk.serve.service.mini.recharge.IRechargePayFactService;
 import com.jbk.serve.service.mini.recharge.IRechargePaySourceAdapter;
@@ -58,6 +59,7 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
     private final RechargeCreditMapper creditMapper;
     private final IRechargePayFactService factService;
     private final IRechargePaySourceAdapter paySourceAdapter;
+    private final DemoScenarioService demoScenarioService;
 
     @Override
     public MiniPaySimVo pay(MiniPaySimBo bo, Long userId) {
@@ -74,6 +76,7 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
         if (reject != null) {
             throw new JbkException(reject);
         }
+        boolean duplicateCallback = applyConfiguredOutcome(demoScenarioService.consumeNextPayResult(userId));
 
         String providerEventKey = "SIM-" + orderNo;
         String transactionId = "SIMTX" + orderNo;
@@ -103,6 +106,10 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
         }
 
         IRechargePayFactService.Outcome outcome = factService.process(eventId);
+        if (duplicateCallback) {
+            // 同一事实 ID 重放，唯一键与处理器幂等共同证明不会重复入账。
+            outcome = factService.process(eventId);
+        }
 
         MiniPaySimVo vo = new MiniPaySimVo();
         vo.setOrderNo(orderNo);
@@ -110,6 +117,20 @@ public class MiniPaySimServiceImpl implements IMiniPaySimService {
         vo.setMessage(outcome.message());
         vo.setTransactionId(transactionId);
         return vo;
+    }
+
+    private boolean applyConfiguredOutcome(String outcome) {
+        if (outcome == null) {
+            return false;
+        }
+        return switch (outcome) {
+            case "SUCCESS" -> false;
+            case "DUPLICATE" -> true;
+            case "CANCEL" -> throw new JbkException("已模拟用户取消支付，订单仍可继续支付");
+            case "INSUFFICIENT" -> throw new JbkException("已模拟支付账户余额不足，订单尚未付款");
+            case "TIMEOUT" -> throw new JbkException("已模拟支付结果超时，请稍后从订单详情重试");
+            default -> throw JbkException.internal("演示支付结果配置异常");
+        };
     }
 
     // ------------------------------------------------------------------

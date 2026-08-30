@@ -17,6 +17,8 @@ export type CapabilityCode
     | 'COURIER_WORK'
     | 'OWNER_VIEW'
     | 'OWNER_SERVICE'
+    | 'CHANNEL_VIEW'
+    | 'REGION_VIEW'
 
 export type CourierStatus = 1 | 2 | 3 | 4
 

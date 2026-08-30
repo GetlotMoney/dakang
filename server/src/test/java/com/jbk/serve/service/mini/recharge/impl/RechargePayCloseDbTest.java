@@ -267,7 +267,8 @@ class RechargePayCloseDbTest {
         @Bean
         MiniPaySimServiceImpl paySimService(RechargeIdentityMapper identity, RechargeCreditMapper credit,
                                             IRechargePayFactService facts, PaySimSourceAdapter adapter) {
-            return new MiniPaySimServiceImpl(identity, credit, facts, adapter);
+            return new MiniPaySimServiceImpl(identity, credit, facts, adapter,
+                    Mockito.mock(com.jbk.serve.service.identity.DemoScenarioService.class));
         }
 
         @Bean

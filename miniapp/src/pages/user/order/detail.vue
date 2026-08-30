@@ -4,7 +4,7 @@ import { deliveryPriceLines } from '@/api/delivery'
 import type { CardDetail } from '@/api/card'
 import type { DeliveryAppeal, OrderDetail, OrderTraceNode } from '@/api/order'
 import type { RechargePayStatus } from '@/api/recharge'
-import { onLoad } from '@dcloudio/uni-app'
+import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
@@ -198,6 +198,9 @@ const task = ref<DeliveryTask | null>(null)
 const appeal = ref<DeliveryAppeal | null>(null)
 const appealError = ref('')
 const focusBlock = ref<FocusBlock>('')
+const currentOrderNo = ref('')
+let deliveryPollTimer: ReturnType<typeof setTimeout> | null = null
+let deliveryPolling = false
 
 const flowCountText = computed(() => {
   const data = detail.value
@@ -311,13 +314,63 @@ onLoad((query?: Record<string, string | undefined>) => {
     errorMessage.value = '请从订单列表进入'
     return
   }
+  currentOrderNo.value = orderNo
   void load(orderNo)
 })
 
-async function load(orderNo: string) {
-  pageState.value = 'loading'
-  issuedCard.value = null
-  issuedCardError.value = ''
+onShow(() => {
+  if (currentOrderNo.value && pageState.value === 'ready') {
+    void load(currentOrderNo.value, true)
+  }
+})
+
+onHide(stopDeliveryPolling)
+onUnload(stopDeliveryPolling)
+
+function shouldPollDelivery() {
+  return detail.value?.order.orderType === 3
+    && !!task.value
+    && task.value.taskStatus >= 1
+    && task.value.taskStatus <= 4
+}
+
+function syncDeliveryPolling() {
+  if (!shouldPollDelivery()) {
+    stopDeliveryPolling()
+    return
+  }
+  if (deliveryPollTimer !== null) {
+    return
+  }
+  // 单次定时器在每次请求结束后重新安排：避免页面切换或一次慢请求让常驻 interval
+  // 丢失后续刷新，配送到达后仍能继续追到三照签收终态。
+  deliveryPollTimer = setTimeout(() => {
+    deliveryPollTimer = null
+    if (!deliveryPolling && currentOrderNo.value) {
+      void load(currentOrderNo.value, true)
+      return
+    }
+    syncDeliveryPolling()
+  }, 3000)
+}
+
+function stopDeliveryPolling() {
+  if (deliveryPollTimer !== null) {
+    clearTimeout(deliveryPollTimer)
+    deliveryPollTimer = null
+  }
+}
+
+async function load(orderNo: string, silent = false) {
+  if (deliveryPolling) {
+    return
+  }
+  deliveryPolling = true
+  if (!silent) {
+    pageState.value = 'loading'
+    issuedCard.value = null
+    issuedCardError.value = ''
+  }
   try {
     const loaded = await orderApi.getOrderDetail(orderNo)
     detail.value = loaded
@@ -341,11 +394,17 @@ async function load(orderNo: string) {
     pageState.value = 'ready'
   }
   catch (error) {
-    pageState.value = 'error'
-    errorImage.value = error instanceof ContractError && error.code === 'ORDER_NOT_FOUND'
-      ? 'content'
-      : 'network'
-    errorMessage.value = error instanceof ContractError ? error.message : '订单详情加载失败，请重试'
+    if (!silent) {
+      pageState.value = 'error'
+      errorImage.value = error instanceof ContractError && error.code === 'ORDER_NOT_FOUND'
+        ? 'content'
+        : 'network'
+      errorMessage.value = error instanceof ContractError ? error.message : '订单详情加载失败，请重试'
+    }
+  }
+  finally {
+    deliveryPolling = false
+    syncDeliveryPolling()
   }
 }
 

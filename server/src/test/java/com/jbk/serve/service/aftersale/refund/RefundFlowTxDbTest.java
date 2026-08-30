@@ -76,10 +76,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RefundFlowTxDbTest {
 
     @Container
-    static final MySQLContainer<?> MYSQL = new MySQLContainer<>(DockerImageName.parse("mysql:8.0"))
+    static final MySQLContainer<?> MYSQL = new MySQLContainer<>(DockerImageName.parse("mysql:8.0.39"))
             .withDatabaseName("dakang_refund_it")
             .withUsername("root")
             .withPassword("ittest")
+            .withStartupTimeoutSeconds(300)
             .withCommand("--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci");
 
     private static final long USER_ID = 9L;

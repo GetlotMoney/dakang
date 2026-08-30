@@ -3,6 +3,7 @@ package com.jbk.serve.service.mall.impl;
 import cn.hutool.core.util.ObjectUtil;
 import com.jbk.serve.mapper.mall.WsMallOrderMapper;
 import com.jbk.serve.mapper.mall.WsMallPaymentMapper;
+import com.jbk.serve.service.identity.DemoScenarioService;
 import com.jbk.serve.service.mall.IMallOrderService;
 import com.jbk.serve.service.mall.IMallPayFactService;
 import com.jbk.serve.service.mall.IMallPaySimService;
@@ -48,6 +49,8 @@ public class MallPaySimServiceImpl implements IMallPaySimService {
     private IMallPayFactService payFactService;
     @Autowired
     private IMallOrderService orderService;
+    @Autowired
+    private DemoScenarioService demoScenarioService;
 
     @Override
     public MallOrderDetailVo pay(Long userId, String orderNo) {
@@ -59,6 +62,7 @@ public class MallPaySimServiceImpl implements IMallPaySimService {
         if (ObjectUtil.equal(order.getOrderStatus(), MallEnum.OrderStatus.CANCELLED.getValue())) {
             throw new JbkException("订单已取消，无法支付");
         }
+        boolean duplicateCallback = applyConfiguredOutcome(demoScenarioService.consumeNextPayResult(userId));
         int paySource = MallEnum.PaySource.PAY_SIM.getValue();
         int channel = MallEnum.FactChannel.PAY_SIM.getValue();
         String eventKey = SIM_EVENT_KEY_PREFIX + orderNo;
@@ -78,7 +82,24 @@ public class MallPaySimServiceImpl implements IMallPaySimService {
         }
         // 事务B：推进（失败只影响本次返回，事实已留存，Worker 会重放）
         payFactService.process(fact.getId());
+        if (duplicateCallback) {
+            payFactService.process(fact.getId());
+        }
         return orderService.detailForUser(userId, orderNo);
+    }
+
+    private boolean applyConfiguredOutcome(String outcome) {
+        if (outcome == null) {
+            return false;
+        }
+        return switch (outcome) {
+            case "SUCCESS" -> false;
+            case "DUPLICATE" -> true;
+            case "CANCEL" -> throw new JbkException("已模拟用户取消支付，商城订单仍可继续支付");
+            case "INSUFFICIENT" -> throw new JbkException("已模拟支付账户余额不足，商城订单尚未付款");
+            case "TIMEOUT" -> throw new JbkException("已模拟支付结果超时，请稍后从商城订单重试");
+            default -> throw JbkException.internal("演示支付结果配置异常");
+        };
     }
 
     @Override

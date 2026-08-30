@@ -90,6 +90,12 @@ public interface ApiEnum {
         WS_MALL_LOGISTICS_EVENT_STATE("1407"),// 商城物流事件状态（E2E-09 L1）
         WS_MALL_LOGISTICS_PROCESSING("1408"),// 商城物流处理状态：事件收件箱与 outbox 共用值域（E2E-09 L1）
         WS_MALL_LOGISTICS_ACTION("1409"),// 商城物流动作类型（E2E-09 L1）
+        WS_IDENTITY_CAPABILITY_TYPE("1410"),// 小程序经营身份能力类型
+        WS_IDENTITY_APPLICATION_STATUS("1411"),// 小程序身份申请状态
+        WS_IDENTITY_SUBJECT_TYPE("1412"),// 经营主体类型
+        WS_REGION_AGENT_LEVEL("1413"),// 区域代理级别
+        WS_PUBLIC_LEAD_STATUS("1414"),// 公域线索轮转状态
+        WS_WITHDRAW_STATUS("1415"),// 收益提现终态
         ;
         private final String value;
 

@@ -5,12 +5,14 @@ import type { AccountContext } from '@/api/account'
  * 视角只是 U01 的局部 UI 偏好，不是全局身份——Tabbar、我的、路由守卫、
  * 数据范围与审计均不随视角变化；安全边界始终在服务端数据范围。
  */
-export type HomeFace = 'life' | 'courier' | 'owner'
+export type HomeFace = 'life' | 'courier' | 'owner' | 'channel' | 'region'
 
 export const HOME_FACE_LABELS: Record<HomeFace, string> = {
-  courier: '配送',
-  owner: '经营',
-  life: '生活',
+  courier: '配送工作台',
+  owner: '机主经营',
+  channel: '渠道推广',
+  region: '区域运营',
+  life: '生活服务',
 }
 
 /** 账号可用的首页视角集合；生活态对所有账号可用。 */
@@ -21,6 +23,12 @@ export function availableHomeFaces(context: AccountContext | null): HomeFace[] {
   }
   if (context?.capabilities.includes('OWNER_VIEW')) {
     faces.push('owner')
+  }
+  if (context?.capabilities.includes('CHANNEL_VIEW')) {
+    faces.push('channel')
+  }
+  if (context?.capabilities.includes('REGION_VIEW')) {
+    faces.push('region')
   }
   faces.push('life')
   return faces
@@ -58,6 +66,12 @@ export function deriveDefaultHomeFace(
   }
   if (faces.includes('owner')) {
     return 'owner'
+  }
+  if (faces.includes('channel')) {
+    return 'channel'
+  }
+  if (faces.includes('region')) {
+    return 'region'
   }
   return 'life'
 }

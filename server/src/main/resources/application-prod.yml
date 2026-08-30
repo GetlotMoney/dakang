@@ -33,6 +33,10 @@ mqtt:
   username: ${DAKANG_MQTT_USERNAME:}
   password: ${DAKANG_MQTT_PASSWORD:}
 
+# 正式环境安全默认关闭；老板演示 compose 覆盖档才显式开启。
+demo-simulation:
+  enabled: ${DAKANG_DEMO_SIMULATION_ENABLED:false}
+
 ali:
   oss:
     # TODO 待配置：生产 OSS 凭据（六维达康项目专属）
@@ -135,6 +139,13 @@ mall:
   after-sale-window-days: 7
 
 delivery:
+  # 老板测试配送联动：只在显式加载 demo Compose 时开启；三项业务键由服务器私有 .env 注入。
+  demo-sim:
+    enabled: ${DELIVERY_DEMOSIM_ENABLED:false}
+    customer-phone: ${DELIVERY_DEMOSIM_CUSTOMER_PHONE:}
+    courier-phone: ${DELIVERY_DEMOSIM_COURIER_PHONE:13800001111}
+    station-code: ${DELIVERY_DEMOSIM_STATION_CODE:WS-WH-001}
+    stage-delay-seconds: ${DELIVERY_DEMOSIM_STAGE_DELAY_SECONDS:4}
   auto-refill:
     # 自动补货固定周期触发方（B08-S1）。生产默认关闭且写显式：真实扣款且无用户交互确认，
     # 必须由隔离验收环境显式开启并验收后，才谈得上在主部署打开。

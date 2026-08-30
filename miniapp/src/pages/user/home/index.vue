@@ -8,6 +8,8 @@ import { messageApi } from '@/api/message'
 import HomeFaceConsumer from '@/components/home-face-consumer.vue'
 import HomeFaceCourier from '@/components/home-face-courier.vue'
 import HomeFaceOwner from '@/components/home-face-owner.vue'
+import HomeFaceChannel from '@/components/home-face-channel.vue'
+import HomeFaceRegion from '@/components/home-face-region.vue'
 import { useAccountStore } from '@/store/account'
 import {
   availableHomeFaces,
@@ -31,10 +33,30 @@ const safeHeader = getWxSafeHeader()
 
 const unreadCount = ref(0)
 const face = ref<HomeFace>('life')
+const faceMenuOpen = ref(false)
 const refreshTick = ref(0)
 const buildFingerprint = __DAKANG_BUILD_FINGERPRINT__
 
 const faces = computed(() => availableHomeFaces(context.value))
+const faceMeta: Record<HomeFace, { label: string, icon: string }> = {
+  life: { label: '生活服务', icon: 'home' },
+  courier: { label: '配送工作台', icon: 'service' },
+  owner: { label: '机主经营', icon: 'computer' },
+  channel: { label: '渠道推广', icon: 'share' },
+  region: { label: '区域运营', icon: 'location' },
+}
+const faceTips: Record<HomeFace, string> = {
+  life: '扫码取水、订水和日常服务',
+  courier: '接单、配送和履约处理',
+  owner: '设备、经营与收益概览',
+  channel: '直属机主和推广收益',
+  region: '区域血缘和公域线索',
+}
+const faceOptions = computed(() => faces.value.map(item => ({
+  label: HOME_FACE_LABELS[item],
+  value: item,
+  tip: faceTips[item],
+})))
 
 /** 副标题：已绑号显示脱敏号码，未绑号（仅微信身份建号）提示去补绑，绝不对空号码取子串。 */
 const identityLine = computed(() => {
@@ -52,7 +74,7 @@ function storageKey() {
 
 function savedFace(): HomeFace | null {
   const value = uni.getStorageSync(storageKey())
-  return value === 'life' || value === 'courier' || value === 'owner' ? value : null
+  return value === 'life' || value === 'courier' || value === 'owner' || value === 'channel' || value === 'region' ? value : null
 }
 
 onShow(async () => {
@@ -105,12 +127,22 @@ function selectFace(next: HomeFace) {
   refreshTick.value += 1
   uni.setStorageSync(storageKey(), next)
 }
+
+function toggleFaceMenu() {
+  faceMenuOpen.value = !faceMenuOpen.value
+}
+
+function chooseFace(next: HomeFace) {
+  faceMenuOpen.value = false
+  selectFace(next)
+}
 </script>
 
 <template>
   <view class="page-shell top-level-page" :style="{ paddingTop: safeHeader.pageTopPadding }">
     <image class="home-watermark" src="/static/brand/page-watermark.jpg" mode="scaleToFill" />
     <wd-toast />
+    <view v-if="faceMenuOpen" class="face-dropdown-backdrop" @click="faceMenuOpen = false" />
     <view class="e2e-build-fingerprint" aria-hidden="true">
       BUILD={{ buildFingerprint }}
     </view>
@@ -130,19 +162,58 @@ function selectFace(next: HomeFace) {
         </wd-badge>
       </view>
     </view>
-    <view v-if="identityLine || faces.length > 1" class="home-subheader">
+    <view
+      v-if="identityLine || faces.length > 1"
+      class="home-subheader"
+      :class="{ 'is-face-menu-open': faceMenuOpen }"
+    >
       <view v-if="identityLine" class="home-identity-line">
         {{ identityLine }}
       </view>
-      <view v-if="faces.length > 1" class="face-capsule">
-        <view
-          v-for="item in faces"
-          :key="item"
-          class="face-pill"
-          :class="{ 'face-pill-active': face === item }"
-          @click="selectFace(item)"
-        >
-          {{ HOME_FACE_LABELS[item] }}
+      <view v-if="faces.length > 1" class="face-switch-card">
+        <view class="face-switch-icon">
+          <wd-icon :name="faceMeta[face].icon" size="18px" />
+        </view>
+        <view class="face-switch-copy">
+          <text class="face-switch-eyebrow">
+            当前工作台
+          </text>
+          <text class="face-switch-note">
+            切换只改变首页视角
+          </text>
+        </view>
+        <view class="face-switch-control">
+          <view
+            class="face-picker-trigger"
+            :class="{ 'is-open': faceMenuOpen }"
+            @click.stop="toggleFaceMenu"
+          >
+            <text class="face-picker-label">
+              {{ faceMeta[face].label }}
+            </text>
+            <view class="face-picker-chevron" :class="{ 'is-open': faceMenuOpen }">
+              <wd-icon name="chevron-down" size="15px" />
+            </view>
+          </view>
+          <view v-if="faceMenuOpen" class="face-dropdown-panel">
+            <view
+              v-for="option in faceOptions"
+              :key="option.value"
+              class="face-dropdown-option"
+              :class="{ 'is-selected': option.value === face }"
+              @click.stop="chooseFace(option.value)"
+            >
+              <view class="face-dropdown-copy">
+                <text class="face-dropdown-label">
+                  {{ option.label }}
+                </text>
+                <text class="face-dropdown-tip">
+                  {{ option.tip }}
+                </text>
+              </view>
+              <wd-icon v-if="option.value === face" name="check" size="16px" />
+            </view>
+          </view>
         </view>
       </view>
     </view>
@@ -154,6 +225,8 @@ function selectFace(next: HomeFace) {
     <template v-if="context">
       <HomeFaceCourier v-if="face === 'courier'" class="home-face" :refresh-tick="refreshTick" @switch-face="selectFace" />
       <HomeFaceOwner v-else-if="face === 'owner'" class="home-face" :refresh-tick="refreshTick" @switch-face="selectFace" />
+      <HomeFaceChannel v-else-if="face === 'channel'" class="home-face" :refresh-tick="refreshTick" />
+      <HomeFaceRegion v-else-if="face === 'region'" class="home-face" :refresh-tick="refreshTick" />
       <HomeFaceConsumer v-else class="home-face" :refresh-tick="refreshTick" />
     </template>
   </view>
@@ -207,11 +280,30 @@ function selectFace(next: HomeFace) {
 }
 
 .home-subheader {
+  margin-top: var(--sp-2);
+}
+
+.home-subheader.is-face-menu-open {
+  z-index: 20;
+}
+
+.face-dropdown-backdrop {
+  position: fixed;
+  z-index: 10;
+  inset: 0;
+}
+
+.face-switch-card {
   display: flex;
-  gap: var(--sp-2);
   align-items: center;
-  justify-content: space-between;
-  margin-top: var(--sp-1);
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--tint-primary-strong);
+  border-radius: var(--r-lg);
+  background: var(--app-bg-card);
+  box-shadow: var(--sh-card);
+  backdrop-filter: blur(12px);
 }
 
 .home-identity-line {
@@ -223,27 +315,127 @@ function selectFace(next: HomeFace) {
   text-overflow: ellipsis;
 }
 
-// Pill 只用于分段选择：视角切换是三选一的分段控件，不是内容卡片。
-.face-capsule {
+.face-switch-icon {
   display: flex;
   flex: none;
   align-items: center;
-  padding: 2px;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: var(--tint-primary);
+  color: var(--app-color-primary);
+}
+
+.face-switch-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.face-switch-eyebrow {
+  color: var(--app-text-primary);
+  font-size: var(--fs-note);
+  font-weight: 650;
+}
+
+.face-switch-note {
+  margin-top: 2px;
+  color: var(--app-text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.face-switch-control {
+  position: relative;
+  flex: 0 0 148px;
+  min-width: 0;
+}
+
+.face-picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
   border-radius: var(--r-pill);
   background: var(--tint-primary);
+  color: var(--app-color-primary);
 }
 
-.face-pill {
-  padding: 4px 10px;
-  border-radius: var(--r-pill);
+.face-picker-trigger.is-open {
+  box-shadow: inset 0 0 0 1px var(--tint-primary-strong);
+}
+
+.face-picker-label {
+  overflow: hidden;
+  min-width: 0;
+  font-size: var(--fs-body);
+  font-weight: 650;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.face-picker-chevron {
+  display: flex;
+  flex: none;
+  transition: transform 160ms ease;
+}
+
+.face-picker-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.face-dropdown-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  right: 0;
+  overflow: hidden;
+  width: 236px;
+  padding: 6px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  background: var(--app-bg-card);
+  box-shadow: var(--sh-card);
+}
+
+.face-dropdown-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 5px 10px;
+  border-radius: var(--r-md);
   color: var(--app-text-secondary);
-  font-size: var(--fs-note);
 }
 
-.face-pill-active {
-  background: var(--app-color-primary);
-  color: var(--app-text-inverse);
-  font-weight: 600;
+.face-dropdown-option.is-selected {
+  background: var(--tint-primary);
+  color: var(--app-color-primary);
+}
+
+.face-dropdown-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.face-dropdown-label {
+  font-size: var(--fs-body);
+  font-weight: 650;
+}
+
+.face-dropdown-tip {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--app-text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .home-message {

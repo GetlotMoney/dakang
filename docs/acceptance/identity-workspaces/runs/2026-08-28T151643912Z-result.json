@@ -1,0 +1,46 @@
+{
+  "status": "PASS",
+  "scenarios": [
+    {
+      "name": "S1 三账号从普通用户会话进入",
+      "status": "PASS",
+      "evidence": "9001/9002/9003 均由隔离 test-login 签发"
+    },
+    {
+      "name": "S2 区域代理申请与邀请码",
+      "status": "PASS",
+      "evidence": "区域通过，渠道码=DK-RG-1-CH"
+    },
+    {
+      "name": "S3 渠道申请并继承区域血缘",
+      "status": "PASS",
+      "evidence": "渠道通过，机主码=DK-CH-2-OWN"
+    },
+    {
+      "name": "S4 机主申请建立完整血缘",
+      "status": "PASS",
+      "evidence": "市级9001→渠道9002→机主9003"
+    },
+    {
+      "name": "S5 渠道与区域工作台联动",
+      "status": "PASS",
+      "evidence": "两端均看到1机主/1水站，数据由血缘过滤"
+    },
+    {
+      "name": "S6 演示支付一次性结果",
+      "status": "PASS",
+      "evidence": "取消不入账→复位成功→购卡/充值到账 card=3"
+    },
+    {
+      "name": "S7 新水站授权与演示设备少出水",
+      "status": "PASS",
+      "evidence": "后台正式范围接口授权站9103；计划5000ml→实际4000ml"
+    },
+    {
+      "name": "S8 六方分润与身份收益分类",
+      "status": "PASS",
+      "evidence": "订单WO4F0D0ED97D055BAA265E四类收款行恒等，渠道/区域钱包来源可辨"
+    }
+  ],
+  "orderNo": "WO4F0D0ED97D055BAA265E"
+}

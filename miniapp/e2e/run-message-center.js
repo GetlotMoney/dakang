@@ -23,6 +23,7 @@ const crypto = require('node:crypto')
 const { execFile } = require('node:child_process')
 const { sha256File } = require('./e1b-core')
 const { newBatchId } = require('./report-core')
+const { verifyAccBackendContainer } = require('./acc-backend-proof')
 
 if (String(process.env.MSG_ACC_MODE || '').trim() !== 'full') {
   console.error('安全闸拒绝执行：必须显式设置 MSG_ACC_MODE=full（本脚本会真实写验收库）')
@@ -424,13 +425,18 @@ async function verifyEnvironment() {
   ok(failed.SEND_STATUS === 3 && failed.MSG_CHANNEL === 2, '失败样本 9704 状态漂移（需 rebuild）')
   fingerprint.seedSentinel = true
 
-  const pids = await lsofPort(BACKEND_PORT)
-  ok(pids.length > 0, `端口 ${BACKEND_PORT} 无监听进程`)
-  const pidFile = path.join(ACC_ENV_RUN_DIR, 'backend.pid')
-  ok(fs.existsSync(pidFile), 'acc-env backend.pid 缺失')
-  const recordedPid = fs.readFileSync(pidFile, 'utf8').trim()
-  ok(pids.includes(recordedPid), `端口被非 acc-env 进程占用（${pids.join(',')} vs ${recordedPid}）`)
-  fingerprint.backendPidVerified = true
+  if (process.env.ACC_BACKEND_CONTAINER) {
+    fingerprint.backendContainerVerified = verifyAccBackendContainer(process.env.ACC_BACKEND_CONTAINER, BACKEND_PORT)
+  }
+  else {
+    const pids = await lsofPort(BACKEND_PORT)
+    ok(pids.length > 0, `端口 ${BACKEND_PORT} 无监听进程`)
+    const pidFile = path.join(ACC_ENV_RUN_DIR, 'backend.pid')
+    ok(fs.existsSync(pidFile), 'acc-env backend.pid 缺失')
+    const recordedPid = fs.readFileSync(pidFile, 'utf8').trim()
+    ok(pids.includes(recordedPid), `端口被非 acc-env 进程占用（${pids.join(',')} vs ${recordedPid}）`)
+    fingerprint.backendPidVerified = true
+  }
 
   const jar = fs.readdirSync(JAR_GLOB_DIR).find(f => f.endsWith('.jar') && !f.endsWith('.jar.original'))
   ok(jar, 'server/target 缺少构建产物')

@@ -319,6 +319,12 @@ class MallTradeTxDbTest {
         }
 
         @Bean
+        com.jbk.serve.service.identity.DemoScenarioService demoScenarioService() {
+            // 本类验证商城交易状态机，演示结果分支由 DemoScenarioServiceTest 单独覆盖。
+            return Mockito.mock(com.jbk.serve.service.identity.DemoScenarioService.class);
+        }
+
+        @Bean
         MallPayFactRetryWorker payFactRetryWorker(WsMallPaymentFactMapper factMapper,
                                                   IMallPayFactService payFactService) {
             return new MallPayFactRetryWorker(factMapper, payFactService);

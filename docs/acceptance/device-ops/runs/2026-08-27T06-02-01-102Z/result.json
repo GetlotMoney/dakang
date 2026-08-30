@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 1,
+  "chain": "E2E-05",
+  "batchId": "2026-08-27T06-02-01-102Z",
+  "round": "unlabeled",
+  "createdAt": "2026-08-27T06:10:36.978Z",
+  "envFingerprint": {
+    "base": "http://127.0.0.1:13340/dakangApi",
+    "dbHost": "127.0.0.1",
+    "dbPort": 3309,
+    "dbName": "dakang",
+    "round": "unlabeled",
+    "seedSentinel": true,
+    "backendPidVerified": false,
+    "monitorEnabled": true,
+    "jarSha256": "868f3262f4ef68fa5808a0613e02fcf2b7e80954a96de88d0d037b710056c87c",
+    "backendContainerVerified": {
+      "name": "dakang-acc-server",
+      "containerId": "0bb5ca213cd1",
+      "hostPort": 13340,
+      "monitorEnabled": true,
+      "shortControlTicket": true
+    }
+  },
+  "scriptSha256": "8cdc5e30b4a1983cce824fc1b92e69d067df3128cd2fa1e551e8e27c3ffcfd98",
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "心跳上线：PC 与机主端读取同一设备状态（共键 deviceNo）",
+      "pass": true,
+      "evidence": [
+        "deviceNo=ACC-DEV-0001 PC=在线 mini=ONLINE lastHeartbeat=20260827140207"
+      ],
+      "error": "",
+      "durationMs": 2716
+    },
+    {
+      "id": "S2",
+      "name": "心跳超时离线：唯一离线告警，扫码预检与创单均阻断",
+      "pass": true,
+      "evidence": [
+        "offline alarm#5 预检=DEVICE_OFFLINE 创单拒绝=设备离线，请稍后再试"
+      ],
+      "error": "",
+      "durationMs": 116090
+    },
+    {
+      "id": "S3",
+      "name": "心跳恢复：离线告警自动恢复，设备重新可用",
+      "pass": true,
+      "evidence": [
+        "alarm#5 状态=4自动恢复 recoverTime=20260827140406"
+      ],
+      "error": "",
+      "durationMs": 2593
+    },
+    {
+      "id": "S4",
+      "name": "严重故障 E003 与未知故障 E999 均阻断取水且各自恰一条活动告警",
+      "pass": true,
+      "evidence": [
+        "E003 一条活动→恢复；E999 level=3 fail-closed 阻断（availability=DEVICE_UNAVAILABLE）"
+      ],
+      "error": "",
+      "durationMs": 10079
+    },
+    {
+      "id": "S5",
+      "name": "故障恢复：设备投影清故障码，对应告警恢复，取水重新可用",
+      "pass": true,
+      "evidence": [
+        "LAST_FAULT_CODE=空 runStatus=1 E999 告警=4自动恢复；旧 replay 未回滚投影"
+      ],
+      "error": "",
+      "durationMs": 4870
+    },
+    {
+      "id": "S6",
+      "name": "遥测：合法值落库，非法值置空零污染，机主端如实降级展示",
+      "pass": true,
+      "evidence": [
+        "SIM 欠费三端阻断并自动恢复；滤芯告警恢复；合法行#8、非法行#9 降级为空"
+      ],
+      "error": "",
+      "durationMs": 92051
+    },
+    {
+      "id": "S7",
+      "name": "单设备查询指令：下发→ACK→result 成功，全链审计闭合",
+      "pass": true,
+      "evidence": [
+        "cmdNo=CMD20260827140555144708 1→2→3→4 events=4"
+      ],
+      "error": "",
+      "durationMs": 5109
+    },
+    {
+      "id": "S8",
+      "name": "异常回执族：rejected/busy/failure/partial/timeout 全部不得成功",
+      "pass": true,
+      "evidence": [
+        "rejected→5",
+        "busy→5",
+        "failure→5",
+        "partial→7",
+        "timeout(30s+扫描)→6"
+      ],
+      "error": "",
+      "durationMs": 94128
+    },
+    {
+      "id": "S9",
+      "name": "ACK/result 重复、乱序、迟到与补传：均不重复推进状态",
+      "pass": true,
+      "evidence": [
+        "dup/replay 终态钉住；乱序 result→ack 成立；迟到 result 不翻案（cmd=CMD20260827140801317708）"
+      ],
+      "error": "",
+      "durationMs": 65819
+    },
+    {
+      "id": "S10",
+      "name": "错设备回执：以他设备身份回执被拒，目标命令零变化",
+      "pass": true,
+      "evidence": [
+        "cmdNo=CMD20260827140843115130 保持 2已下发，ACK_TIME 空"
+      ],
+      "error": "",
+      "durationMs": 15197
+    },
+    {
+      "id": "S11",
+      "name": "批量锁机：一设备一子指令，聚合=1成功+1超时=部分成功",
+      "pass": true,
+      "evidence": [
+        "batch#1 1成/0败/1超 → 3部分成功；锁机建模状态同步"
+      ],
+      "error": "",
+      "durationMs": 50480
+    },
+    {
+      "id": "S12",
+      "name": "操作凭据：GETDEL 单次领取，换人/过期/改参数全部拒绝",
+      "pass": true,
+      "evidence": [
+        "改参数=目标或参数与预览时不一致，凭据已作废，请重新预览；重复=操作凭据不存在、已过期或已使用，请重新预览；换人=确认人与预览人不一致，凭据已作废，请重新预览；过期=操作凭据不存在、已过期或已使用，请重新预览"
+      ],
+      "error": "",
+      "durationMs": 10996
+    },
+    {
+      "id": "S13",
+      "name": "并发幂等：同故障 20 并发上报恰一条活动告警，双确认转单恰一张工单",
+      "pass": true,
+      "evidence": [
+        "20并发→1活动告警(#15)；双确认→1工单(#2)，已闭环"
+      ],
+      "error": "",
+      "durationMs": 12696
+    },
+    {
+      "id": "S14",
+      "name": "机主报修全链：申报→确认→分配→处理→复核关闭，三端同一工单号",
+      "pass": true,
+      "evidence": [
+        "workOrderNo=WO20260827141009732931 mini申报→PC关闭 双端轨迹 5/5"
+      ],
+      "error": "",
+      "durationMs": 14556
+    },
+    {
+      "id": "S15",
+      "name": "PC 巡检工单：复核退回→再提交→关闭；越权账号不可读不可写",
+      "pass": true,
+      "evidence": [
+        "巡检#6 2→3→4→(退回)3→4→5；越权读写全部拒绝"
+      ],
+      "error": "",
+      "durationMs": 2012
+    },
+    {
+      "id": "S16",
+      "name": "紧急停止：无活动链拒绝；活动链锚定订单，设备/订单/指令/审计共键一致",
+      "pass": true,
+      "evidence": [
+        "无链拒绝→建链 order=WO3E2F9CBCEC8559FF78A5→stop cmd=CMD20260827141030301846（device/order/batch/audit 共键一致）"
+      ],
+      "error": "",
+      "durationMs": 10343
+    }
+  ],
+  "passed": 16,
+  "total": 16,
+  "pass": true
+}

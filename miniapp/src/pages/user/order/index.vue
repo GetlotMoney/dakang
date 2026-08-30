@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { OrderItem, OrderStatus, OrderType } from '@/api/order'
 import AppPageState from '@/components/app-page-state.vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onHide, onShow, onUnload } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { ContractError } from '@/api/common'
 import { orderApi } from '@/api/order'
@@ -15,6 +15,7 @@ import {
   ORDER_TYPE_LABELS,
 } from '@/utils/format'
 import { goTo } from '@/utils/navigation'
+import { createPagePoller } from '@/utils/page-poller'
 import { getWxSafeHeader } from '@/utils/safe-area'
 
 definePage({
@@ -45,10 +46,19 @@ const statusFilter = ref(ORDER_STATUS_ALL)
 const loading = ref(true)
 const errorMessage = ref('')
 const orders = ref<OrderItem[]>([])
-// onShow 刷新：从 U08/U10 下单返回或从 U06 返回时，本 Tab 立即可见最新订单。
-onShow(refresh)
+// 常驻订单 Tab 需要追踪设备、支付与配送异步状态；页面可见时每4秒静默刷新，隐藏即停。
+const orderPoller = createPagePoller(() => refresh(true), 4000)
+onShow(() => {
+  void refresh()
+  orderPoller.start()
+})
+onHide(orderPoller.stop)
+onUnload(orderPoller.stop)
 
-async function refresh() {
+async function refresh(silent = false) {
+  if (silent && loading.value) {
+    return
+  }
   if (!accountStore.restored) {
     await accountStore.restoreSession().catch(() => null)
   }
@@ -57,13 +67,15 @@ async function refresh() {
     loading.value = false
     return
   }
-  await loadOrders()
+  await loadOrders(silent)
 }
 
 /** 筛选“改变即查询”：Tab 切换与状态选择均直接触发本函数，不设查询按钮。 */
-async function loadOrders() {
-  loading.value = true
-  errorMessage.value = ''
+async function loadOrders(silent = false) {
+  if (!silent) {
+    loading.value = true
+    errorMessage.value = ''
+  }
   try {
     const orderTypeFilter = ORDER_TYPE_BY_TAB[activeTab.value]
     const statusValue = statusFilter.value === ORDER_STATUS_ALL
@@ -77,11 +89,15 @@ async function loadOrders() {
     orders.value = result.list
   }
   catch (error) {
-    orders.value = []
-    errorMessage.value = error instanceof ContractError ? error.message : '订单加载失败，请重试'
+    if (!silent) {
+      orders.value = []
+      errorMessage.value = error instanceof ContractError ? error.message : '订单加载失败，请重试'
+    }
   }
   finally {
-    loading.value = false
+    if (!silent) {
+      loading.value = false
+    }
   }
 }
 

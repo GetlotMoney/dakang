@@ -27,6 +27,7 @@ class SchemaParityTest {
     private static final Path REPO = Path.of("..").toAbsolutePath().normalize();
     private static final Path INIT_SQL = REPO.resolve("deploy/mysql/init/02-ws-business.sql");
     private static final Path INIT_BASE_SQL = REPO.resolve("deploy/mysql/init/01-base.sql");
+    private static final Path INIT_IDENTITY_SQL = REPO.resolve("deploy/mysql/init/04-identity-workspaces.sql");
     private static final Path MIG_A = REPO.resolve("deploy/mysql/migrations/2026-07-29-aftersale-e2e04-a.sql");
     private static final Path MIG_B = REPO.resolve("deploy/mysql/migrations/2026-07-29-aftersale-e2e04-b.sql");
     private static final Path MIG_D = REPO.resolve("deploy/mysql/migrations/2026-07-29-aftersale-e2e04-d.sql");
@@ -44,6 +45,16 @@ class SchemaParityTest {
             "src/main/resources/mapper/aftersale/WsAfterSaleActionMapper.xml");
     private static final Path TEST_SCHEMA = Path.of(
             "src/test/java/com/jbk/serve/service/delivery/impl/DeliveryDbSchema.java");
+
+    /** 每个独立 init 文件都由 entrypoint 单独执行，不能继承上一文件的 USE 语句。 */
+    @Test
+    void identityInitSelectsDatabaseBeforeCreatingTables() throws IOException {
+        String sql = read(INIT_IDENTITY_SQL).toUpperCase();
+        int useDatabase = sql.indexOf("USE DAKANG;");
+        int firstTable = sql.indexOf("CREATE TABLE");
+        assertTrue(useDatabase >= 0 && firstTable > useDatabase,
+                "04-identity-workspaces.sql 必须在首张表之前执行 USE dakang，否则全新 MySQL 首启报 No database selected");
+    }
 
     /** 包A 建的表：迁移与 init 必须逐列一致。 */
     @Test

@@ -23,3 +23,20 @@ export const WX_CONTACT_AVAILABLE = false
 export function isContactAvailable(): boolean {
   return WX_CONTACT_AVAILABLE
 }
+
+/**
+ * 老板测试模式是构建期常量：只允许替换尚未接入的外部能力，不能切换业务 API 或绕过登录鉴权。
+ * 正式构建缺省为 false，打包后无法由用户在页面或 storage 中开启。
+ */
+export function isDemoMode(): boolean {
+  return import.meta.env.VITE_DEMO_MODE === 'true'
+}
+
+/** 测试包固定扫码内容；缺配返回 null，由扫码层明确拒绝而不是偷偷回落任意设备。 */
+export function demoScanCode(): string | null {
+  if (!isDemoMode()) {
+    return null
+  }
+  const code = String(import.meta.env.VITE_DEMO_SCAN_CODE ?? '').trim()
+  return code || null
+}

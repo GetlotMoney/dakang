@@ -23,6 +23,7 @@ const crypto = require('node:crypto')
 const { spawn, execFile } = require('node:child_process')
 const { sha256File } = require('./e1b-core')
 const { newBatchId } = require('./report-core')
+const { verifyAccBackendContainer } = require('./acc-backend-proof')
 
 // ---------------------------------------------------------------------------
 // 安全闸与环境
@@ -340,10 +341,13 @@ scenario('S4', '严重故障 E003 与未知故障 E999 均阻断取水且各自�
     const row = await deviceRow(DEV1.id)
     return row.LAST_FAULT_CODE === 'E003' ? row : null
   }, 15000)
-  let alarms = await q(
-    'SELECT * FROM ws_alarm WHERE DEVICE_ID = ? AND ALARM_TYPE = 2 AND SOURCE_REF = ? AND ACTIVE_DEDUPE_KEY IS NOT NULL',
-    [DEV1.id, 'E003'],
-  )
+  let alarms = await pollUntil('E003 活动告警落库', async () => {
+    const rows = await q(
+      'SELECT * FROM ws_alarm WHERE DEVICE_ID = ? AND ALARM_TYPE = 2 AND SOURCE_REF = ? AND ACTIVE_DEDUPE_KEY IS NOT NULL',
+      [DEV1.id, 'E003'],
+    )
+    return rows.length === 1 ? rows : null
+  }, 15000)
   eq(alarms.length, 1, 'E003 活动告警必须恰一条（重复上报被唯一键收敛）')
   let { elig } = await scanEligibility(ctx.owner, ctx.cardId)
   eq(elig.availability, 'FAULT_E003', 'E003 属专属可用性码，应阻断')
@@ -359,10 +363,13 @@ scenario('S4', '严重故障 E003 与未知故障 E999 均阻断取水且各自�
     const row = await deviceRow(DEV1.id)
     return row.LAST_FAULT_CODE === 'E999' ? row : null
   }, 15000)
-  alarms = await q(
-    'SELECT * FROM ws_alarm WHERE DEVICE_ID = ? AND ALARM_TYPE = 2 AND SOURCE_REF = ? AND ACTIVE_DEDUPE_KEY IS NOT NULL',
-    [DEV1.id, 'E999'],
-  )
+  alarms = await pollUntil('E999 活动告警落库', async () => {
+    const rows = await q(
+      'SELECT * FROM ws_alarm WHERE DEVICE_ID = ? AND ALARM_TYPE = 2 AND SOURCE_REF = ? AND ACTIVE_DEDUPE_KEY IS NOT NULL',
+      [DEV1.id, 'E999'],
+    )
+    return rows.length === 1 ? rows : null
+  }, 15000)
   eq(alarms.length, 1, '未知故障 E999 活动告警恰一条')
   eq(alarms[0].ALARM_LEVEL, 3, '未知故障必须按最高等级 fail-closed')
   ;({ elig } = await scanEligibility(ctx.owner, ctx.cardId))
@@ -377,10 +384,13 @@ scenario('S5', '故障恢复：设备投影清故障码，对应告警恢复，�
     const device = await deviceRow(DEV1.id)
     return !device.LAST_FAULT_CODE && device.RUN_STATUS === 1 ? device : null
   }, 15000)
-  const recovered = await q(
-    'SELECT * FROM ws_alarm WHERE DEVICE_ID = ? AND SOURCE_REF = ? AND ALARM_STATUS = 4 AND ACTIVE_DEDUPE_KEY IS NULL',
-    [DEV1.id, 'E999'],
-  )
+  const recovered = await pollUntil('E999 告警自动恢复', async () => {
+    const rows = await q(
+      'SELECT * FROM ws_alarm WHERE DEVICE_ID = ? AND SOURCE_REF = ? AND ALARM_STATUS = 4 AND ACTIVE_DEDUPE_KEY IS NULL',
+      [DEV1.id, 'E999'],
+    )
+    return rows.length === 1 ? rows : null
+  }, 15000)
   eq(recovered.length, 1, 'E999 告警应自动恢复且键清空')
   ok(row.LAST_STATUS_DEVICE_TIME, '状态投影必须保存设备时间乱序锚点')
 
@@ -860,13 +870,34 @@ async function verifyEnvironment() {
   fingerprint.seedSentinel = true
 
   // 13340 残留进程核验：端口占用者必须与 acc-env 记录的 pid 一致（防旧进程抢答健康检查）
-  const pids = await lsofPort(BACKEND_PORT)
-  ok(pids.length > 0, `端口 ${BACKEND_PORT} 无监听进程（先 backend-start）`)
-  const pidFile = path.join(ACC_ENV_RUN_DIR, 'backend.pid')
-  ok(fs.existsSync(pidFile), 'acc-env backend.pid 缺失，无法核验进程归属')
-  const recordedPid = fs.readFileSync(pidFile, 'utf8').trim()
-  ok(pids.includes(recordedPid), `端口 ${BACKEND_PORT} 被非 acc-env 进程占用（监听 pid=${pids.join(',')}，记录 pid=${recordedPid}）`)
-  fingerprint.backendPidVerified = true
+  let cmdline = ''
+  let monitorConfigured = false
+  let ticketConfigured = false
+  if (process.env.ACC_BACKEND_CONTAINER) {
+    fingerprint.backendContainerVerified = verifyAccBackendContainer(process.env.ACC_BACKEND_CONTAINER, BACKEND_PORT)
+    monitorConfigured = fingerprint.backendContainerVerified.monitorEnabled
+    ticketConfigured = fingerprint.backendContainerVerified.shortControlTicket
+  }
+  else {
+    const pids = await lsofPort(BACKEND_PORT)
+    ok(pids.length > 0, `端口 ${BACKEND_PORT} 无监听进程（先 backend-start）`)
+    const pidFile = path.join(ACC_ENV_RUN_DIR, 'backend.pid')
+    ok(fs.existsSync(pidFile), 'acc-env backend.pid 缺失，无法核验进程归属')
+    const recordedPid = fs.readFileSync(pidFile, 'utf8').trim()
+    ok(pids.includes(recordedPid), `端口 ${BACKEND_PORT} 被非 acc-env 进程占用（监听 pid=${pids.join(',')}，记录 pid=${recordedPid}）`)
+    fingerprint.backendPidVerified = true
+    cmdline = await new Promise((resolve, reject) => {
+      execFile('ps', ['-p', recordedPid, '-o', 'command='], (error, stdout) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(String(stdout || ''))
+      })
+    })
+    monitorConfigured = cmdline.includes('--dakang.device.monitor-enabled=true')
+    ticketConfigured = cmdline.includes('--dakang.device.control-ticket-ttl-seconds=8')
+  }
 
   // 构建指纹：验收后端运行的 JAR 摘要（与本仓库当前构建物一致即证明跑的是当前代码）
   const jar = fs.readdirSync(JAR_GLOB_DIR).find(f => f.endsWith('.jar') && !f.endsWith('.jar.original'))
@@ -876,17 +907,8 @@ async function verifyEnvironment() {
   // 测试登录可用性 + 监控开关（S2 依赖离线扫描；扫描关闭时设备永不翻离线）
   const probe = await api('/mini/test-login/by-phone', { phone: OWNER_PHONE })
   ok(probe && probe.code === 0, '测试登录不可用——mini.test-login.enabled 未开或环境错误')
-  const cmdline = await new Promise((resolve, reject) => {
-    execFile('ps', ['-p', recordedPid, '-o', 'command='], (error, stdout) => {
-      if (error) {
-        reject(error)
-        return
-      }
-      resolve(String(stdout || ''))
-    })
-  })
-  ok(cmdline.includes('--dakang.device.monitor-enabled=true'), '验收后端未开启设备监控（ACC_MONITOR_ENABLED=true 重启 backend-start，S2 依赖离线扫描）')
-  ok(cmdline.includes('--dakang.device.control-ticket-ttl-seconds=8'), '验收后端未按短凭据时效启动（ACC_CONTROL_TICKET_TTL=8，S12 过期拒绝依赖它）')
+  ok(monitorConfigured, '验收后端未开启设备监控（ACC_MONITOR_ENABLED=true 重启 backend-start，S2 依赖离线扫描）')
+  ok(ticketConfigured, '验收后端未按短凭据时效启动（ACC_CONTROL_TICKET_TTL=8，S12 过期拒绝依赖它）')
   fingerprint.monitorEnabled = true
   return fingerprint
 }

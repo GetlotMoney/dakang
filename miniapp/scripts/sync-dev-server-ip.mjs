@@ -10,18 +10,29 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 
-const ENV_FILE = path.resolve(process.cwd(), 'env/.env.development.local')
+const mode = process.argv[2] || 'development'
+const ENV_FILE = path.resolve(process.cwd(), `env/.env.${mode}.local`)
 const KEY = 'VITE_SERVER_BASEURL'
 
 // 非局域网地址黑名单：198.18.0.0/15 是代理 TUN 虚拟网卡（本机 Clash 实测占用 198.18.0.1），
 // 169.254.x 是链路本地失败回退——两者手机都打不进来，误选即整包白瞎。
 const NOT_LAN = /^(?:198\.1[89]\.|169\.254\.)/
+const VIRTUAL_NIC = /vethernet|vmware|virtualbox|hyper-v|wsl|default switch/i
 
 function currentLanIp() {
   const nics = os.networkInterfaces()
   const candidates = []
-  // Mac 主网卡习惯名优先，随后兜底扫全部接口
-  for (const name of ['en0', 'en1', ...Object.keys(nics)]) {
+  const names = Object.keys(nics)
+  const preferred = process.platform === 'win32'
+    ? ['Wi-Fi', 'WLAN', 'Ethernet', '以太网']
+    : ['en0', 'en1']
+  // 真机必须走物理局域网；Windows 的 VMware/WSL 地址虽然非 internal，手机仍无法访问。
+  const orderedNames = [
+    ...preferred.filter(name => names.includes(name)),
+    ...names.filter(name => !preferred.includes(name) && !VIRTUAL_NIC.test(name)),
+    ...names.filter(name => VIRTUAL_NIC.test(name)),
+  ]
+  for (const name of orderedNames) {
     for (const addr of nics[name] ?? []) {
       if (addr.family === 'IPv4' && !addr.internal && !NOT_LAN.test(addr.address)
         && !candidates.includes(addr.address)) {
@@ -37,7 +48,7 @@ function currentLanIp() {
 }
 
 if (!fs.existsSync(ENV_FILE)) {
-  console.log('[sync-dev-server-ip] 无 .env.development.local（非本机联调档），跳过')
+  console.log(`[sync-dev-server-ip] 无 .env.${mode}.local（非本机联调档），跳过`)
   process.exit(0)
 }
 

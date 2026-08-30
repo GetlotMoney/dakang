@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "batchId": "2026-08-27T04-37-44-709Z",
+  "round": "unlabeled",
+  "createdAt": "2026-08-27T04:39:50.669Z",
+  "envFingerprint": {
+    "base": "http://127.0.0.1:13340/dakangApi",
+    "dbHost": "127.0.0.1",
+    "dbPort": 3309,
+    "dbName": "dakang",
+    "round": "unlabeled",
+    "seedSentinel": true,
+    "paySimGateOpen": true
+  },
+  "scriptSha256": "0661d61b0cb9ee04f8c7eaeefdf09e228a1f32a80c26494c8dc2abf5fb6f92db",
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "首次购卡：无卡创单(CARD_ID=NULL)→Pay-Sim→原子发卡入账",
+      "pass": true,
+      "evidence": [
+        "套餐 验收100元500升卡 售价10000分/500000ml/null天",
+        "order4/payment2 tx=SIMTXRCBF33FD1E909D2E613298254A954C1C flow#3 biz=RECHARGE:RCBF33FD1E909D2E613298254A954C1C event3",
+        "card#3 issueOrder=4 ml=500000 expire=永久(NULL) scope=[9101]"
+      ],
+      "error": "",
+      "durationMs": 2141
+    },
+    {
+      "id": "S2",
+      "name": "同卡再充：原卡加权益不建二卡，永久有效期保持 NULL",
+      "pass": true,
+      "evidence": [
+        "order4/payment2 tx=SIMTXRCAA63C6045FD10BE26E3171E534AEDB flow#4 biz=RECHARGE:RCAA63C6045FD10BE26E3171E534AEDB event3",
+        "同卡#3 ml 500000→1000000 expire 永久保持NULL"
+      ],
+      "error": "",
+      "durationMs": 1115
+    },
+    {
+      "id": "S3",
+      "name": "待支付恢复：创单不付→order1/payment1 无流水→继续支付→完成入账",
+      "pass": true,
+      "evidence": [
+        "创单未付 order1/payment1 flow=0（RC698B76A757084C5E92EAF4AA71564D）",
+        "order4/payment2 tx=SIMTXRC698B76A757084C5E92EAF4AA71564D flow#5 biz=RECHARGE:RC698B76A757084C5E92EAF4AA71564D event3"
+      ],
+      "error": "",
+      "durationMs": 1084
+    },
+    {
+      "id": "S4",
+      "name": "幂等与超时：同参返原单/改参拒绝/重复支付一次入账/NOTPAY/改截止后 CLOSED",
+      "pass": true,
+      "evidence": [
+        "同参重放幂等命中（RC6F269071B96EE856DD449707274181）",
+        "改参拒绝：同一 requestId 不可更换水卡或套餐",
+        "Pay-Sim×3 → CREDITED + 2次拒绝/幂等（拒:订单已完成，无需再次支付、拒:订单已完成，无需再次支付），流水恰1条",
+        "截止前 query=NOTPAY，payment1/order1 保持",
+        "改截止(20260827110751)后 query=CLOSED → payment4/order5，卡与流水零变化"
+      ],
+      "error": "",
+      "durationMs": 2300
+    },
+    {
+      "id": "S5",
+      "name": "可恢复/不可恢复：冻结→RETRY_WAIT→解冻 Worker 自动入账；改归属→事实5转人工",
+      "pass": true,
+      "evidence": [
+        "冻结后支付 → payment2/order2/事实RETRY_WAIT(4)，零流水",
+        "order4/payment2 tx=SIMTXRC1CECAAAFBC2413D4163EC3DC9BA258 flow#7 biz=RECHARGE:RC1CECAAAFBC2413D4163EC3DC9BA258 event3",
+        "解冻后 Worker 自动 order4，唯一流水#7",
+        "改归属后支付 → payment2/order6/事实5，卡与流水不变（已还原归属）"
+      ],
+      "error": "",
+      "durationMs": 95578
+    },
+    {
+      "id": "S6",
+      "name": "范围外拒绝：扫水站2码→预检 CARD_SCOPE_DENIED→强行提交被拒零变化、会话不消费",
+      "pass": true,
+      "evidence": [
+        "强行提交被拒：该水卡不适用于当前设备，请更换设备或水卡",
+        "CARD_SCOPE_DENIED；订单/流水/指令零变化；会话未消费"
+      ],
+      "error": "",
+      "durationMs": 530
+    },
+    {
+      "id": "S7",
+      "name": "范围内取水退差：计划10000ml 预扣→ACK/result 4980→补偿5020→净扣4980",
+      "pass": true,
+      "evidence": [
+        "order4 actual=4980 cmd#CMD20260827123929237201(4) flows[-10000,+5020] 卡 2500000→2495020（净-4980）"
+      ],
+      "error": "",
+      "durationMs": 3867
+    },
+    {
+      "id": "S8",
+      "name": "冻结解冻：PC 冻结→预检 CARD_FROZEN→解冻→重新预检可取",
+      "pass": true,
+      "evidence": [
+        "冻结→CARD_FROZEN；解冻→AVAILABLE 且无阻断"
+      ],
+      "error": "",
+      "durationMs": 12775
+    },
+    {
+      "id": "S9",
+      "name": "成员授权限额：日限6000 取5000成功→再取2000拒→撤销后拒",
+      "pass": true,
+      "evidence": [
+        "成员取水 order4 actual=4980 卡 2495020→2490040（订单/流水 USER_ID=9002）",
+        "同日再取2000 → 超出成员单日取水限额",
+        "撤销授权后 → CARD_NOT_ACCESSIBLE；下单拒绝：水卡不存在或无权使用"
+      ],
+      "error": "",
+      "durationMs": 4585
+    },
+    {
+      "id": "S10",
+      "name": "活动赠卡不可充值：赠卡 canRecharge=false，充值创单被拒零写入",
+      "pass": true,
+      "evidence": [
+        "gift#4 canRecharge=false；创单拒绝：活动赠卡在有效期内暂不支持充值，权益用完或到期后可充值转为正式水卡"
+      ],
+      "error": "",
+      "durationMs": 184
+    }
+  ],
+  "passed": 10,
+  "total": 10,
+  "pass": true
+}

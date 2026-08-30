@@ -15,7 +15,7 @@ import { isPhoneComponentAvailable } from '@/api/runtime'
 import WechatContactEntry from '@/components/wechat-contact-entry.vue'
 import { useAccountStore } from '@/store/account'
 import { ADMISSION_STATUS_LABELS, CARD_STATUS_LABELS, maskPhone } from '@/utils/format'
-import { goTo } from '@/utils/navigation'
+import { goTo, reLaunchTo } from '@/utils/navigation'
 import { getWxSafeHeader } from '@/utils/safe-area'
 
 definePage({
@@ -53,7 +53,7 @@ const savingProfile = ref(false)
 
 const editAvatarPreview = computed(() => pickedAvatar.value?.path || avatarSrc.value)
 
-function openProfileEdit() {
+function _openProfileEdit() {
   editName.value = context.value?.userName ?? ''
   pickedAvatar.value = null
   editingProfile.value = true
@@ -199,7 +199,13 @@ function handleCardTap() {
 /** 打开平台《用户隐私保护指引》全文（微信渲染，非我方页面）；与登录页 openPrivacyContract 同一平台能力。 */
 function openPrivacyContract() {
   const wxApi = (globalThis as Record<string, any>).wx
-  wxApi?.openPrivacyContract?.({})
+  if (typeof wxApi?.openPrivacyContract !== 'function') {
+    toast.show('当前环境无法打开隐私说明')
+    return
+  }
+  wxApi.openPrivacyContract({
+    fail: () => toast.show('隐私说明打开失败，请重试'),
+  })
 }
 
 /** 退出登录：清会话回统一入口（运营规范 12.6 要求提供登出）。 */
@@ -213,7 +219,7 @@ function handleLogout() {
         return
       }
       accountStore.logout()
-      uni.reLaunch({ url: '/pages/entry/index' })
+      reLaunchTo('C01')
     },
   })
 }
@@ -272,7 +278,7 @@ onShow(loadInviteCode)
   <view class="page-shell top-level-page" :style="{ paddingTop: safeHeader.pageTopPadding }">
     <image class="profile-watermark" src="/static/brand/page-watermark.jpg" mode="scaleToFill" />
     <wd-toast />
-    <view v-if="context" class="profile-header profile-hero pressable" @click="openProfileEdit">
+    <view v-if="context" class="profile-header profile-hero pressable" @click="goTo('I01')">
       <image class="profile-hero__art" src="/static/brand/section-network.jpg" mode="aspectFill" />
       <view class="profile-avatar">
         <image v-if="avatarSrc" class="profile-avatar-img" :src="avatarSrc" mode="aspectFill" />
@@ -287,7 +293,7 @@ onShow(loadInviteCode)
         </view>
       </view>
       <view class="profile-edit-hint">
-        <text>编辑资料</text>
+        <text>身份中心</text>
         <wd-icon name="arrow-right" size="14px" color="var(--app-text-tertiary)" />
       </view>
     </view>
@@ -357,6 +363,20 @@ onShow(loadInviteCode)
       </view>
     </view>
 
+    <view class="page-section identity-entry surface-card pressable" @click="goTo('I01')">
+      <view>
+        <view class="identity-entry__title">
+          身份与能力
+        </view>
+        <view class="muted-text">
+          申请并管理配送员、机主、渠道和区域代理
+        </view>
+      </view>
+      <text class="identity-entry__arrow">
+        ›
+      </text>
+    </view>
+
     <view class="page-section">
       <view class="section-title-row">
         <text class="section-title">
@@ -424,6 +444,13 @@ onShow(loadInviteCode)
         </text>
       </view>
       <wd-cell-group border>
+        <wd-cell
+          title="身份与能力"
+          value="申请与管理经营身份"
+          icon="user-talk"
+          is-link
+          @click="goTo('I01')"
+        />
         <!-- 无记录兜底文案必须与 status=0 同字：查询失败也降级成无记录，不得显示成「未开通」 -->
         <wd-cell
           title="配送员"
@@ -488,6 +515,19 @@ onShow(loadInviteCode)
           <wd-button size="small" :loading="inviteBusy" @click="bindInvite">
             绑定
           </wd-button>
+        </view>
+        <view class="invite-line invite-bind pressable" @click="goTo('I01')">
+          <view>
+            <view class="identity-entry__title">
+              身份与能力
+            </view>
+            <view class="muted-text">
+              申请配送员、机主、渠道和区域代理
+            </view>
+          </view>
+          <text class="identity-entry__arrow">
+            ›
+          </text>
         </view>
       </view>
     </view>
@@ -877,5 +917,23 @@ onShow(loadInviteCode)
 .invite-field {
   flex: 1;
   min-width: 0;
+}
+
+.identity-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+
+  &__title {
+    margin-bottom: var(--sp-1);
+    font-size: var(--fs-title);
+    font-weight: 700;
+  }
+
+  &__arrow {
+    color: var(--app-color-primary);
+    font-size: var(--fs-metric);
+  }
 }
 </style>

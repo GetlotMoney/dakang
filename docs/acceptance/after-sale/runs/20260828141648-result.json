@@ -1,0 +1,85 @@
+{
+  "chain": "E2E-04",
+  "batch": "20260828141648",
+  "expectedScenarios": 15,
+  "executedScenarios": 15,
+  "passed": 15,
+  "pass": true,
+  "scenarios": [
+    {
+      "name": "S0 登录三方身份（卡主/配送员/运营）",
+      "pass": true,
+      "evidence": "owner/courier/ops token 均已取得"
+    },
+    {
+      "name": "S1 备好一张有余额的永久卡（复用已有卡，缺余额则充纯金额套餐）",
+      "pass": true,
+      "evidence": "card=3 余额=5000分 水量=500000ml 有效期=永久"
+    },
+    {
+      "name": "S2 配送下单 payWay=2（全余额）并冻结快照",
+      "pass": true,
+      "evidence": "order=WD191E12919F784E729655F76D237E62 扣款=3000分 流水键=DELIVERY:WD191E12919F784E729655F76D237E62"
+    },
+    {
+      "name": "S3 配送员接单→离站→送达→三照签收（实送1桶）",
+      "pass": true,
+      "evidence": "task=DTE6F15F0ADECB8B9CA50CD68E6953EA 应送2实送1，状态=5"
+    },
+    {
+      "name": "S4 卡主申诉（实收1桶）",
+      "pass": true,
+      "evidence": "appeal=1 status=1 created={\"appealId\":\"1\",\"orderNo\":\"WD191E12919F784E729655F76D237E62\""
+    },
+    {
+      "name": "S5 运营裁决 PRODUCT_ONLY（仅退水费1桶）→ 生成待执行售后动作",
+      "pass": true,
+      "evidence": "action=1 no=AS70A37D8F972F2494837F9DBA8364CB 四元额度=(1300,0,0)/1300"
+    },
+    {
+      "name": "S6 售后台账列表与详情可见且手机号脱敏",
+      "pass": true,
+      "evidence": "列表命中 + 详情已脱敏（响应中不含卡主手机号原文）"
+    },
+    {
+      "name": "S7 执行返还：余额回补 1300 分，动作落 SUCCESS",
+      "pass": true,
+      "evidence": "余额 2000→3300（+1300），动作=SUCCESS，入账流水 AFTER=3300"
+    },
+    {
+      "name": "S8 重复执行被拒（终态不可再执行，且不再动钱）",
+      "pass": true,
+      "evidence": "拒绝原因：当前状态不可执行：已完成；余额未变"
+    },
+    {
+      "name": "S9 售后号与动作ID不匹配被拒",
+      "pass": true,
+      "evidence": "拒绝原因：售后号与动作ID不匹配，页面数据可能已过期，请刷新后重试"
+    },
+    {
+      "name": "S10 封顶：同订单再申诉退 2 桶应被拒（单桶已退，余额仅剩 1 桶额度）",
+      "pass": true,
+      "evidence": "二次动作=2 请求 2600 分被拒：水品金额超出可返还额度：本次 2600，剩余 1300（上限 2600，已返 1300）；终态=5，余额未变"
+    },
+    {
+      "name": "S11 未使用充值批次全额退款：可退=实付，卡按发放量冲减，订单落7",
+      "pass": true,
+      "evidence": "order=RCFD62BA41DD8C49091EDDFD41F5E588 退款=5000分 冲减=5000分 订单=7 批次=3"
+    },
+    {
+      "name": "S12 备好一张单批次可辨的新卡：首购水量套餐 + 充纯金额包 + 配送消费一部分",
+      "pass": true,
+      "evidence": "card=4 首购批次=6 金额批次=7 消费 40000mL+400分 后 卡=4600分/460000mL"
+    },
+    {
+      "name": "S13 退款锁定期间消费不得穿透：卡上有余额也扣不动，且分文未动",
+      "pass": true,
+      "evidence": "锁定期间下单被拒：水卡权益批次剩余不足，无法完成消费分摊（缺口 金额 200 分 / 水量 0 毫升），账本断裂；结算后 批次=3 订单=8 卡余额=0 卡状态=1"
+    },
+    {
+      "name": "S14 首购水量套餐按 ceil 折算退款 → 权益归零后卡转注销",
+      "pass": true,
+      "evidence": "首购退款 9200 分（已用 40000mL 折 800 分）→ 批次=3 订单=8 卡权益归零 卡状态=4注销"
+    }
+  ]
+}

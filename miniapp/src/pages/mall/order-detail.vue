@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MallFulfill, MallShipment } from '@/api/mall-fulfillment'
 import type { MallOrderDetail } from '@/api/mall-trade'
-import { onLoad, onShow } from '@dcloudio/uni-app'
+import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import { useMessage, useToast } from 'wot-design-uni'
 import { ContractError } from '@/api/common'
@@ -22,6 +22,7 @@ import {
   mallPaySourceLabel,
 } from '@/utils/format'
 import { goTo } from '@/utils/navigation'
+import { createPagePoller } from '@/utils/page-poller'
 
 definePage({
   style: {
@@ -43,27 +44,44 @@ onLoad((query) => {
   orderNo = typeof query?.orderNo === 'string' ? query.orderNo : ''
 })
 
-// onShow 刷新：支付或取消后返回本页时状态立即是最新的
-onShow(refresh)
+// 支付、仓库与配送节点可能由其他角色推进；详情可见时每5秒静默同步，离开立即停止。
+const orderPoller = createPagePoller(() => refresh(true), 5000)
+onShow(() => {
+  void refresh()
+  orderPoller.start()
+})
+onHide(orderPoller.stop)
+onUnload(orderPoller.stop)
 
-async function refresh() {
-  if (!orderNo) {
-    loading.value = false
-    errorMessage.value = '缺少订单参数'
+async function refresh(silent = false) {
+  if (silent && (loading.value || acting.value)) {
     return
   }
-  loading.value = true
-  errorMessage.value = ''
+  if (!orderNo) {
+    if (!silent) {
+      loading.value = false
+      errorMessage.value = '缺少订单参数'
+    }
+    return
+  }
+  if (!silent) {
+    loading.value = true
+    errorMessage.value = ''
+  }
   try {
     detail.value = await mallTradeApi.orderDetail(orderNo)
-    await loadFulfill(detail.value.summary.orderStatus)
+    await loadFulfill(detail.value.summary.orderStatus, silent)
   }
   catch (error) {
-    detail.value = null
-    errorMessage.value = error instanceof ContractError ? error.message : '订单加载失败，请重试'
+    if (!silent) {
+      detail.value = null
+      errorMessage.value = error instanceof ContractError ? error.message : '订单加载失败，请重试'
+    }
   }
   finally {
-    loading.value = false
+    if (!silent) {
+      loading.value = false
+    }
   }
 }
 
@@ -84,25 +102,33 @@ const fulfillmentExpected = computed(() => {
  *
  * 履约读取失败不打断订单详情——订单快照与金额仍要看得到，物流区块单独进入失败态并可重试。
  */
-async function loadFulfill(orderStatus: number) {
-  fulfill.value = null
-  shipments.value = []
-  fulfillErrorMessage.value = ''
-  shipmentErrorMessage.value = ''
+async function loadFulfill(orderStatus: number, silent = false) {
+  if (!silent) {
+    fulfill.value = null
+    shipments.value = []
+    fulfillErrorMessage.value = ''
+    shipmentErrorMessage.value = ''
+  }
   if (orderStatus !== 2 && orderStatus !== 3 && orderStatus !== 4) {
+    fulfill.value = null
+    shipments.value = []
     fulfillLoading.value = false
     return
   }
-  fulfillLoading.value = true
+  if (!silent) {
+    fulfillLoading.value = true
+  }
   try {
     fulfill.value = await mallFulfillApi.detail(orderNo)
   }
   catch (error) {
-    fulfill.value = null
-    fulfillErrorMessage.value = error instanceof ContractError
-      ? error.message
-      : '物流信息加载失败，请重试'
-    fulfillLoading.value = false
+    if (!silent) {
+      fulfill.value = null
+      fulfillErrorMessage.value = error instanceof ContractError
+        ? error.message
+        : '物流信息加载失败，请重试'
+      fulfillLoading.value = false
+    }
     return
   }
   // 包裹单独一段不与履约共用 try：包裹契约异常会连坐置空 fulfill，而「确认收货」挂在 fulfill 上，
@@ -111,11 +137,15 @@ async function loadFulfill(orderStatus: number) {
     shipments.value = await mallFulfillApi.shipments(orderNo)
   }
   catch {
-    shipments.value = []
-    shipmentErrorMessage.value = '承运信息暂时无法显示'
+    if (!silent) {
+      shipments.value = []
+      shipmentErrorMessage.value = '承运信息暂时无法显示'
+    }
   }
   finally {
-    fulfillLoading.value = false
+    if (!silent) {
+      fulfillLoading.value = false
+    }
   }
 }
 
@@ -267,7 +297,7 @@ function handleCancel() {
     <view v-else-if="errorMessage" class="page-section">
       <AppPageState state="error" :message="errorMessage">
         <template #actions>
-          <wd-button plain size="small" @click="refresh">
+          <wd-button plain size="small" @click="refresh()">
             重新加载
           </wd-button>
           <wd-button plain size="small" @click="goTo('M05')">

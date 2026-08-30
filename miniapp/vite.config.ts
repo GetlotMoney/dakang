@@ -7,6 +7,7 @@ import UniManifest from '@uni-helper/vite-plugin-uni-manifest'
 import UniPages from '@uni-helper/vite-plugin-uni-pages'
 import UniKuRoot from '@uni-ku/root'
 import { defineConfig, loadEnv } from 'vite'
+import { MINIAPP_SUBPACKAGE_ROOTS } from './subpackage.config'
 
 process.env.UNI_INPUT_DIR ??= path.resolve(process.cwd(), 'src')
 
@@ -99,6 +100,7 @@ export default defineConfig(({ mode }) => {
       UniPages({
         exclude: ['**/components/**'],
         dts: 'src/types/uni-pages.d.ts',
+        subPackages: [...MINIAPP_SUBPACKAGE_ROOTS],
       }),
       UniKuRoot({
         excludePages: ['**/components/**'],

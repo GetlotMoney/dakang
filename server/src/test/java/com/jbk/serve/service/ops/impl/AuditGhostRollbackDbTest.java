@@ -150,6 +150,11 @@ class AuditGhostRollbackDbTest {
         }
 
         @Bean
+        MapperFactoryBean<com.jbk.serve.mapper.user.WsUserMapper> wsUserMapper(SqlSessionTemplate t) {
+            return mapper(com.jbk.serve.mapper.user.WsUserMapper.class, t);
+        }
+
+        @Bean
         IWsDomainEventService domainEventService() {
             // 真实现：REQUIRED 语义的同事务性正是被测行为，Mock 证不了
             return new WsDomainEventServiceImpl();
